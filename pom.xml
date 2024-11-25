@@ -1,0 +1,966 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+ Copyright (c) 2024 Alibaba Group Holding Ltd.
+
+ Licensed under the Apache License, Version 2.0 (the "License");
+ you may not use this file except in compliance with the License.
+ You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+ Unless required by applicable law or agreed to in writing, software
+ distributed under the License is distributed on an "AS IS" BASIS,
+ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ See the License for the specific language governing permissions and
+ limitations under the License.
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>org.apache</groupId>
+        <artifactId>apache</artifactId>
+        <version>30</version>
+    </parent>
+
+    <groupId>com.alibaba.fluss</groupId>
+    <artifactId>fluss</artifactId>
+    <version>0.5-SNAPSHOT</version>
+
+    <name>Fluss :</name>
+    <packaging>pom</packaging>
+    <description>The Streaming Storage for Real-Time Analytics</description>
+    <url>https://github.com/alibaba/fluss</url>
+    <inceptionYear>2023</inceptionYear>
+
+    <licenses>
+        <license>
+            <name>The Apache Software License, Version 2.0</name>
+            <url>https://www.apache.org/licenses/LICENSE-2.0.txt</url>
+            <distribution>repo</distribution>
+        </license>
+    </licenses>
+
+    <modules>
+        <module>fluss-common</module>
+        <module>fluss-metrics</module>
+        <module>fluss-client</module>
+        <module>fluss-rpc</module>
+        <module>fluss-dist</module>
+        <module>fluss-filesystems</module>
+        <module>fluss-test-utils</module>
+        <module>fluss-test-coverage</module>
+        <module>fluss-server</module>
+        <module>fluss-connectors</module>
+        <module>fluss-protogen</module>
+        <module>fluss-benchmark</module>
+        <module>fluss-lakehouse</module>
+    </modules>
+
+    <properties>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
+        <target.java.version>1.8</target.java.version>
+        <maven.compiler.source>${target.java.version}</maven.compiler.source>
+        <maven.compiler.target>${target.java.version}</maven.compiler.target>
+        <test.unit.pattern>**/*Test.*</test.unit.pattern>
+        <test.skip.coverage>true</test.skip.coverage>
+        <fluss.forkCount>1C</fluss.forkCount>
+        <fluss.reuseForks>true</fluss.reuseForks>
+
+        <!-- library versions in fluss-shaded -->
+        <fluss.shaded.version>2.2</fluss.shaded.version>
+        <guava.version>32.1.3-jre</guava.version>
+        <jackson.version>2.15.3</jackson.version>
+        <zookeeper.version>3.8.3</zookeeper.version>
+        <curator.version>5.4.0</curator.version>
+        <netty.version>4.1.104</netty.version>
+        <arrow.version>15.0.0</arrow.version>
+        <flink.version>1.18.1</flink.version>
+        <paimon.version>0.8.2</paimon.version>
+
+        <fluss.hadoop.version>2.10.2</fluss.hadoop.version>
+        <frocksdb.version>6.20.3-ververica-2.0</frocksdb.version>
+        <slf4j.version>1.7.36</slf4j.version>
+        <log4j.version>2.17.1</log4j.version>
+        <jaxb.api.version>2.3.1</jaxb.api.version>
+        <junit5.version>5.9.1</junit5.version>
+        <mockito.version>3.4.6</mockito.version>
+        <assertj.version>3.23.1</assertj.version>
+
+        <protobuf.version>3.16.3</protobuf.version>
+        <protostuff.version>1.7.2</protostuff.version>
+        <jibx.version>1.4.2</jibx.version>
+        <roaster.version>2.22.2.Final</roaster.version>
+        <jmh.version>1.27</jmh.version>
+
+        <spotless.version>2.27.1</spotless.version>
+        <spotless.scalafmt.version>3.4.3</spotless.scalafmt.version>
+        <spotless.delimiter>package</spotless.delimiter>
+        <spotless.license.header>
+            /*
+            * Copyright (c) 2024 Alibaba Group Holding Ltd.
+            *
+            * Licensed under the Apache License, Version 2.0 (the "License");
+            * you may not use this file except in compliance with the License.
+            * You may obtain a copy of the License at
+            *
+            *      http://www.apache.org/licenses/LICENSE-2.0
+            *
+            * Unless required by applicable law or agreed to in writing, software
+            * distributed under the License is distributed on an "AS IS" BASIS,
+            * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+            * See the License for the specific language governing permissions and
+            * limitations under the License.
+            */
+        </spotless.license.header>
+        <!-- The Surefire configurations override the <argLine> element using the @{argLine} notation which
+          allows to include any argLine defined by plugins executing before them (such as Jacoco). However, if no such
+          plugin executes before, the property is undefined and makes the tests fail. Thus we define an empty property
+          here to make sure it doesn't fail. See also https://issues.apache.org/jira/browse/SUREFIRE-1431 -->
+        <argLine/>
+    </properties>
+
+    <dependencies>
+        <!-- Root dependencies for all projects -->
+
+        <!-- Logging API -->
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-api</artifactId>
+        </dependency>
+
+        <!-- 'javax.annotation' classes like '@Nullable' -->
+        <dependency>
+            <groupId>com.google.code.findbugs</groupId>
+            <artifactId>jsr305</artifactId>
+        </dependency>
+
+        <!-- test dependencies -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.mockito</groupId>
+            <artifactId>mockito-core</artifactId>
+            <version>${mockito.version}</version>
+            <type>jar</type>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.assertj</groupId>
+            <artifactId>assertj-core</artifactId>
+            <version>${assertj.version}</version>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- tests will have log4j as the default logging framework available -->
+
+        <dependency>
+            <groupId>org.apache.logging.log4j</groupId>
+            <artifactId>log4j-slf4j-impl</artifactId>
+            <version>${log4j.version}</version>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.apache.logging.log4j</groupId>
+            <artifactId>log4j-api</artifactId>
+            <version>${log4j.version}</version>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.apache.logging.log4j</groupId>
+            <artifactId>log4j-core</artifactId>
+            <version>${log4j.version}</version>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <!-- API bridge between log4j 1 and 2 -->
+            <groupId>org.apache.logging.log4j</groupId>
+            <artifactId>log4j-1.2-api</artifactId>
+            <version>${log4j.version}</version>
+            <scope>test</scope>
+        </dependency>
+
+    </dependencies>
+
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>org.apache.hadoop</groupId>
+                <artifactId>hadoop-common</artifactId>
+                <version>${fluss.hadoop.version}</version>
+                <exclusions>
+                    <exclusion>
+                        <groupId>jdk.tools</groupId>
+                        <artifactId>jdk.tools</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>log4j</groupId>
+                        <artifactId>log4j</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>org.slf4j</groupId>
+                        <artifactId>slf4j-log4j12</artifactId>
+                    </exclusion>
+                </exclusions>
+            </dependency>
+
+            <dependency>
+                <groupId>org.apache.hadoop</groupId>
+                <artifactId>hadoop-hdfs</artifactId>
+                <version>${fluss.hadoop.version}</version>
+                <exclusions>
+                    <exclusion>
+                        <groupId>jdk.tools</groupId>
+                        <artifactId>jdk.tools</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>log4j</groupId>
+                        <artifactId>log4j</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>org.slf4j</groupId>
+                        <artifactId>slf4j-log4j12</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>ch.qos.reload4j</groupId>
+                        <artifactId>reload4j</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>org.slf4j</groupId>
+                        <artifactId>slf4j-reload4j</artifactId>
+                    </exclusion>
+                </exclusions>
+            </dependency>
+
+            <dependency>
+                <groupId>org.apache.hadoop</groupId>
+                <artifactId>hadoop-mapreduce-client-core</artifactId>
+                <version>${fluss.hadoop.version}</version>
+                <exclusions>
+                    <exclusion>
+                        <groupId>jdk.tools</groupId>
+                        <artifactId>jdk.tools</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>log4j</groupId>
+                        <artifactId>log4j</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>org.slf4j</groupId>
+                        <artifactId>slf4j-log4j12</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>ch.qos.reload4j</groupId>
+                        <artifactId>reload4j</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>org.slf4j</groupId>
+                        <artifactId>slf4j-reload4j</artifactId>
+                    </exclusion>
+                </exclusions>
+            </dependency>
+
+            <dependency>
+                <groupId>com.alibaba.fluss</groupId>
+                <artifactId>fluss-shaded-guava</artifactId>
+                <version>${guava.version}-${fluss.shaded.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>com.alibaba.fluss</groupId>
+                <artifactId>fluss-shaded-jackson</artifactId>
+                <version>${jackson.version}-${fluss.shaded.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>com.alibaba.fluss</groupId>
+                <artifactId>fluss-shaded-zookeeper</artifactId>
+                <version>${zookeeper.version}-${fluss.shaded.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>com.alibaba.fluss</groupId>
+                <artifactId>fluss-shaded-netty</artifactId>
+                <version>${netty.version}-${fluss.shaded.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>com.alibaba.fluss</groupId>
+                <artifactId>fluss-shaded-arrow</artifactId>
+                <version>${arrow.version}-${fluss.shaded.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>org.xerial.snappy</groupId>
+                <artifactId>snappy-java</artifactId>
+                <version>1.1.10.4</version>
+                <exclusions>
+                    <exclusion>
+                        <!-- Causes unnecessary dependency convergence errors; see MENFORCER-437 -->
+                        <groupId>org.osgi</groupId>
+                        <artifactId>org.osgi.core</artifactId>
+                    </exclusion>
+                </exclusions>
+            </dependency>
+
+            <dependency>
+                <groupId>com.ververica</groupId>
+                <artifactId>frocksdbjni</artifactId>
+                <version>${frocksdb.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>org.apache.commons</groupId>
+                <artifactId>commons-math3</artifactId>
+                <version>3.6.1</version>
+            </dependency>
+
+            <dependency>
+                <groupId>com.fasterxml.jackson</groupId>
+                <artifactId>jackson-bom</artifactId>
+                <type>pom</type>
+                <scope>import</scope>
+                <version>${jackson.version}</version>
+            </dependency>
+
+            <!-- This manages the 'javax.annotation' annotations (JSR305) -->
+            <dependency>
+                <groupId>com.google.code.findbugs</groupId>
+                <artifactId>jsr305</artifactId>
+                <version>1.3.9</version>
+            </dependency>
+
+            <dependency>
+                <groupId>org.slf4j</groupId>
+                <artifactId>slf4j-api</artifactId>
+                <version>${slf4j.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>org.apache.logging.log4j</groupId>
+                <artifactId>log4j-slf4j-impl</artifactId>
+                <version>${log4j.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>org.apache.logging.log4j</groupId>
+                <artifactId>log4j-api</artifactId>
+                <version>${log4j.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>org.apache.logging.log4j</groupId>
+                <artifactId>log4j-core</artifactId>
+                <version>${log4j.version}</version>
+            </dependency>
+
+            <dependency>
+                <!-- API bridge between log4j 1 and 2 -->
+                <groupId>org.apache.logging.log4j</groupId>
+                <artifactId>log4j-1.2-api</artifactId>
+                <version>${log4j.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>org.apache.commons</groupId>
+                <artifactId>commons-lang3</artifactId>
+                <version>3.12.0</version>
+            </dependency>
+
+            <dependency>
+                <groupId>org.junit</groupId>
+                <artifactId>junit-bom</artifactId>
+                <version>${junit5.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+
+            <dependency>
+                <groupId>org.assertj</groupId>
+                <artifactId>assertj-core</artifactId>
+                <version>${assertj.version}</version>
+                <scope>test</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <profiles>
+        <profile>
+            <id>test-coverage</id>
+            <properties>
+                <test.skip.coverage>false</test.skip.coverage>
+            </properties>
+        </profile>
+
+        <profile>
+            <!-- used for SNAPSHOT and regular releases -->
+            <id>docs-and-source</id>
+            <activation>
+                <property>
+                    <name>docs-and-source</name>
+                </property>
+            </activation>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-source-plugin</artifactId>
+                        <version>3.2.1</version>
+                        <executions>
+                            <execution>
+                                <id>attach-sources</id>
+                                <goals>
+                                    <goal>jar-no-fork</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-javadoc-plugin</artifactId>
+                        <configuration>
+                            <quiet>true</quiet>
+                        </configuration>
+                        <executions>
+                            <execution>
+                                <id>attach-javadocs</id>
+                                <goals>
+                                    <goal>jar</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-jar-plugin</artifactId>
+                <version>2.4</version><!--$NO-MVN-MAN-VER$-->
+                <configuration>
+                    <archive>
+                        <!-- Globally exclude maven metadata, because it may accidentally bundle files we don't intend to -->
+                        <addMavenDescriptor>false</addMavenDescriptor>
+                        <manifest>
+                            <addDefaultImplementationEntries>true</addDefaultImplementationEntries>
+                            <addDefaultSpecificationEntries>true</addDefaultSpecificationEntries>
+                        </manifest>
+                    </archive>
+                </configuration>
+            </plugin>
+
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+            </plugin>
+
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-checkstyle-plugin</artifactId>
+            </plugin>
+
+            <plugin>
+                <groupId>org.apache.rat</groupId>
+                <artifactId>apache-rat-plugin</artifactId>
+                <version>0.15</version>
+                <inherited>false</inherited>
+                <executions>
+                    <execution>
+                        <phase>verify</phase>
+                        <goals>
+                            <goal>check</goal>
+                        </goals>
+                    </execution>
+                </executions>
+                <configuration>
+                    <excludeSubProjects>false</excludeSubProjects>
+                    <numUnapprovedLicenses>0</numUnapprovedLicenses>
+                    <licenses>
+                        <!-- Enforce this license:
+                            Copyright (c) 2024 Alibaba Group Holding Ltd.
+
+                            Licensed under the Apache License, Version 2.0 (the "License");
+                            you may not use this file except in compliance with the License.
+                            You may obtain a copy of the License at
+
+                                 http://www.apache.org/licenses/LICENSE-2.0
+
+                            Unless required by applicable law or agreed to in writing, software
+                            distributed under the License is distributed on an "AS IS" BASIS,
+                            WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+                            See the License for the specific language governing permissions and
+                            limitations under the License.
+                        -->
+                        <license
+                            implementation="org.apache.rat.analysis.license.SimplePatternBasedLicense">
+                            <licenseFamilyCategory>AL2</licenseFamilyCategory>
+                            <licenseFamilyName>Apache License 2.0</licenseFamilyName>
+                            <notes/>
+                            <patterns>
+                                <pattern>Licensed to the Apache Software Foundation (ASF) under
+                                    one
+                                </pattern>
+                            </patterns>
+                        </license>
+                    </licenses>
+                    <licenseFamilies>
+                        <licenseFamily implementation="org.apache.rat.license.SimpleLicenseFamily">
+                            <familyName>Apache License 2.0</familyName>
+                        </licenseFamily>
+                    </licenseFamilies>
+                    <excludes>
+                        <!-- Additional files like .gitignore etc.-->
+                        <exclude>**/.*/**</exclude>
+                        <exclude>**/*.prefs</exclude>
+                        <exclude>**/*.log</exclude>
+                        <!-- Administrative files in the main trunk. -->
+                        <exclude>**/README.md</exclude>
+                        <exclude>**/CODE_OF_CONDUCT.md</exclude>
+                        <exclude>.github/**</exclude>
+                        <!-- IDE files. -->
+                        <exclude>**/*.iml</exclude>
+                        <exclude>**/.idea/**</exclude>
+                        <!-- Generated content -->
+                        <exclude>**/target/**</exclude>
+                        <exclude>build-target/**</exclude>
+                        <exclude>**/scalastyle-output.xml</exclude>
+                        <exclude>**/*.svg</exclude>
+                        <exclude>**/dependency-reduced-pom.xml</exclude>
+                        <!-- Bundled license files -->
+                        <exclude>**/LICENSE*</exclude>
+                        <!-- artifacts created during release process -->
+                        <exclude>tools/releasing/release/**</exclude>
+                        <!-- Configuration Files. -->
+                        <exclude>**/fluss-bin/conf/servers</exclude>
+                    </excludes>
+                </configuration>
+            </plugin>
+
+            <plugin>
+                <groupId>com.diffplug.spotless</groupId>
+                <artifactId>spotless-maven-plugin</artifactId>
+            </plugin>
+
+            <!--surefire for unit tests and integration tests-->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>3.0.0-M5</version>
+                <configuration>
+                    <forkCount>${fluss.forkCount}</forkCount>
+                    <reuseForks>${fluss.reuseForks}</reuseForks>
+                    <trimStackTrace>false</trimStackTrace>
+                    <systemPropertyVariables>
+                        <forkNumber>0${surefire.forkNumber}</forkNumber>
+                        <project.basedir>${project.basedir}</project.basedir>
+                        <!--suppress MavenModelInspection -->
+                        <test.randomization.seed>${test.randomization.seed}
+                        </test.randomization.seed>
+                        <!-- for junit5 -->
+                        <junit.jupiter.extensions.autodetection.enabled>true
+                        </junit.jupiter.extensions.autodetection.enabled>
+                        <!-- Enabled the parallel test execution feature. -->
+                        <!-- Tests and test classes can be enabled for concurrent execution using @Execution(ExecutionMode.CONCURRENT). -->
+                        <junit.jupiter.execution.parallel.enabled>true
+                        </junit.jupiter.execution.parallel.enabled>
+                        <!-- Tests are by default executed by a single thread; parallel execution is opt-in. -->
+                        <junit.jupiter.execution.parallel.mode.default>same_thread
+                        </junit.jupiter.execution.parallel.mode.default>
+                        <!-- Tests suites are by default executed by a single thread; parallel execution is opt-in. -->
+                        <junit.jupiter.execution.parallel.mode.classes.default>same_thread
+                        </junit.jupiter.execution.parallel.mode.classes.default>
+                        <!-- automatically adjust parallelism based on available cpu/processor cores-->
+                        <junit.jupiter.execution.parallel.config.strategy>dynamic
+                        </junit.jupiter.execution.parallel.config.strategy>
+                    </systemPropertyVariables>
+                    <argLine>@{argLine} -Xms256m -Xmx2048m -Dmvn.forkNumber=${surefire.forkNumber}
+                        -XX:+UseG1GC
+                    </argLine>
+                </configuration>
+                <executions>
+                    <!--execute all the unit tests-->
+                    <execution>
+                        <id>default-test</id>
+                        <phase>test</phase>
+                        <goals>
+                            <goal>test</goal>
+                        </goals>
+                        <configuration>
+                            <includes>
+                                <include>${test.unit.pattern}</include>
+                            </includes>
+                        </configuration>
+                    </execution>
+                    <!--execute all the integration tests-->
+                    <execution>
+                        <id>integration-tests</id>
+                        <phase>integration-test</phase>
+                        <goals>
+                            <goal>test</goal>
+                        </goals>
+                        <configuration>
+                            <includes>
+                                <include>**/*.*</include>
+                            </includes>
+                            <excludes>
+                                <exclude>${test.unit.pattern}</exclude>
+                            </excludes>
+                            <reuseForks>false</reuseForks>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <!-- Jacoco for test code coverage -->
+            <plugin>
+                <groupId>org.jacoco</groupId>
+                <artifactId>jacoco-maven-plugin</artifactId>
+            </plugin>
+
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-enforcer-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>enforce-maven</id>
+                        <goals>
+                            <goal>enforce</goal>
+                        </goals>
+                        <configuration>
+                            <rules>
+                                <requireMavenVersion>
+                                    <!-- enforce at least mvn version 3.1.1 (see FLINK-12447) -->
+                                    <version>[3.1.1,)</version>
+                                </requireMavenVersion>
+                                <requireJavaVersion>
+                                    <version>${target.java.version}</version>
+                                </requireJavaVersion>
+                            </rules>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>ban-unsafe-snakeyaml</id>
+                        <goals>
+                            <goal>enforce</goal>
+                        </goals>
+                        <configuration>
+                            <rules>
+                                <bannedDependencies>
+                                    <excludes>
+                                        <exclude>org.yaml:snakeyaml:(,1.31]</exclude>
+                                    </excludes>
+                                    <includes>
+                                        <!-- Snakeyaml is pulled in by many modules without using it in production,
+                                            so there's no benefit in us investing time into bumping these. -->
+                                        <include>org.yaml:snakeyaml:(,1.31]:*:test</include>
+                                    </includes>
+                                    <message>Older snakeyaml versions are not allowed due to
+                                        security vulnerabilities.
+                                    </message>
+                                </bannedDependencies>
+                            </rules>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>ban-unsafe-jackson</id>
+                        <goals>
+                            <goal>enforce</goal>
+                        </goals>
+                        <configuration>
+                            <rules>
+                                <bannedDependencies>
+                                    <excludes>
+                                        <exclude>com.fasterxml.jackson*:*:(,2.12.0]</exclude>
+                                    </excludes>
+                                    <message>Older jackson versions are not allowed due to security
+                                        vulnerabilities.
+                                    </message>
+                                </bannedDependencies>
+                            </rules>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>forbid-log4j-1</id>
+                        <goals>
+                            <goal>enforce</goal>
+                        </goals>
+                        <configuration>
+                            <rules>
+                                <bannedDependencies>
+                                    <excludes>
+                                        <exclude>log4j:log4j</exclude>
+                                        <exclude>org.slf4j:slf4j-log4j12</exclude>
+                                        <exclude>ch.qos.reload4j:reload4j</exclude>
+                                        <exclude>org.slf4j:slf4j-reload4j</exclude>
+                                    </excludes>
+                                    <message>Log4j 1 and Reload4J dependencies are not allowed
+                                        because they conflict with Log4j 2. If the dependency
+                                        absolutely requires the Log4j 1 API, use
+                                        'org.apache.logging.log4j:log4j-1.2-api'.
+                                    </message>
+                                </bannedDependencies>
+                            </rules>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>dependency-convergence</id>
+                        <!-- disabled by default as it interacts badly with shade-plugin -->
+                        <phase>none</phase>
+                        <goals>
+                            <goal>enforce</goal>
+                        </goals>
+                        <configuration>
+                            <rules>
+                                <dependencyConvergence/>
+                            </rules>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-shade-plugin</artifactId>
+                <configuration>
+                    <!-- This section contains the core configuration that is applied to every jar that we create.-->
+                    <filters combine.children="append">
+                        <filter>
+                            <artifact>*</artifact>
+                            <excludes>
+                                <!-- Globally exclude log4j.properties from our JAR files. -->
+                                <exclude>log4j.properties</exclude>
+                                <exclude>log4j2.properties</exclude>
+                                <exclude>log4j-test.properties</exclude>
+                                <exclude>log4j2-test.properties</exclude>
+                                <!-- Do not copy the signatures in the META-INF folder.
+                                Otherwise, this might cause SecurityExceptions when using the JAR. -->
+                                <exclude>META-INF/*.SF</exclude>
+                                <exclude>META-INF/*.DSA</exclude>
+                                <exclude>META-INF/*.RSA</exclude>
+                                <!-- META-INF/maven can contain 2 things:
+                                    - For archetypes, it contains an archetype-metadata.xml.
+                                    - For other jars, it contains the pom for all dependencies under the respective <groupId>/<artifactId>/ directory.
+
+                                     We want to exclude the poms because they may be under an incompatible license,
+                                     however the archetype metadata is required and we need to keep that around.
+
+                                     This pattern excludes directories under META-INF/maven.
+                                     ('?*/**' does not work because '**' also matches zero directories;
+                                     everything that matches '?*' also matches '?*/**')
+
+                                    The initial '**' allows the pattern to also work for multi-release jars that may contain such entries under
+                                    'META-INF/versions/11/META-INF/maven/'.
+                                     -->
+                                <exclude>**/META-INF/maven/?*/?*/**</exclude>
+                            </excludes>
+                        </filter>
+                    </filters>
+                    <artifactSet>
+                        <includes>
+                            <!-- copied from flink -->
+                            <!-- Unfortunately, the next line is necessary for now to force the execution
+                            of the Shade plugin upon all sub modules. This will generate effective poms,
+                            i.e. poms which do not contain properties which are derived from this root pom.
+                            In particular, the Scala version properties are defined in the root pom and without
+                            shading, the root pom would have to be Scala suffixed and thereby all other modules.
+                            -->
+                            <include>org.apache.flink:force-shading</include>
+                        </includes>
+                    </artifactSet>
+                    <transformers combine.children="append">
+                        <!-- The service transformer is needed to merge META-INF/services files -->
+                        <transformer
+                            implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
+                        <!-- The ApacheNoticeResourceTransformer collects and aggregates NOTICE files -->
+                        <transformer
+                            implementation="org.apache.maven.plugins.shade.resource.ApacheNoticeResourceTransformer">
+                            <projectName>Fluss</projectName>
+                            <encoding>UTF-8</encoding>
+                        </transformer>
+                    </transformers>
+                </configuration>
+                <executions>
+                    <execution>
+                        <id>shade-fluss</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>shade</goal>
+                        </goals>
+                        <configuration>
+                            <!-- Shading test jar have bug in some previous version, so close this configuration here,
+                            see https://issues.apache.org/jira/browse/MSHADE-284 -->
+                            <shadeTestJar>false</shadeTestJar>
+                            <shadedArtifactAttached>false</shadedArtifactAttached>
+                            <createDependencyReducedPom>true</createDependencyReducedPom>
+                            <!-- Filters MUST be appended; merging filters does not work properly, see MSHADE-305 -->
+                            <filters combine.children="append">
+                                <!-- io.netty:netty brings its own LICENSE.txt which we don't need -->
+                                <filter>
+                                    <artifact>io.netty:netty</artifact>
+                                    <excludes>
+                                        <exclude>META-INF/LICENSE.txt</exclude>
+                                    </excludes>
+                                </filter>
+                            </filters>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+
+        </plugins>
+
+        <pluginManagement>
+            <plugins>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-compiler-plugin</artifactId>
+                    <version>3.8.0</version>
+                    <configuration>
+                        <source>${target.java.version}</source>
+                        <target>${target.java.version}</target>
+                        <!-- The semantics of this option are reversed, see MCOMPILER-209. -->
+                        <useIncrementalCompilation>false</useIncrementalCompilation>
+                        <compilerArgs>
+                            <!-- Prevents recompilation due to missing package-info.class, see MCOMPILER-205 -->
+                            <arg>-Xpkginfo:always</arg>
+                        </compilerArgs>
+                    </configuration>
+                </plugin>
+
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-checkstyle-plugin</artifactId>
+                    <version>3.1.2</version>
+                    <dependencies>
+                        <dependency>
+                            <groupId>com.puppycrawl.tools</groupId>
+                            <artifactId>checkstyle</artifactId>
+                            <!-- Note: match version with docs/flinkDev/ide_setup.md -->
+                            <version>8.14</version>
+                        </dependency>
+                    </dependencies>
+                    <executions>
+                        <execution>
+                            <id>validate</id>
+                            <phase>validate</phase>
+                            <goals>
+                                <goal>check</goal>
+                            </goals>
+                        </execution>
+                    </executions>
+                    <configuration>
+                        <suppressionsLocation>/tools/maven/suppressions.xml</suppressionsLocation>
+                        <includeTestSourceDirectory>true</includeTestSourceDirectory>
+                        <configLocation>/tools/maven/checkstyle.xml</configLocation>
+                        <logViolationsToConsole>true</logViolationsToConsole>
+                        <failOnViolation>true</failOnViolation>
+                    </configuration>
+                </plugin>
+
+                <plugin>
+                    <groupId>com.diffplug.spotless</groupId>
+                    <artifactId>spotless-maven-plugin</artifactId>
+                    <version>${spotless.version}</version>
+                    <configuration>
+                        <java>
+                            <googleJavaFormat>
+                                <version>1.7</version>
+                                <style>AOSP</style>
+                            </googleJavaFormat>
+
+                            <!-- \# refers to the static imports -->
+                            <importOrder>
+                                <order>
+                                    com.alibaba.fluss,,javax,java,scala,\#
+                                </order>
+                            </importOrder>
+
+                            <removeUnusedImports/>
+                        </java>
+                    </configuration>
+                    <executions>
+                        <execution>
+                            <id>spotless-check</id>
+                            <phase>validate</phase>
+                            <goals>
+                                <goal>check</goal>
+                            </goals>
+                        </execution>
+                    </executions>
+                </plugin>
+
+                <plugin>
+                    <groupId>org.jacoco</groupId>
+                    <artifactId>jacoco-maven-plugin</artifactId>
+                    <version>0.8.11</version>
+                    <configuration>
+                        <skip>${test.skip.coverage}</skip>
+                    </configuration>
+                    <executions>
+                        <execution>
+                            <id>prepare-agent</id>
+                            <goals>
+                                <goal>prepare-agent</goal>
+                            </goals>
+                        </execution>
+                    </executions>
+                </plugin>
+
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-javadoc-plugin</artifactId>
+                    <version>2.9.1</version><!--$NO-MVN-MAN-VER$-->
+                    <configuration>
+                        <quiet>true</quiet>
+                        <detectOfflineLinks>false</detectOfflineLinks>
+                        <additionalJOptions combine.children="append">
+                            <additionalJOption>-Xdoclint:none</additionalJOption>
+                        </additionalJOptions>
+                    </configuration>
+                </plugin>
+
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-enforcer-plugin</artifactId>
+                    <version>3.1.0</version>
+                </plugin>
+
+                <!-- Pin the version of the maven shade plugin -->
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-shade-plugin</artifactId>
+                    <version>3.4.1</version>
+                </plugin>
+
+                <plugin>
+                    <!-- Inherited from Apache parent, but not actually used. Disable to reduce noise. -->
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-site-plugin</artifactId>
+                    <executions>
+                        <execution>
+                            <id>attach-descriptor</id>
+                            <phase>none</phase>
+                        </execution>
+                    </executions>
+                </plugin>
+
+            </plugins>
+        </pluginManagement>
+    </build>
+
+</project>
