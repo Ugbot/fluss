@@ -90,7 +90,7 @@
         <mockito.version>3.4.6</mockito.version>
         <assertj.version>3.23.1</assertj.version>
 
-        <protobuf.version>3.16.3</protobuf.version>
+        <protobuf.version>3.25.5</protobuf.version>
         <protostuff.version>1.7.2</protostuff.version>
         <jibx.version>1.4.2</jibx.version>
         <roaster.version>2.22.2.Final</roaster.version>
