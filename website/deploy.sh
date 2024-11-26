@@ -16,5 +16,6 @@
 #
 
 # docusaurus currently has bug with css minify, so we need to skip it
-docusaurus build --no-minify
-docusaurus deploy --skip-build
+npm run clear
+npm run build -- --no-minify
+npm run deploy -- --skip-build
