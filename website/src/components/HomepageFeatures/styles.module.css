@@ -1,0 +1,49 @@
+.features {
+  display: flex;
+  align-items: center;
+  padding: 2rem 0;
+  width: 100%;
+  background: #F7F9FE;
+}
+
+.featureSvg {
+  height: 48px;
+  width: 48px;
+}
+
+.core_features {
+    background-color: white;
+    padding: 2.5rem 2rem 3.375rem;
+    border-radius: 8px;
+    height: calc(100% - 5rem);
+    text-align: left;
+}
+
+.core_features_title {
+    font-size: 1.25rem;
+    font-weight: 500;
+    line-height: 1.6;
+    margin-bottom: 0.75rem;
+}
+
+.core_features_content {
+    font-size: 1rem;
+    font-weight: 400;
+    line-height: 1.875;
+}
+
+.core_features_icon {
+    width: 4rem;
+    height: 4rem;
+    background-color: white;
+    position: relative;
+    transform: translateY(50%);
+    border-radius: 50%;
+    left: 1.5rem;
+    svg {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+    }
+}

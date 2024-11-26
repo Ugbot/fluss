@@ -1,0 +1,10 @@
+.introduce {
+  display: flex;
+  align-items: center;
+  padding: 2rem 0;
+  width: 100%;
+
+  h1 {
+    font-size: 2.5rem;
+  }
+}
