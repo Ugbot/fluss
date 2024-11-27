@@ -29,11 +29,12 @@ You can also do streaming read without reading the snapshot data, you can use `l
 SELECT * FROM my_table /*+ OPTIONS('scan.startup.mode' = 'latest') */;
 ```
 
-## Limit Read
+## Batch Read
 
+### Limit Read
 The Fluss sources supports limiting reads for both primary-key tables and log tables, making it convenient to preview the latest `N` records in a table.
 
-### Example
+#### Example
 1. Create a table and prepare data
 ```sql
 CREATE TABLE log_table (
@@ -47,10 +48,10 @@ CREATE TABLE log_table (
     `c_comment` STRING NOT NULL
 );
 
-INSERT INTO `my-catalog`.`my_db`.`log_table`
+INSERT INTO log_table
 VALUES (1, 'Customer1', 'IVhzIApeRb ot,c,E', 15, '25-989-741-2988', 711.56, 'BUILDING', 'comment1'),
        (2, 'Customer2', 'XSTf4,NCwDVaWNe6tEgvwfmRchLXak', 13, '23-768-687-3665', 121.65, 'AUTOMOBILE', 'comment2'),
-       (3, 'Customer3', 'MG9kdTD2WBHm', 1, '11-719-748-3364', 7498.12, 'AUTOMOBILE', 'comment3')
+       (3, 'Customer3', 'MG9kdTD2WBHm', 1, '11-719-748-3364', 7498.12, 'AUTOMOBILE', 'comment3');
 ;
 ```
 
@@ -63,11 +64,12 @@ SET 'sql-client.execution.result-mode' = 'tableau';
 SELECT * FROM log_table LIMIT 10;
 ```
 
-## Point Query
+
+### Point Query
 
 The Fluss source supports point queries for primary-key tables, allowing you to inspect specific records efficiently. Currently, this functionality is exclusive to primary-key tables.
 
-### Example
+#### Example
 1. Create a table and prepare data
 ```sql
 CREATE TABLE pk_table (
@@ -81,10 +83,10 @@ CREATE TABLE pk_table (
     `c_comment` STRING NOT NULL,
     PRIMARY KEY (c_custkey) NOT ENFORCED
 );
-INSERT INTO `my-catalog`.`my_db`.`pk_table`
+INSERT INTO pk_table
 VALUES (1, 'Customer1', 'IVhzIApeRb ot,c,E', 15, '25-989-741-2988', 711.56, 'BUILDING', 'comment1'),
        (2, 'Customer2', 'XSTf4,NCwDVaWNe6tEgvwfmRchLXak', 13, '23-768-687-3665', 121.65, 'AUTOMOBILE', 'comment2'),
-       (3, 'Customer3', 'MG9kdTD2WBHm', 1, '11-719-748-3364', 7498.12, 'AUTOMOBILE', 'comment3')
+       (3, 'Customer3', 'MG9kdTD2WBHm', 1, '11-719-748-3364', 7498.12, 'AUTOMOBILE', 'comment3');
 ;
 ```
 
@@ -97,6 +99,15 @@ SET 'sql-client.execution.result-mode' = 'tableau';
 SELECT * FROM pk_table WHERE c_custkey = 1;
 ```
 
+### Aggregations
+The Fluss source support pushdown count aggregation for the log table in batch mode. It is useful to preview the total number of the log table;
+```sql
+-- Execute the flink job in batch mode for current session context
+SET 'execution.runtime-mode' = 'batch';
+SET 'sql-client.execution.result-mode' = 'tableau';
+
+SELECT COUNT(*) FROM log_table;
+```
 
 
 ## Read Options
@@ -109,20 +120,20 @@ The scan startup mode enables you to specify the starting point for data consump
 - `timestamp`: For primary key tables, it starts consuming the changelog from a specified time (defined by the configuration item `scan.startup.timestamp`); for log tables, it starts consuming from the offset corresponding to the specified time.
 
 
-You can dynamically apply the scan parameters via SQL hints. For instance, the following SQL statement temporarily sets the `scan.startup.mode` to latest when consuming the my_table table.
+You can dynamically apply the scan parameters via SQL hints. For instance, the following SQL statement temporarily sets the `scan.startup.mode` to latest when consuming the `log_table` table.
 ```sql 
-SELECT * FROM my_table /*+ OPTIONS('scan.startup.mode' = 'latest') */;
+SELECT * FROM log_table /*+ OPTIONS('scan.startup.mode' = 'latest') */;
 ```
 
-Also, the following SQL statement temporarily sets the `scan.startup.mode` to timestamp when consuming the my_table table.
+Also, the following SQL statement temporarily sets the `scan.startup.mode` to timestamp when consuming the `log_table` table.
 ```sql 
 -- timestamp mode with microseconds.
-SELECT * FROM my_table
+SELECT * FROM log_table
 /*+ OPTIONS('scan.startup.mode' = 'timestamp',
 'scan.startup.timestamp' = '1678883047356') */;
 
 -- timestamp mode with a time string format
-SELECT * FROM my_table
+SELECT * FROM log_table
 /*+ OPTIONS('scan.startup.mode' = 'timestamp',
 'scan.startup.timestamp' = '2023-12-09 23:09:12') */;
 ```
