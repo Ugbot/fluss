@@ -43,6 +43,22 @@
         </license>
     </licenses>
 
+    <scm>
+        <url>https://github.com/alibaba/fluss</url>
+        <connection>git@github.com:alibaba/fluss.git</connection>
+    </scm>
+
+    <distributionManagement>
+        <snapshotRepository>
+            <id>ossrh</id>
+            <url>https://oss.sonatype.org/content/repositories/snapshots</url>
+        </snapshotRepository>
+        <repository>
+            <id>ossrh</id>
+            <url>https://oss.sonatype.org/service/local/staging/deploy/maven2/</url>
+        </repository>
+    </distributionManagement>
+
     <modules>
         <module>fluss-common</module>
         <module>fluss-metrics</module>
@@ -405,14 +421,28 @@
 
         <profile>
             <!-- used for SNAPSHOT and regular releases -->
-            <id>docs-and-source</id>
+            <id>release</id>
             <activation>
                 <property>
-                    <name>docs-and-source</name>
+                    <name>release</name>
                 </property>
             </activation>
             <build>
                 <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-gpg-plugin</artifactId>
+                        <version>1.4</version>
+                        <executions>
+                            <execution>
+                                <id>sign-artifacts</id>
+                                <phase>verify</phase>
+                                <goals>
+                                    <goal>sign</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
                     <plugin>
                         <groupId>org.apache.maven.plugins</groupId>
                         <artifactId>maven-source-plugin</artifactId>
@@ -554,6 +584,7 @@
                         <exclude>website/package.json</exclude>
                         <exclude>website/package-lock.json</exclude>
                         <exclude>website/static/**</exclude>
+                        <exclude>website/build/**</exclude>
                         <exclude>website/node_modules/**</exclude>
                     </excludes>
                 </configuration>
