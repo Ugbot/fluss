@@ -18,16 +18,16 @@ To enabled OSS as remote storage, there are some required configurations that mu
 # The dir that used to be as the remote storage of Fluss
 remote.data.dir: oss://<your-bucket>/path/to/remote/storage
 # Aliyun OSS endpoint to connect to, such as: oss-cn-hangzhou.aliyuncs.com
-fs.oss.endpoint:
+fs.oss.endpoint: <your-endpoint>
 # Aliyun access key ID
-fs.oss.accessKeyId:
+fs.oss.accessKeyId: <your-access-key>
 # Aliyun access key secret
-fs.oss.accessKeySecret:
+fs.oss.accessKeySecret: <your-secret-key>
 
 # Aliyun STS endpoint to connect to obtain a STS token, such as: sts.cn-hangzhou.aliyuncs.com
-fs.oss.sts.endpoint:
+fs.oss.sts.endpoint: <your-sts-endpoint>
 # For the role of the STS token obtained from the STS endpoint, such as: acs:ram::123456789012:role/testrole
-fs.oss.roleArn:
+fs.oss.roleArn: <your-role-arn>
 ```
 
 ## Token-based Authentication
