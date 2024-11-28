@@ -39,6 +39,9 @@ USE my_db;
 To delete a database, this will drop all the tables in the database as well:
 
 ```sql
+-- Flink doesn't allow drop current database, switch to Fluss default database
+USE fluss;
+-- drop the database
 DROP DATABASE my_db;
 ```
 
@@ -130,7 +133,7 @@ To create a table with the same schema, partitioning, and table properties as an
 
 ```sql
 -- there is a temporary datagen table
-CREATE TEMPORARY TABLE my_table (
+CREATE TEMPORARY TABLE datagen (
     user_id BIGINT,
     item_id BIGINT,
     behavior STRING,
@@ -142,7 +145,7 @@ CREATE TEMPORARY TABLE my_table (
 );
 
 -- creates Fluss table which derives the metadata from the temporary table excluding options
-CREATE TABLE my_table_like LIKE my_table (EXCLUDING OPTIONS);
+CREATE TABLE my_table LIKE datagen (EXCLUDING OPTIONS);
 ```
 For more details, refer to the [Flink CREATE TABLE](https://nightlies.apache.org/flink/flink-docs-release-1.20/docs/dev/table/sql/create/#like) documentation.
 
