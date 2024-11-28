@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <a href="https://alibaba.github.io/fluss-docs/docs/">Documentation</a> | <a href="https://alibaba.github.io/fluss-docs/docs/quickstart/flink/">QuickStart</a> | <a href="https://alibaba.github.io/fluss-docs/docs/dev/ide-setup/">Development</a>
+  <a href="https://alibaba.github.io/fluss-docs/docs/intro/">Documentation</a> | <a href="https://alibaba.github.io/fluss-docs/docs/quickstart/flink/">QuickStart</a> | <a href="https://alibaba.github.io/fluss-docs/docs/dev/ide-setup/">Development</a>
 </p>
 
 ## What is Fluss?
