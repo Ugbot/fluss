@@ -125,7 +125,16 @@ docker-compose exec jobmanager ./sql-client
 ```
 
 **Note**:
-To simplify this guide, three temporary tables have been pre-created with `faker` to generate data. You can view their schemas by running the following commands: `DESCRIBE TABLE source_customer`, `DESCRIBE TABLE source_order`, and `DESCRIBE TABLE source_nation`.
+To simplify this guide, three temporary tables have been pre-created with `faker` connector to generate data.
+You can view their schemas by running the following commands:
+
+```sql title="Flink SQL Client"
+SHOW CREATE TABLE source_customer;
+
+SHOW CREATE TABLE source_order;
+
+SHOW CREATE TABLE source_nation;
+```
 
 ## Create Fluss Tables
 ### Create Fluss Catalog
