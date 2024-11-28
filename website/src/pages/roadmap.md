@@ -11,10 +11,11 @@ Fluss will support the Kafka network protocol to enable users to use Fluss as a 
 
 Fluss will provide deep integration with Apache Flink, enabling users a single engine experience for building real-time analytics applications.
 The integration will include:
+- Support for Flink **DataStream API** to read/write data from/to Fluss.
+- Support new [Delta Join](https://cwiki.apache.org/confluence/display/FLINK/FLIP-486%3A+Introduce+A+New+DeltaJoin) to address the pain-points of Stream-Stream Join.
 - More pushdown optimizations: Filter Pushdown, Partition Pruning, Aggregation Pushdown, etc.
 - Upgrade the Rule-Based Optimization into Cost-Based Optimization in Flink SQL streaming planner with leveraging statistics in Fluss tables.
-- Support new [Delta Join](https://cwiki.apache.org/confluence/display/FLINK/FLIP-486%3A+Introduce+A+New+DeltaJoin) to address the pain-points of Stream-Stream Join.
-- Support for Flink DataStream API to read/write data from/to Fluss.
+
 
 ## Streaming Lakehouse
 
@@ -34,6 +35,13 @@ This transition aims to streamline operations and enhance system reliability.
 - Support for schema evolution.
 - Support for secondary index for Delta Join with Flink.
 - Support for buckets rescale.
+
+## Zero Disks
+
+Fluss currently utilizes a tiered storage architecture to significantly reduce storage costs and operational complexities.
+However, the Fluss community is actively investing in the Zero Disk architecture,
+which aims to completely replace local disks with S3 storage. This transition will enable Fluss to achieve a
+serverless, stateless, and elastic design, significantly minimizing operational overhead while eliminating inter-zone networking costs.
 
 ## Maintenance
 
