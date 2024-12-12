@@ -140,11 +140,11 @@ public class FlussLogScannerITCase extends ClientToServerITCaseBase {
 
             LogScanner logScanner = table.getLogScanner(new LogScan());
             ExecutorService executor = Executors.newSingleThreadExecutor();
-            // subscribe in thead1
+            // subscribe in thread1
             executor.submit(() -> logScanner.subscribe(0, LogScanner.EARLIEST_OFFSET)).get();
             // subscribe again in main thread
             logScanner.subscribe(1, LogScanner.EARLIEST_OFFSET);
-            // subscribe again in thead1
+            // subscribe again in thread1
             executor.submit(() -> logScanner.subscribeFromBeginning(2)).get();
 
             // should be able to poll data from all buckets

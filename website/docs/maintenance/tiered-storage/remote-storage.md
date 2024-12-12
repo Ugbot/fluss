@@ -4,7 +4,7 @@ sidebar_position: 2
 
 # Remote Storage
 
-Remote storage usually means a cost efficient and fault-tolerant storage comparing to local disk, such as S3, HDFS, OSS.
+Remote storage usually means a cost-efficient and fault-tolerant storage comparing to local disk, such as S3, HDFS, OSS.
 See more detail about how to configure remote storage in documentation of [filesystems](../../maintenance/filesystems/overview.md).
 
 For log table, Fluss will use remote storage to store the tiered log segments of data. For primary key table, Fluss will use remote storage to store the snapshot as well as the tiered log segments for change log.
@@ -33,7 +33,7 @@ Below is the list for all configurations to control the log segments tiered beha
 ### Table configurations about remote log
 
 When local log segments are copied to remote storage, the local log segments will be deleted to reduce local disk cost.
-But some times, we want to keep the several latest log segments retain in local although they has been coped to remote storage for better read performance.
+But sometimes, we want to keep the several latest log segments retain in local, although they have been coped to remote storage for better read performance.
 You can control how many log segments to retain in local by setting the configuration `table.log.tiered.local-segments`(default is 2) per table.
 
 ## Remote snapshot of primary key table

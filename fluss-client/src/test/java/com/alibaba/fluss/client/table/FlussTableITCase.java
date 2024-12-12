@@ -413,7 +413,7 @@ class FlussTableITCase extends ClientToServerITCaseBase {
         createTable(DATA1_TABLE_PATH_PK, tableDescriptor, true);
 
         try (Table table = conn.getTable(DATA1_TABLE_PATH_PK)) {
-            // the target columns doesn't contains the primary column, should
+            // the target columns doesn't contain the primary column, should
             // throw exception
             assertThatThrownBy(
                             () ->
