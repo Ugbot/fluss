@@ -80,7 +80,7 @@ class FlussAdminITCase extends ClientToServerITCaseBase {
             TableDescriptor.builder()
                     .schema(DEFAULT_SCHEMA)
                     .comment("test table")
-                    .distributedBy(10, "id")
+                    .distributedBy(3, "id")
                     .property(ConfigOptions.TABLE_LOG_TTL, Duration.ofDays(1))
                     .customProperty("connector", "fluss")
                     .build();
@@ -350,7 +350,7 @@ class FlussAdminITCase extends ClientToServerITCaseBase {
                                         .column("pt", DataTypes.STRING())
                                         .build())
                         .comment("test table")
-                        .distributedBy(10, "id")
+                        .distributedBy(3, "id")
                         .partitionedBy("pt")
                         .property(ConfigOptions.TABLE_AUTO_PARTITION_ENABLED, true)
                         .property(
