@@ -845,6 +845,164 @@ class FlinkTableSinkITCase {
                         tablePath);
     }
 
+    @Test
+    void testUnsupportedStmtOnVersionMergeEngine() {
+        String t1 = "versionMergeEngineTable";
+        TablePath tablePath = TablePath.of(DEFAULT_DB, t1);
+        tBatchEnv.executeSql(
+                String.format(
+                        "create table %s ("
+                                + " a int not null,"
+                                + " b bigint null, "
+                                + " c string null, "
+                                + " primary key (a) not enforced"
+                                + ") with ('table.merge-engine' = 'version', 'table.merge-engine.version.column' = 'b')",
+                        t1));
+        assertThatThrownBy(() -> tBatchEnv.executeSql("DELETE FROM " + t1 + " WHERE a = 1").await())
+                .isInstanceOf(UnsupportedOperationException.class)
+                .hasMessage(
+                        "Table %s uses the 'version' merge engine which does not support DELETE or UPDATE statements.",
+                        tablePath);
+
+        assertThatThrownBy(
+                        () ->
+                                tBatchEnv
+                                        .executeSql("UPDATE " + t1 + " SET b = 4004 WHERE a = 1")
+                                        .await())
+                .isInstanceOf(UnsupportedOperationException.class)
+                .hasMessage(
+                        "Table %s uses the 'version' merge engine which does not support DELETE or UPDATE statements.",
+                        tablePath);
+
+        assertThatThrownBy(
+                        () ->
+                                tBatchEnv
+                                        .executeSql("INSERT INTO " + t1 + "(a, c) VALUES(1, 'c1')")
+                                        .await())
+                .isInstanceOf(ValidationException.class)
+                .hasMessage(
+                        "Table %s uses the 'version' merge engine which does not support partial updates."
+                                + " Please make sure the number of specified columns in INSERT INTO matches columns of the Fluss table.",
+                        tablePath);
+    }
+
+    @Test
+    void testVersionMergeEngineWithTypeBigint() throws Exception {
+        tEnv.executeSql(
+                "create table merge_engine_with_version (a int not null primary key not enforced,"
+                        + " b string, ts bigint) with('table.merge-engine' = 'version','table.merge-engine.version.column' = 'ts')");
+
+        // insert once
+        tEnv.executeSql(
+                        "insert into merge_engine_with_version (a, b, ts) VALUES (1, 'v1', 1000), (2, 'v2', 1000), (1, 'v11', 999), (3, 'v3', 1000)")
+                .await();
+
+        CloseableIterator<Row> rowIter =
+                tEnv.executeSql("select * from merge_engine_with_version").collect();
+
+        // id=1 not update
+        List<String> expectedRows =
+                Arrays.asList("+I[1, v1, 1000]", "+I[2, v2, 1000]", "+I[3, v3, 1000]");
+
+        assertResultsIgnoreOrder(rowIter, expectedRows, false);
+
+        // insert again, update id=3
+        tEnv.executeSql(
+                        "insert into merge_engine_with_version (a, b, ts) VALUES (3, 'v33', 1001), (4, 'v44', 1000), (2, 'v22', 1000)")
+                .await();
+        expectedRows = Arrays.asList("-U[3, v3, 1000]", "+U[3, v33, 1001]", "+I[4, v44, 1000]");
+        assertResultsIgnoreOrder(rowIter, expectedRows, false);
+    }
+
+    @Test
+    void testVersionMergeEngineWithTypeTimestamp() throws Exception {
+        tEnv.executeSql(
+                "create table merge_engine_with_version (a int not null primary key not enforced,"
+                        + " b string, ts TIMESTAMP(3)) with('table.merge-engine' = 'version','table.merge-engine.version.column' = 'ts')");
+
+        // insert once
+        tEnv.executeSql(
+                        "INSERT INTO merge_engine_with_version (a, b, ts) VALUES "
+                                + "(1, 'v1', TIMESTAMP '2024-12-27 12:00:00.123'), "
+                                + "(2, 'v2', TIMESTAMP '2024-12-27 12:00:00.123'), "
+                                + "(1, 'v11', TIMESTAMP '2024-12-27 11:59:59.123'), "
+                                + "(3, 'v3', TIMESTAMP '2024-12-27 12:00:00.123'),"
+                                + "(3, 'v33', TIMESTAMP '2024-12-27 12:00:00.123');")
+                .await();
+
+        CloseableIterator<Row> rowIter =
+                tEnv.executeSql("select * from merge_engine_with_version").collect();
+
+        // id=1 not update
+        List<String> expectedRows =
+                Arrays.asList(
+                        "+I[1, v1, 2024-12-27T12:00:00.123]",
+                        "+I[2, v2, 2024-12-27T12:00:00.123]",
+                        "+I[3, v3, 2024-12-27T12:00:00.123]");
+
+        assertResultsIgnoreOrder(rowIter, expectedRows, true);
+    }
+
+    @Test
+    void testVersionMergeEngineWithTypeTimestamp9() throws Exception {
+        tEnv.executeSql(
+                "create table merge_engine_with_version (a int not null primary key not enforced,"
+                        + " b string, ts TIMESTAMP(9)) with('table.merge-engine' = 'version','table.merge-engine.version.column' = 'ts')");
+
+        // insert once
+        tEnv.executeSql(
+                        "INSERT INTO merge_engine_with_version (a, b, ts) VALUES "
+                                + "(1, 'v1', TIMESTAMP '2024-12-27 12:00:00.123456789'), "
+                                + "(2, 'v2', TIMESTAMP '2024-12-27 12:00:00.123456789'), "
+                                + "(1, 'v11', TIMESTAMP '2024-12-27 11:59:59.123456789'), "
+                                + "(3, 'v3', TIMESTAMP '2024-12-27 12:00:00.123456789'),"
+                                + "(3, 'v33', TIMESTAMP '2024-12-27 12:00:00.123456789');")
+                .await();
+
+        CloseableIterator<Row> rowIter =
+                tEnv.executeSql("select * from merge_engine_with_version").collect();
+
+        // id=1 not update
+        List<String> expectedRows =
+                Arrays.asList(
+                        "+I[1, v1, 2024-12-27T12:00:00.123456789]",
+                        "+I[2, v2, 2024-12-27T12:00:00.123456789]",
+                        "+I[3, v3, 2024-12-27T12:00:00.123456789]");
+
+        assertResultsIgnoreOrder(rowIter, expectedRows, true);
+    }
+
+    @Test
+    void testVersionMergeEngineWithTypeTimestampLTZ9() throws Exception {
+
+        tEnv.getConfig().set("table.local-time-zone", "UTC");
+        tEnv.executeSql(
+                "create table merge_engine_with_version (a int not null primary key not enforced,"
+                        + " b string, ts TIMESTAMP(9) WITH LOCAL TIME ZONE ) with('table.merge-engine' = 'version','table.merge-engine.version.column' = 'ts')");
+
+        // insert once
+        tEnv.executeSql(
+                        "INSERT INTO merge_engine_with_version (a, b, ts) VALUES "
+                                + "(1, 'v1', CAST(TO_TIMESTAMP('2024-12-27 12:00:00.123456789', 'yyyy-MM-dd HH:mm:ss.SSSSSSSSS') AS TIMESTAMP(9) WITH LOCAL TIME ZONE)), "
+                                + "(2, 'v2', CAST(TO_TIMESTAMP('2024-12-27 12:00:00.987654321', 'yyyy-MM-dd HH:mm:ss.SSSSSSSSS') AS TIMESTAMP(9) WITH LOCAL TIME ZONE)), "
+                                + "(1, 'v11', CAST(TO_TIMESTAMP('2024-12-27 11:59:59.123456789', 'yyyy-MM-dd HH:mm:ss.SSSSSSSSS') AS TIMESTAMP(9) WITH LOCAL TIME ZONE)), "
+                                + "(3, 'v3', CAST(TO_TIMESTAMP('2024-12-27 12:00:00.123456789', 'yyyy-MM-dd HH:mm:ss.SSSSSSSSS') AS TIMESTAMP(9) WITH LOCAL TIME ZONE)),"
+                                + "(3, 'v33', CAST(TO_TIMESTAMP('2024-12-27 12:00:00.123456789', 'yyyy-MM-dd HH:mm:ss.SSSSSSSSS') AS TIMESTAMP(9) WITH LOCAL TIME ZONE));")
+                .await();
+
+        CloseableIterator<Row> rowIter =
+                tEnv.executeSql("select * from merge_engine_with_version").collect();
+
+        // id=1 not update
+        List<String> expectedRows =
+                Arrays.asList(
+                        "+I[1, v1, 2024-12-27T12:00:00.123Z]",
+                        "+I[2, v2, 2024-12-27T12:00:00.987Z]",
+                        "+I[3, v3, 2024-12-27T12:00:00.123Z]");
+
+        assertResultsIgnoreOrder(rowIter, expectedRows, true);
+    }
+
     private InsertAndExpectValues rowsToInsertInto(Collection<String> partitions) {
         List<String> insertValues = new ArrayList<>();
         List<String> expectedValues = new ArrayList<>();

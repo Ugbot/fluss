@@ -39,6 +39,10 @@ import com.alibaba.fluss.row.arrow.ArrowWriterPool;
 import com.alibaba.fluss.row.arrow.ArrowWriterProvider;
 import com.alibaba.fluss.row.encode.ValueDecoder;
 import com.alibaba.fluss.row.encode.ValueEncoder;
+import com.alibaba.fluss.server.kv.mergeengine.DeduplicateRowMerger;
+import com.alibaba.fluss.server.kv.mergeengine.FirstRowMerger;
+import com.alibaba.fluss.server.kv.mergeengine.RowMerger;
+import com.alibaba.fluss.server.kv.mergeengine.VersionRowMerger;
 import com.alibaba.fluss.server.kv.partialupdate.PartialUpdater;
 import com.alibaba.fluss.server.kv.partialupdate.PartialUpdaterCache;
 import com.alibaba.fluss.server.kv.prewrite.KvPreWriteBuffer;
@@ -274,11 +278,15 @@ public final class KvTablet {
                                 KvRecordReadContext.createReadContext(kvFormat, fieldTypes);
                         ValueDecoder valueDecoder =
                                 new ValueDecoder(readContext.getRowDecoder(schemaId));
-
+                        RowMerger rowMerger = getRowMerger(schema);
                         for (KvRecord kvRecord : kvRecords.records(readContext)) {
                             byte[] keyBytes = BytesUtils.toArray(kvRecord.getKey());
                             KvPreWriteBuffer.Key key = KvPreWriteBuffer.Key.of(keyBytes);
                             if (kvRecord.getRow() == null) {
+                                // currently, all supported merge engine will ignore delete row.
+                                if (rowMerger.ignoreDelete()) {
+                                    continue;
+                                }
                                 // it's for deletion
                                 byte[] oldValue = getFromBufferOrKv(key);
                                 if (oldValue == null) {
@@ -287,10 +295,6 @@ public final class KvTablet {
                                             "The specific key can't be found in kv tablet although the kv record is for deletion, "
                                                     + "ignore it directly as it doesn't exist in the kv tablet yet.");
                                 } else {
-                                    if (mergeEngine == MergeEngine.FIRST_ROW) {
-                                        // if the merge engine is first row, skip the deletion
-                                        continue;
-                                    }
                                     BinaryRow oldRow = valueDecoder.decodeValue(oldValue).row;
                                     BinaryRow newRow = deleteRow(oldRow, partialUpdater);
                                     // if newRow is null, it means the row should be deleted
@@ -313,13 +317,13 @@ public final class KvTablet {
                                 byte[] oldValue = getFromBufferOrKv(key);
                                 // it's update
                                 if (oldValue != null) {
-                                    if (mergeEngine == MergeEngine.FIRST_ROW) {
-                                        // if the merge engine is first row, skip the update
-                                        continue;
-                                    }
                                     BinaryRow oldRow = valueDecoder.decodeValue(oldValue).row;
                                     BinaryRow newRow =
                                             updateRow(oldRow, kvRecord.getRow(), partialUpdater);
+                                    newRow = rowMerger.merge(oldRow, newRow);
+                                    if (newRow == null) {
+                                        continue;
+                                    }
                                     walBuilder.append(RowKind.UPDATE_BEFORE, oldRow);
                                     walBuilder.append(RowKind.UPDATE_AFTER, newRow);
                                     // logOffset is for -U, logOffset + 1 is for +U, we need to use
@@ -368,6 +372,18 @@ public final class KvTablet {
                         walBuilder.deallocate();
                     }
                 });
+    }
+
+    private RowMerger getRowMerger(Schema schema) {
+        if (mergeEngine != null) {
+            switch (mergeEngine.getType()) {
+                case VERSION:
+                    return new VersionRowMerger(schema, mergeEngine);
+                case FIRST_ROW:
+                    return new FirstRowMerger();
+            }
+        }
+        return new DeduplicateRowMerger();
     }
 
     private WalBuilder createWalBuilder(int schemaId, RowType rowType) throws Exception {

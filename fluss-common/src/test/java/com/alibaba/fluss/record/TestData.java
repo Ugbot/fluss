@@ -207,4 +207,18 @@ public final class TestData {
                     System.currentTimeMillis(),
                     System.currentTimeMillis());
     // -------------------------------- data2 info end ------------------------------------
+
+    // ------------------- data3 and related table info begin ----------------------
+    public static final Schema DATA3_SCHEMA_PK =
+            Schema.newBuilder()
+                    .column("a", DataTypes.INT())
+                    .withComment("a is first column")
+                    .column("b", DataTypes.BIGINT())
+                    .withComment("b is second column")
+                    .primaryKey("a")
+                    .build();
+    public static final TablePath DATA3_TABLE_PATH_PK =
+            TablePath.of("test_db_3", "test_pk_table_3");
+    // ---------------------------- data3 table info end ------------------------------
+
 }

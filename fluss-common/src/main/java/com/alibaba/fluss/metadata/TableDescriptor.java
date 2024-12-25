@@ -294,7 +294,7 @@ public final class TableDescriptor implements Serializable {
     }
 
     public @Nullable MergeEngine getMergeEngine() {
-        return configuration().get(ConfigOptions.TABLE_MERGE_ENGINE);
+        return MergeEngine.create(properties);
     }
 
     /** Gets the Arrow compression type and compression level of the table. */

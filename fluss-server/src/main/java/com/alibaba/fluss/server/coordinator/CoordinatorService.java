@@ -23,6 +23,7 @@ import com.alibaba.fluss.exception.InvalidDatabaseException;
 import com.alibaba.fluss.exception.InvalidTableException;
 import com.alibaba.fluss.fs.FileSystem;
 import com.alibaba.fluss.metadata.DatabaseDescriptor;
+import com.alibaba.fluss.metadata.MergeEngine;
 import com.alibaba.fluss.metadata.Schema;
 import com.alibaba.fluss.metadata.TableDescriptor;
 import com.alibaba.fluss.metadata.TablePath;
@@ -50,6 +51,7 @@ import com.alibaba.fluss.server.coordinator.event.CommitLakeTableSnapshotEvent;
 import com.alibaba.fluss.server.coordinator.event.CommitRemoteLogManifestEvent;
 import com.alibaba.fluss.server.coordinator.event.EventManager;
 import com.alibaba.fluss.server.entity.CommitKvSnapshotData;
+import com.alibaba.fluss.server.kv.mergeengine.VersionRowMerger;
 import com.alibaba.fluss.server.kv.snapshot.CompletedSnapshot;
 import com.alibaba.fluss.server.kv.snapshot.CompletedSnapshotJsonSerde;
 import com.alibaba.fluss.server.metadata.ServerMetadataCache;
@@ -59,6 +61,7 @@ import com.alibaba.fluss.server.zk.ZooKeeperClient;
 import com.alibaba.fluss.server.zk.data.TableAssignment;
 import com.alibaba.fluss.types.DataType;
 import com.alibaba.fluss.types.DataTypeRoot;
+import com.alibaba.fluss.types.RowType;
 import com.alibaba.fluss.utils.AutoPartitionStrategy;
 import com.alibaba.fluss.utils.concurrent.FutureUtils;
 
@@ -182,11 +185,37 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
             sanityCheckPartitionedTable(tableDescriptor);
         }
 
+        MergeEngine mergeEngine = tableDescriptor.getMergeEngine();
+        if (mergeEngine != null) {
+            checkMergeEngine(mergeEngine, tableDescriptor.getSchema());
+        }
+
         // then create table;
         metadataManager.createTable(
                 tablePath, tableDescriptor, tableAssignment, request.isIgnoreIfExists());
 
         return CompletableFuture.completedFuture(response);
+    }
+
+    private void checkMergeEngine(MergeEngine mergeEngine, Schema schema) {
+        if (mergeEngine.getType() == MergeEngine.Type.VERSION) {
+            String column = mergeEngine.getColumn();
+            RowType rowType = schema.toRowType();
+            int fieldIndex = rowType.getFieldIndex(column);
+            if (fieldIndex == -1) {
+                throw new InvalidTableException(
+                        String.format(
+                                "The version merge engine column %s does not exist.", column));
+            }
+            DataType dataType = rowType.getTypeAt(fieldIndex);
+            if (!VersionRowMerger.VERSION_MERGE_ENGINE_SUPPORTED_DATA_TYPES.contains(
+                    dataType.getTypeRoot())) {
+                throw new InvalidTableException(
+                        String.format(
+                                "The version merge engine column does not support type %s .",
+                                dataType));
+            }
+        }
     }
 
     private void sanityCheckPartitionedTable(TableDescriptor tableDescriptor) {

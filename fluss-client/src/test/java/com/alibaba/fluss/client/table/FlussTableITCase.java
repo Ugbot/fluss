@@ -77,6 +77,8 @@ import static com.alibaba.fluss.record.TestData.DATA1_TABLE_INFO;
 import static com.alibaba.fluss.record.TestData.DATA1_TABLE_INFO_PK;
 import static com.alibaba.fluss.record.TestData.DATA1_TABLE_PATH;
 import static com.alibaba.fluss.record.TestData.DATA1_TABLE_PATH_PK;
+import static com.alibaba.fluss.record.TestData.DATA3_SCHEMA_PK;
+import static com.alibaba.fluss.record.TestData.DATA3_TABLE_PATH_PK;
 import static com.alibaba.fluss.testutils.DataTestUtils.assertRowValueEquals;
 import static com.alibaba.fluss.testutils.DataTestUtils.compactedRow;
 import static com.alibaba.fluss.testutils.DataTestUtils.keyRow;
@@ -929,7 +931,7 @@ class FlussTableITCase extends ClientToServerITCaseBase {
         TableDescriptor tableDescriptor =
                 TableDescriptor.builder()
                         .schema(DATA1_SCHEMA_PK)
-                        .property(ConfigOptions.TABLE_MERGE_ENGINE, MergeEngine.FIRST_ROW)
+                        .property(ConfigOptions.TABLE_MERGE_ENGINE, MergeEngine.Type.FIRST_ROW)
                         .build();
         RowType rowType = DATA1_SCHEMA_PK.toRowType();
         createTable(DATA1_TABLE_PATH_PK, tableDescriptor, false);
@@ -957,17 +959,13 @@ class FlussTableITCase extends ClientToServerITCaseBase {
                         lookuper.lookup(row(lookupRowType, new Object[] {id})).get().getRow();
                 assertThatRow(gotRow).withSchema(rowType).isEqualTo(expectedRows.get(id));
             }
-
-            // check scan change log
             LogScanner logScanner = table.getLogScanner(new LogScan());
             logScanner.subscribeFromBeginning(0);
-
             List<ScanRecord> actualLogRecords = new ArrayList<>(0);
             while (actualLogRecords.size() < rows) {
                 ScanRecords scanRecords = logScanner.poll(Duration.ofSeconds(1));
                 scanRecords.forEach(actualLogRecords::add);
             }
-
             assertThat(actualLogRecords).hasSize(rows);
             for (int i = 0; i < actualLogRecords.size(); i++) {
                 ScanRecord scanRecord = actualLogRecords.get(i);
@@ -1058,6 +1056,73 @@ class FlussTableITCase extends ClientToServerITCaseBase {
             }
             assertThat(count).isEqualTo(expectedSize);
             logScanner.close();
+        }
+    }
+
+    @Test
+    void testMergeEngineWithVersion() throws Exception {
+        // Create table.
+        TableDescriptor tableDescriptor =
+                TableDescriptor.builder()
+                        .schema(DATA3_SCHEMA_PK)
+                        .property(ConfigOptions.TABLE_MERGE_ENGINE, MergeEngine.Type.VERSION)
+                        .property(ConfigOptions.TABLE_MERGE_ENGINE_VERSION_COLUMN, "b")
+                        .build();
+        RowType rowType = DATA3_SCHEMA_PK.toRowType();
+        createTable(DATA3_TABLE_PATH_PK, tableDescriptor, false);
+
+        int rows = 3;
+        try (Table table = conn.getTable(DATA3_TABLE_PATH_PK)) {
+            // put rows.
+            UpsertWriter upsertWriter = table.getUpsertWriter();
+            List<ScanRecord> expectedScanRecords = new ArrayList<>(rows);
+            // init rows.
+            for (int row = 0; row < rows; row++) {
+                upsertWriter.upsert(compactedRow(rowType, new Object[] {row, 1000L}));
+                expectedScanRecords.add(
+                        new ScanRecord(compactedRow(rowType, new Object[] {row, 1000L})));
+            }
+            // update row if id=0 and version < 1000L, will not update
+            upsertWriter.upsert(compactedRow(rowType, new Object[] {0, 999L}));
+
+            // update if version> 1000L
+            upsertWriter.upsert(compactedRow(rowType, new Object[] {1, 1001L}));
+            // update_before record, don't care about offset/timestamp
+            expectedScanRecords.add(
+                    new ScanRecord(
+                            -1,
+                            -1,
+                            RowKind.UPDATE_BEFORE,
+                            compactedRow(rowType, new Object[] {1, 1000L})));
+            // update_after record
+            expectedScanRecords.add(
+                    new ScanRecord(
+                            -1,
+                            -1,
+                            RowKind.UPDATE_AFTER,
+                            compactedRow(rowType, new Object[] {1, 1001L})));
+            rows = rows + 2;
+
+            upsertWriter.flush();
+
+            LogScanner logScanner = table.getLogScanner(new LogScan());
+            logScanner.subscribeFromBeginning(0);
+
+            List<ScanRecord> actualLogRecords = new ArrayList<>(rows);
+            while (actualLogRecords.size() < rows) {
+                ScanRecords scanRecords = logScanner.poll(Duration.ofSeconds(1));
+                scanRecords.forEach(actualLogRecords::add);
+            }
+
+            assertThat(actualLogRecords).hasSize(rows);
+            for (int i = 0; i < rows; i++) {
+                ScanRecord actualScanRecord = actualLogRecords.get(i);
+                ScanRecord expectedRecord = expectedScanRecords.get(i);
+                assertThat(actualScanRecord.getRowKind()).isEqualTo(expectedRecord.getRowKind());
+                assertThatRow(actualScanRecord.getRow())
+                        .withSchema(rowType)
+                        .isEqualTo(expectedRecord.getRow());
+            }
         }
     }
 }
