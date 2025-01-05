@@ -26,6 +26,7 @@ import com.alibaba.fluss.connector.flink.utils.FlinkConnectorOptionsUtils;
 import com.alibaba.fluss.connector.flink.utils.FlinkConversions;
 import com.alibaba.fluss.connector.flink.utils.PushdownUtils;
 import com.alibaba.fluss.connector.flink.utils.PushdownUtils.ValueConversion;
+import com.alibaba.fluss.metadata.MergeEngine;
 import com.alibaba.fluss.metadata.TablePath;
 import com.alibaba.fluss.types.RowType;
 
@@ -104,6 +105,7 @@ public class FlinkTableSource
 
     private final long scanPartitionDiscoveryIntervalMs;
     private final boolean isDataLakeEnabled;
+    @Nullable private final MergeEngine mergeEngine;
 
     // output type after projection pushdown
     private LogicalType producedDataType;
@@ -134,7 +136,8 @@ public class FlinkTableSource
             boolean lookupAsync,
             @Nullable LookupCache cache,
             long scanPartitionDiscoveryIntervalMs,
-            boolean isDataLakeEnabled) {
+            boolean isDataLakeEnabled,
+            @Nullable MergeEngine mergeEngine) {
         this.tablePath = tablePath;
         this.flussConfig = flussConfig;
         this.tableOutputType = tableOutputType;
@@ -151,6 +154,7 @@ public class FlinkTableSource
 
         this.scanPartitionDiscoveryIntervalMs = scanPartitionDiscoveryIntervalMs;
         this.isDataLakeEnabled = isDataLakeEnabled;
+        this.mergeEngine = mergeEngine;
     }
 
     @Override
@@ -160,7 +164,11 @@ public class FlinkTableSource
         } else {
             if (hasPrimaryKey()) {
                 // pk table
-                return ChangelogMode.all();
+                if (mergeEngine == MergeEngine.FIRST_ROW) {
+                    return ChangelogMode.insertOnly();
+                } else {
+                    return ChangelogMode.all();
+                }
             } else {
                 // append only
                 return ChangelogMode.insertOnly();
@@ -341,7 +349,8 @@ public class FlinkTableSource
                         lookupAsync,
                         cache,
                         scanPartitionDiscoveryIntervalMs,
-                        isDataLakeEnabled);
+                        isDataLakeEnabled,
+                        mergeEngine);
         source.producedDataType = producedDataType;
         source.projectedFields = projectedFields;
         source.singleRowFilter = singleRowFilter;

@@ -20,6 +20,7 @@ import com.alibaba.fluss.annotation.Internal;
 import com.alibaba.fluss.annotation.PublicEvolving;
 import com.alibaba.fluss.metadata.KvFormat;
 import com.alibaba.fluss.metadata.LogFormat;
+import com.alibaba.fluss.metadata.MergeEngine;
 import com.alibaba.fluss.utils.ArrayUtils;
 
 import java.time.Duration;
@@ -967,6 +968,12 @@ public class ConfigOptions {
                             "Whether enable lakehouse storage for the table. Disabled by default. "
                                     + "When this option is set to ture and the datalake tiering service is up,"
                                     + " the table will be tiered and compacted into datalake format stored on lakehouse storage.");
+
+    public static final ConfigOption<MergeEngine> TABLE_MERGE_ENGINE =
+            key("table.merge-engine")
+                    .enumType(MergeEngine.class)
+                    .noDefaultValue()
+                    .withDescription("The merge engine for the primary key table.");
 
     // ------------------------------------------------------------------------
     //  ConfigOptions for Kv
