@@ -21,6 +21,7 @@ import com.alibaba.fluss.client.table.snapshot.BucketSnapshotInfo;
 import com.alibaba.fluss.client.table.snapshot.BucketsSnapshotInfo;
 import com.alibaba.fluss.client.table.snapshot.KvSnapshotInfo;
 import com.alibaba.fluss.client.table.writer.UpsertWriter;
+import com.alibaba.fluss.cluster.ServerNode;
 import com.alibaba.fluss.config.AutoPartitionTimeUnit;
 import com.alibaba.fluss.config.ConfigOptions;
 import com.alibaba.fluss.exception.DatabaseAlreadyExistException;
@@ -51,6 +52,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -425,6 +427,15 @@ class FlussAdminITCase extends ClientToServerITCaseBase {
             kvSnapshotInfo = admin.getKvSnapshot(tablePath1).get();
             assertTableSnapshot(kvSnapshotInfo, bucketNum, expectedSnapshots);
         }
+    }
+
+    @Test
+    void testGetServerNodes() throws Exception {
+        List<ServerNode> serverNodes = admin.getServerNodes().get();
+        List<ServerNode> expectedNodes = new ArrayList<>();
+        expectedNodes.add(FLUSS_CLUSTER_EXTENSION.getCoordinatorServerNode());
+        expectedNodes.addAll(FLUSS_CLUSTER_EXTENSION.getTabletServerNodes());
+        assertThat(serverNodes).containsExactlyInAnyOrderElementsOf(expectedNodes);
     }
 
     private void assertHasTabletServerNumber(int tabletServerNumber) {

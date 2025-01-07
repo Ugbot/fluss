@@ -20,6 +20,7 @@ import com.alibaba.fluss.annotation.PublicEvolving;
 import com.alibaba.fluss.client.table.lake.LakeTableSnapshotInfo;
 import com.alibaba.fluss.client.table.snapshot.KvSnapshotInfo;
 import com.alibaba.fluss.client.table.snapshot.PartitionSnapshotInfo;
+import com.alibaba.fluss.cluster.ServerNode;
 import com.alibaba.fluss.exception.DatabaseAlreadyExistException;
 import com.alibaba.fluss.exception.DatabaseNotEmptyException;
 import com.alibaba.fluss.exception.DatabaseNotExistException;
@@ -51,6 +52,10 @@ import java.util.concurrent.CompletableFuture;
  */
 @PublicEvolving
 public interface Admin extends AutoCloseable {
+
+    /** Get the current server node information. asynchronously. */
+    CompletableFuture<List<ServerNode>> getServerNodes();
+
     /**
      * Get the latest table schema of the given table asynchronously.
      *
