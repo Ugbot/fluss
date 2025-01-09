@@ -78,8 +78,12 @@ public class PhysicalTableMetricGroup extends AbstractMetricGroup {
     protected void putVariables(Map<String, String> variables) {
         variables.put("database", physicalTablePath.getDatabaseName());
         variables.put("table", physicalTablePath.getTableName());
+
         if (physicalTablePath.getPartitionName() != null) {
             variables.put("partition", physicalTablePath.getPartitionName());
+        } else {
+            // value of empty string indicates non-partitioned tables
+            variables.put("partition", "");
         }
     }
 
