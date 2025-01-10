@@ -88,7 +88,8 @@ public class TestingDatabaseSyncSink extends RichSinkFunction<MultiplexCdcRecord
                             FlinkConversions.toFlinkRowType(rowType),
                             tableDescriptor.getSchema().getPrimaryKeyIndexes(),
                             true,
-                            null);
+                            null,
+                            false);
 
             sinkFunction =
                     ((SinkFunctionProvider)

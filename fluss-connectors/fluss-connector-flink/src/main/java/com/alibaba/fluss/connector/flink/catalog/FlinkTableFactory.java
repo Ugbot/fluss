@@ -150,7 +150,8 @@ public class FlinkTableFactory implements DynamicTableSourceFactory, DynamicTabl
                 rowType,
                 context.getPrimaryKeyIndexes(),
                 isStreamingMode,
-                tableOptions.get(toFlinkOption(ConfigOptions.TABLE_MERGE_ENGINE)));
+                tableOptions.get(toFlinkOption(ConfigOptions.TABLE_MERGE_ENGINE)),
+                tableOptions.get(FlinkConnectorOptions.SINK_IGNORE_DELETE));
     }
 
     @Override
@@ -174,6 +175,7 @@ public class FlinkTableFactory implements DynamicTableSourceFactory, DynamicTabl
                                 FlinkConnectorOptions.SCAN_STARTUP_TIMESTAMP,
                                 FlinkConnectorOptions.SCAN_PARTITION_DISCOVERY_INTERVAL,
                                 FlinkConnectorOptions.LOOKUP_ASYNC,
+                                FlinkConnectorOptions.SINK_IGNORE_DELETE,
                                 LookupOptions.MAX_RETRIES,
                                 LookupOptions.CACHE_TYPE,
                                 LookupOptions.PARTIAL_CACHE_EXPIRE_AFTER_ACCESS,

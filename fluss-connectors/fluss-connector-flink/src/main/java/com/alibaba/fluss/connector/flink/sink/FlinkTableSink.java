@@ -65,6 +65,7 @@ public class FlinkTableSink
     private final int[] primaryKeyIndexes;
     private final boolean streaming;
     @Nullable private final MergeEngine mergeEngine;
+    private final boolean ignoreDelete;
 
     private boolean appliedUpdates = false;
     @Nullable private GenericRow deleteRow;
@@ -75,13 +76,15 @@ public class FlinkTableSink
             RowType tableRowType,
             int[] primaryKeyIndexes,
             boolean streaming,
-            @Nullable MergeEngine mergeEngine) {
+            @Nullable MergeEngine mergeEngine,
+            boolean ignoreDelete) {
         this.tablePath = tablePath;
         this.flussConfig = flussConfig;
         this.tableRowType = tableRowType;
         this.primaryKeyIndexes = primaryKeyIndexes;
         this.streaming = streaming;
         this.mergeEngine = mergeEngine;
+        this.ignoreDelete = ignoreDelete;
     }
 
     @Override
@@ -89,18 +92,22 @@ public class FlinkTableSink
         if (!streaming) {
             return ChangelogMode.insertOnly();
         } else {
-            if (primaryKeyIndexes.length > 0) {
-                // pk table
-                ChangelogMode.Builder builder = ChangelogMode.newBuilder();
-                for (RowKind kind : requestedMode.getContainedKinds()) {
-                    if (kind != RowKind.UPDATE_BEFORE) {
-                        builder.addContainedKind(kind);
-                    }
-                }
-                return builder.build();
-            } else {
-                // append only
+            if (!streaming) {
                 return ChangelogMode.insertOnly();
+            } else {
+                if (primaryKeyIndexes.length > 0 || ignoreDelete) {
+                    // primary-key table or ignore_delete mode can accept RowKind.DELETE
+                    ChangelogMode.Builder builder = ChangelogMode.newBuilder();
+                    for (RowKind kind : requestedMode.getContainedKinds()) {
+                        // optimize out the update_before messages
+                        if (kind != RowKind.UPDATE_BEFORE) {
+                            builder.addContainedKind(kind);
+                        }
+                    }
+                    return builder.build();
+                } else {
+                    return ChangelogMode.insertOnly();
+                }
             }
         }
     }
@@ -159,8 +166,13 @@ public class FlinkTableSink
         FlinkSinkFunction sinkFunction =
                 primaryKeyIndexes.length > 0
                         ? new UpsertSinkFunction(
-                                tablePath, flussConfig, tableRowType, targetColumnIndexes)
-                        : new AppendSinkFunction(tablePath, flussConfig, tableRowType);
+                                tablePath,
+                                flussConfig,
+                                tableRowType,
+                                targetColumnIndexes,
+                                ignoreDelete)
+                        : new AppendSinkFunction(
+                                tablePath, flussConfig, tableRowType, ignoreDelete);
 
         return SinkFunctionProvider.of(sinkFunction);
     }
@@ -182,7 +194,8 @@ public class FlinkTableSink
                         tableRowType,
                         primaryKeyIndexes,
                         streaming,
-                        mergeEngine);
+                        mergeEngine,
+                        ignoreDelete);
         sink.appliedUpdates = appliedUpdates;
         sink.deleteRow = deleteRow;
         return sink;
