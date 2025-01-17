@@ -26,6 +26,7 @@ import com.alibaba.fluss.row.arrow.ArrowWriter;
 import com.alibaba.fluss.row.arrow.ArrowWriterPool;
 import com.alibaba.fluss.shaded.arrow.org.apache.arrow.memory.BufferAllocator;
 import com.alibaba.fluss.shaded.arrow.org.apache.arrow.memory.RootAllocator;
+import com.alibaba.fluss.utils.CloseableIterator;
 
 import org.apache.commons.lang3.RandomUtils;
 import org.junit.jupiter.api.AfterEach;
@@ -71,7 +72,8 @@ public class MemoryLogRecordsArrowBuilderTest {
         int maxSizeInBytes = 1024;
         ArrowWriter writer =
                 provider.getOrCreateWriter(1L, DEFAULT_SCHEMA_ID, maxSizeInBytes, DATA1_ROW_TYPE);
-        MemoryLogRecordsArrowBuilder builder = createMemoryLogRecordsArrowBuilder(writer, 10, 100);
+        MemoryLogRecordsArrowBuilder builder =
+                createMemoryLogRecordsArrowBuilder(0, writer, 10, 100);
         assertThat(builder.isFull()).isFalse();
         assertThat(builder.getWriteLimitInBytes())
                 .isEqualTo((int) (maxSizeInBytes * BUFFER_USAGE_RATIO));
@@ -82,7 +84,7 @@ public class MemoryLogRecordsArrowBuilderTest {
         assertThat(iterator.hasNext()).isTrue();
         LogRecordBatch batch = iterator.next();
         assertThat(batch.getRecordCount()).isEqualTo(0);
-        assertThat(batch.sizeInBytes()).isEqualTo(44);
+        assertThat(batch.sizeInBytes()).isEqualTo(48);
         assertThat(iterator.hasNext()).isFalse();
     }
 
@@ -91,7 +93,8 @@ public class MemoryLogRecordsArrowBuilderTest {
         int maxSizeInBytes = 1024;
         ArrowWriter writer =
                 provider.getOrCreateWriter(1L, DEFAULT_SCHEMA_ID, maxSizeInBytes, DATA1_ROW_TYPE);
-        MemoryLogRecordsArrowBuilder builder = createMemoryLogRecordsArrowBuilder(writer, 10, 1024);
+        MemoryLogRecordsArrowBuilder builder =
+                createMemoryLogRecordsArrowBuilder(0, writer, 10, 1024);
         List<RowKind> rowKinds =
                 DATA1.stream().map(row -> RowKind.APPEND_ONLY).collect(Collectors.toList());
         List<InternalRow> rows =
@@ -132,12 +135,12 @@ public class MemoryLogRecordsArrowBuilderTest {
                                             DEFAULT_SCHEMA_ID,
                                             maxSizeInBytes,
                                             DATA1_ROW_TYPE)) {
-                                createMemoryLogRecordsArrowBuilder(writer, 10, 30);
+                                createMemoryLogRecordsArrowBuilder(0, writer, 10, 30);
                             }
                         })
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessage(
-                        "The size of first segment of pagedOutputView is too small, need at least 44 bytes.");
+                        "The size of first segment of pagedOutputView is too small, need at least 48 bytes.");
     }
 
     @Test
@@ -145,7 +148,8 @@ public class MemoryLogRecordsArrowBuilderTest {
         int maxSizeInBytes = 1024;
         ArrowWriter writer =
                 provider.getOrCreateWriter(1L, DEFAULT_SCHEMA_ID, 1024, DATA1_ROW_TYPE);
-        MemoryLogRecordsArrowBuilder builder = createMemoryLogRecordsArrowBuilder(writer, 10, 1024);
+        MemoryLogRecordsArrowBuilder builder =
+                createMemoryLogRecordsArrowBuilder(0, writer, 10, 1024);
         List<RowKind> rowKinds =
                 DATA1.stream().map(row -> RowKind.APPEND_ONLY).collect(Collectors.toList());
         List<InternalRow> rows =
@@ -179,15 +183,68 @@ public class MemoryLogRecordsArrowBuilderTest {
         writer1.close();
     }
 
+    @Test
+    void testNoRecordAppend() throws Exception {
+        // 1. no record append with base offset as 0.
+        ArrowWriter writer =
+                provider.getOrCreateWriter(1L, DEFAULT_SCHEMA_ID, 1024 * 10, DATA1_ROW_TYPE);
+        MemoryLogRecordsArrowBuilder builder =
+                createMemoryLogRecordsArrowBuilder(0, writer, 10, 1024 * 10);
+        MemoryLogRecords memoryLogRecords = MemoryLogRecords.pointToBytesView(builder.build());
+        // only contains batch header.
+        assertThat(memoryLogRecords.sizeInBytes()).isEqualTo(48);
+        Iterator<LogRecordBatch> iterator = memoryLogRecords.batches().iterator();
+        assertThat(iterator.hasNext()).isTrue();
+        LogRecordBatch logRecordBatch = iterator.next();
+        assertThat(iterator.hasNext()).isFalse();
+
+        logRecordBatch.ensureValid();
+        assertThat(logRecordBatch.getRecordCount()).isEqualTo(0);
+        assertThat(logRecordBatch.lastLogOffset()).isEqualTo(0);
+        assertThat(logRecordBatch.nextLogOffset()).isEqualTo(1);
+        assertThat(logRecordBatch.baseLogOffset()).isEqualTo(0);
+        try (LogRecordReadContext readContext =
+                        LogRecordReadContext.createArrowReadContext(
+                                DATA1_ROW_TYPE, DEFAULT_SCHEMA_ID);
+                CloseableIterator<LogRecord> iter = logRecordBatch.records(readContext)) {
+            assertThat(iter.hasNext()).isFalse();
+        }
+
+        // 2. no record append with base offset as 0.
+        ArrowWriter writer2 =
+                provider.getOrCreateWriter(1L, DEFAULT_SCHEMA_ID, 1024 * 10, DATA1_ROW_TYPE);
+        builder = createMemoryLogRecordsArrowBuilder(100, writer2, 10, 1024 * 10);
+        memoryLogRecords = MemoryLogRecords.pointToBytesView(builder.build());
+        // only contains batch header.
+        assertThat(memoryLogRecords.sizeInBytes()).isEqualTo(48);
+        iterator = memoryLogRecords.batches().iterator();
+        assertThat(iterator.hasNext()).isTrue();
+        logRecordBatch = iterator.next();
+        assertThat(iterator.hasNext()).isFalse();
+
+        logRecordBatch.ensureValid();
+        assertThat(logRecordBatch.getRecordCount()).isEqualTo(0);
+        assertThat(logRecordBatch.lastLogOffset()).isEqualTo(100);
+        assertThat(logRecordBatch.nextLogOffset()).isEqualTo(101);
+        assertThat(logRecordBatch.baseLogOffset()).isEqualTo(100);
+        try (LogRecordReadContext readContext =
+                        LogRecordReadContext.createArrowReadContext(
+                                DATA1_ROW_TYPE, DEFAULT_SCHEMA_ID);
+                CloseableIterator<LogRecord> iter = logRecordBatch.records(readContext)) {
+            assertThat(iter.hasNext()).isFalse();
+        }
+    }
+
     private MemoryLogRecordsArrowBuilder createMemoryLogRecordsArrowBuilder(
-            ArrowWriter writer, int maxPages, int pageSizeInBytes) throws IOException {
+            int baseOffset, ArrowWriter writer, int maxPages, int pageSizeInBytes)
+            throws IOException {
         conf.set(
                 ConfigOptions.CLIENT_WRITER_BUFFER_MEMORY_SIZE,
                 new MemorySize((long) maxPages * pageSizeInBytes));
         conf.set(ConfigOptions.CLIENT_WRITER_BUFFER_PAGE_SIZE, new MemorySize(pageSizeInBytes));
         conf.set(ConfigOptions.CLIENT_WRITER_BATCH_SIZE, new MemorySize(pageSizeInBytes));
         return MemoryLogRecordsArrowBuilder.builder(
-                0L,
+                baseOffset,
                 DEFAULT_SCHEMA_ID,
                 writer,
                 new ManagedPagedOutputView(new TestingMemorySegmentPool(pageSizeInBytes)));
