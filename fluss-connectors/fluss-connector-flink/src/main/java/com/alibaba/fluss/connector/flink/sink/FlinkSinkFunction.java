@@ -134,7 +134,7 @@ abstract class FlinkSinkFunction extends RichSinkFunction<RowData>
         CompletableFuture<Void> writeFuture = writeRow(value.getRowKind(), internalRow);
         writeFuture.exceptionally(
                 exception -> {
-                    if (this.asyncWriterException != null) {
+                    if (this.asyncWriterException == null) {
                         this.asyncWriterException = exception;
                     }
                     return null;
