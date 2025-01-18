@@ -166,7 +166,7 @@ public class ReplicaFetcherThreadTest {
         ZOO_KEEPER_EXTENSION_WRAPPER.getCustomExtension().cleanupRoot();
         zkClient.registerTable(
                 DATA1_TABLE_PATH,
-                TableRegistration.of(DATA1_TABLE_ID, DATA1_TABLE_INFO.getTableDescriptor()));
+                TableRegistration.newTable(DATA1_TABLE_ID, DATA1_TABLE_INFO.getTableDescriptor()));
         zkClient.registerSchema(DATA1_TABLE_PATH, DATA1_SCHEMA);
     }
 

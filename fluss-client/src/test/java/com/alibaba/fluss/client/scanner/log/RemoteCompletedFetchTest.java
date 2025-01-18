@@ -206,7 +206,9 @@ class RemoteCompletedFetchTest {
                         DATA2_TABLE_PATH,
                         DATA2_TABLE_ID,
                         TableDescriptor.builder().schema(schema).logFormat(logFormat).build(),
-                        1);
+                        1,
+                        System.currentTimeMillis(),
+                        System.currentTimeMillis());
         long fetchOffset = 0L;
         TableBucket tableBucket = new TableBucket(DATA2_TABLE_ID, 0);
         FileLogRecords fileLogRecords =

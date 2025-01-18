@@ -102,7 +102,9 @@ public class ReplicaFetcherITCase {
                                 .schema(DATA1_SCHEMA)
                                 .distributedBy(1, "a")
                                 .build(),
-                        1);
+                        1,
+                        System.currentTimeMillis(),
+                        System.currentTimeMillis());
 
         // wait until all the gateway has same metadata because the follower fetcher manager need
         // to get the leader address from server metadata while make follower.
@@ -343,7 +345,9 @@ public class ReplicaFetcherITCase {
                 DATA1_TABLE_PATH_PK,
                 DATA1_TABLE_ID_PK,
                 TableDescriptor.builder().schema(DATA1_SCHEMA_PK).distributedBy(1, "a").build(),
-                1);
+                1,
+                System.currentTimeMillis(),
+                System.currentTimeMillis());
     }
 
     private static Configuration initConfig() {

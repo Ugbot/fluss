@@ -187,7 +187,9 @@ public class MetadataUtils {
                                     tablePath,
                                     pbTableMetadata.getTableId(),
                                     tableDescriptor,
-                                    pbTableMetadata.getSchemaId()));
+                                    pbTableMetadata.getSchemaId(),
+                                    pbTableMetadata.getCreatedTime(),
+                                    pbTableMetadata.getModifiedTime()));
 
                     // Get all buckets for the table.
                     List<PbBucketMetadata> pbBucketMetadataList =

@@ -417,7 +417,9 @@ public class RecordAccumulatorTest {
                                 .schema(DATA1_SCHEMA)
                                 .distributedBy(3)
                                 .build(),
-                        1);
+                        1,
+                        System.currentTimeMillis(),
+                        System.currentTimeMillis());
         Map<TablePath, TableInfo> tableInfoByPath = new HashMap<>();
         tableInfoByPath.put(DATA1_TABLE_PATH, data1NonPkTableInfo);
 

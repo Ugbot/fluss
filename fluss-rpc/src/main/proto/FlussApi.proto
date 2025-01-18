@@ -49,9 +49,21 @@ message GetTableSchemaResponse {
 message CreateDatabaseRequest {
   required string database_name = 1;
   required bool ignore_if_exists = 2;
+  optional bytes database_json = 3;
 }
 
 message CreateDatabaseResponse {
+}
+
+// get table request and response
+message GetDatabaseRequest {
+  required string database_name = 1;
+}
+
+message GetDatabaseResponse {
+  required bytes database_json = 3;
+  required int64 created_time = 4;
+  required int64 modified_time = 5;
 }
 
 // drop database request and response
@@ -97,6 +109,8 @@ message GetTableResponse {
   required int64 table_id = 1;
   required int32 schema_id = 2;
   required bytes table_json = 3;
+  required int64 created_time = 4;
+  required int64 modified_time = 5;
 }
 
 // list tables request and response
@@ -468,6 +482,8 @@ message PbTableMetadata {
   required int32 schema_id = 3;
   required bytes table_json = 4;
   repeated PbBucketMetadata bucket_metadata = 5;
+  required int64 created_time = 6;
+  required int64 modified_time = 7;
 }
 
 message PbPartitionMetadata {
