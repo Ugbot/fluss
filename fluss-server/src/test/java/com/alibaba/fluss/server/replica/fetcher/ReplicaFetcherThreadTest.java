@@ -44,6 +44,7 @@ import com.alibaba.fluss.server.zk.ZooKeeperExtension;
 import com.alibaba.fluss.server.zk.data.LeaderAndIsr;
 import com.alibaba.fluss.server.zk.data.TableRegistration;
 import com.alibaba.fluss.testutils.common.AllCallbackWrapper;
+import com.alibaba.fluss.utils.clock.Clock;
 import com.alibaba.fluss.utils.clock.SystemClock;
 import com.alibaba.fluss.utils.concurrent.FlussScheduler;
 import com.alibaba.fluss.utils.concurrent.Scheduler;
@@ -219,7 +220,8 @@ public class ReplicaFetcherThreadTest {
                         serverId,
                         new ServerMetadataCacheImpl(),
                         RpcClient.create(conf, TestingClientMetricGroup.newInstance()),
-                        TestingMetricGroups.TABLET_SERVER_METRICS);
+                        TestingMetricGroups.TABLET_SERVER_METRICS,
+                        SystemClock.getInstance());
         replicaManager.startup();
         return replicaManager;
     }
@@ -238,7 +240,8 @@ public class ReplicaFetcherThreadTest {
                 int serverId,
                 ServerMetadataCache metadataCache,
                 RpcClient rpcClient,
-                TabletServerMetricGroup serverMetricGroup)
+                TabletServerMetricGroup serverMetricGroup,
+                Clock clock)
                 throws IOException {
             super(
                     conf,
@@ -252,7 +255,8 @@ public class ReplicaFetcherThreadTest {
                     new TestCoordinatorGateway(),
                     new TestingCompletedKvSnapshotCommitter(),
                     NOPErrorHandler.INSTANCE,
-                    serverMetricGroup);
+                    serverMetricGroup,
+                    clock);
         }
 
         @Override

@@ -957,7 +957,26 @@ class ReplicaManagerTest extends ReplicaTestBase {
             assertThat(future1.get()).containsOnly(new ListOffsetsResultForBucket(tb, baseOffset));
         }
 
-        // list offset by an invalid timestamp which higher than max batch commit time.
+        // list offset by a timestamp which higher than max batch commit time but less then current
+        // timestamp .
+        future1 = new CompletableFuture<>();
+        replicaManager.listOffsets(
+                new ListOffsetsParam(-1, ListOffsetsParam.LATEST_OFFSET_TYPE, null),
+                Collections.singleton(tb),
+                future1::complete);
+        long latestOffset = future1.get().get(0).getOffset();
+        manualClock.advanceTime(100, TimeUnit.MILLISECONDS);
+        future1 = new CompletableFuture<>();
+        replicaManager.listOffsets(
+                new ListOffsetsParam(
+                        -1,
+                        ListOffsetsParam.TIMESTAMP_OFFSET_TYPE,
+                        manualClock.milliseconds() - 50),
+                Collections.singleton(tb),
+                future1::complete);
+        assertThat(future1.get()).containsOnly(new ListOffsetsResultForBucket(tb, latestOffset));
+
+        // list offset by an invalid timestamp which higher than current timestamp.
         future1 = new CompletableFuture<>();
         replicaManager.listOffsets(
                 new ListOffsetsParam(
@@ -975,9 +994,9 @@ class ReplicaManagerTest extends ReplicaTestBase {
                                         String.format(
                                                 "Get offset error for table bucket "
                                                         + "TableBucket{tableId=150001, bucket=1}, the fetch "
-                                                        + "timestamp %s is larger than the max timestamp %s",
+                                                        + "timestamp %s is larger than the current timestamp %s",
                                                 manualClock.milliseconds() + 1000,
-                                                manualClock.milliseconds() - 100))));
+                                                manualClock.milliseconds()))));
     }
 
     private Map<Long, Long> startOffsetToBatchCommitTimestamp(FetchLogResultForBucket result) {

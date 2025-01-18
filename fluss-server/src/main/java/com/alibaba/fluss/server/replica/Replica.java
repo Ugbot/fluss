@@ -89,6 +89,7 @@ import com.alibaba.fluss.types.RowType;
 import com.alibaba.fluss.utils.CloseableRegistry;
 import com.alibaba.fluss.utils.FlussPaths;
 import com.alibaba.fluss.utils.IOUtils;
+import com.alibaba.fluss.utils.clock.Clock;
 import com.alibaba.fluss.utils.types.Tuple2;
 
 import org.slf4j.Logger;
@@ -174,6 +175,7 @@ public final class Replica {
     private final int tieredLogLocalSegments;
     private final AtomicReference<Integer> leaderReplicaIdOpt = new AtomicReference<>();
     private final ReadWriteLock leaderIsrUpdateLock = new ReentrantReadWriteLock();
+    private final Clock clock;
 
     /**
      * storing the remote follower replicas' state, used to update leader's highWatermark and
@@ -213,7 +215,8 @@ public final class Replica {
             ServerMetadataCache metadataCache,
             FatalErrorHandler fatalErrorHandler,
             BucketMetricGroup bucketMetricGroup,
-            TableDescriptor tableDescriptor)
+            TableDescriptor tableDescriptor,
+            Clock clock)
             throws Exception {
         this.physicalPath = physicalPath;
         this.tableBucket = tableBucket;
@@ -241,6 +244,7 @@ public final class Replica {
         this.closeableRegistry = new CloseableRegistry();
 
         this.logTablet = createLog(lazyHighWatermarkCheckpoint);
+        this.clock = clock;
         registerMetrics();
     }
 
@@ -357,7 +361,7 @@ public final class Replica {
 
                             coordinatorEpoch = data.getCoordinatorEpoch();
 
-                            long currentTimeMs = System.currentTimeMillis();
+                            long currentTimeMs = clock.milliseconds();
                             // Updating the assignment and ISR state is safe if the bucket epoch is
                             // larger or equal to the current bucket epoch.
                             updateAssignmentAndIsr(data.getReplicas(), true, data.getIsr());
@@ -563,7 +567,7 @@ public final class Replica {
      */
     private Optional<CompletedSnapshot> initKvTablet() {
         checkNotNull(kvManager);
-        long startTime = System.currentTimeMillis();
+        long startTime = clock.milliseconds();
         LOG.info("Start to init kv tablet for {} of table {}.", tableBucket, physicalPath);
 
         // todo: we may need to handle the following cases:
@@ -618,7 +622,7 @@ public final class Replica {
                             tableBucket, physicalPath),
                     e);
         }
-        long endTime = System.currentTimeMillis();
+        long endTime = clock.milliseconds();
         LOG.info(
                 "Init kv tablet for {} of {} finish, cost {} ms.",
                 physicalPath,
@@ -632,7 +636,7 @@ public final class Replica {
         Path kvDbPath = kvTabletDir.resolve(RocksDBKvBuilder.DB_INSTANCE_DIR_STRING);
         KvSnapshotDownloadSpec downloadSpec =
                 new KvSnapshotDownloadSpec(completedSnapshot.getKvSnapshotHandle(), kvDbPath);
-        long start = System.currentTimeMillis();
+        long start = clock.milliseconds();
         LOG.info("Start to download kv snapshot {} to directory {}.", completedSnapshot, kvDbPath);
         KvSnapshotDataDownloader kvSnapshotDataDownloader =
                 snapshotContext.getSnapshotDataDownloader();
@@ -641,7 +645,7 @@ public final class Replica {
         } catch (Exception e) {
             throw new IOException("Fail to download kv snapshot.", e);
         }
-        long end = System.currentTimeMillis();
+        long end = clock.milliseconds();
         LOG.info(
                 "Download kv snapshot {} to directory {} finish, cost {} ms.",
                 completedSnapshot,
@@ -664,7 +668,7 @@ public final class Replica {
     }
 
     private void recoverKvTablet(long startRecoverLogOffset) {
-        long start = System.currentTimeMillis();
+        long start = clock.milliseconds();
         checkNotNull(kvTablet, "kv tablet should not be null.");
         try {
             KvRecoverHelper.KvRecoverContext recoverContext =
@@ -689,7 +693,7 @@ public final class Replica {
                             tableBucket, physicalPath),
                     e);
         }
-        long end = System.currentTimeMillis();
+        long end = clock.milliseconds();
         LOG.info(
                 "Recover kv tablet for {} of table {} from log offset {} finish, cost {} ms.",
                 tableBucket,
@@ -800,8 +804,7 @@ public final class Replica {
 
                     // we may need to increment high watermark if isr could be down to 1 or the
                     // replica count is 1.
-                    boolean hwIncreased =
-                            maybeIncrementLeaderHW(logTablet, System.currentTimeMillis());
+                    boolean hwIncreased = maybeIncrementLeaderHW(logTablet, clock.milliseconds());
 
                     if (hwIncreased) {
                         tryCompleteDelayedOperations();
@@ -835,7 +838,7 @@ public final class Replica {
                             kv, "KvTablet for the replica to put kv records shouldn't be null.");
                     LogAppendInfo logAppendInfo = kv.putAsLeader(kvRecords, targetColumns, schema);
                     // we may need to increment high watermark.
-                    maybeIncrementLeaderHW(logTablet, System.currentTimeMillis());
+                    maybeIncrementLeaderHW(logTablet, clock.milliseconds());
                     return logAppendInfo;
                 });
     }
@@ -848,7 +851,7 @@ public final class Replica {
                             physicalPath));
         }
         if (fetchParams.isFromFollower()) {
-            long followerFetchTimeMs = System.currentTimeMillis();
+            long followerFetchTimeMs = clock.milliseconds();
             LogReadInfo logReadInfo =
                     inReadLock(
                             leaderIsrUpdateLock,
@@ -1204,12 +1207,7 @@ public final class Replica {
                             return logTablet.localLogStartOffset();
                         }
                     } else if (offsetType == ListOffsetsParam.LATEST_OFFSET_TYPE) {
-                        // the request is come from client.
-                        if (listOffsetsParam.getFollowerServerId() < 0) {
-                            return logTablet.getHighWatermark();
-                        } else {
-                            return logTablet.localLogEndOffset();
-                        }
+                        return getLatestOffset(listOffsetsParam.getFollowerServerId());
                     } else {
                         throw new IllegalArgumentException(
                                 "Invalid list offset type: " + offsetType);
@@ -1227,15 +1225,19 @@ public final class Replica {
         }
 
         long fetchTimestamp = startTimestampOpt.getAsLong();
-        // 1. if the fetch timestamp is larger than the local max timestamp, we will
-        // throw an invalidTimestamp exception
+        // 1. If the fetch timestamp is larger than current timestamp, we will throw an
+        // invalidTimestamp exception. If the fetch timestamp is larger than the local max timestamp
+        // but no larger than current timestamp, we will latest offset.
         long localMaxTimestamp = logTablet.localMaxTimestamp();
-        if (fetchTimestamp > localMaxTimestamp) {
+        long currentTimestamp = clock.milliseconds();
+        if (fetchTimestamp > localMaxTimestamp && fetchTimestamp <= currentTimestamp) {
+            return getLatestOffset(listOffsetsParam.getFollowerServerId());
+        } else if (fetchTimestamp > currentTimestamp) {
             throw new InvalidTimestampException(
                     String.format(
                             "Get offset error for table bucket %s, "
-                                    + "the fetch timestamp %s is larger than the max timestamp %s",
-                            tableBucket, fetchTimestamp, localMaxTimestamp));
+                                    + "the fetch timestamp %s is larger than the current timestamp %s",
+                            tableBucket, fetchTimestamp, currentTimestamp));
         }
 
         // 2.  we will try to find offset from remote storage.
@@ -1246,6 +1248,15 @@ public final class Replica {
 
         // 2. if not found, we will find offset from local storage.
         return logTablet.lookupOffsetForTimestamp(fetchTimestamp);
+    }
+
+    private long getLatestOffset(int followerServerId) {
+        // the request is come from client.
+        if (followerServerId < 0) {
+            return logTablet.getHighWatermark();
+        } else {
+            return logTablet.localLogEndOffset();
+        }
     }
 
     /**
@@ -1526,7 +1537,7 @@ public final class Replica {
 
             // We may need to increment high watermark since ISR could be down to 1.
             try {
-                return maybeIncrementLeaderHW(logTablet, System.currentTimeMillis());
+                return maybeIncrementLeaderHW(logTablet, clock.milliseconds());
             } catch (IOException e) {
                 LOG.error("Failed to increment leader HW", e);
                 return false;
@@ -1625,7 +1636,7 @@ public final class Replica {
         if (!currentState.isInflight()) {
             Set<Integer> candidateReplicas = new HashSet<>(currentState.isr());
             candidateReplicas.remove(localTabletServerId);
-            long currentTimeMillis = System.currentTimeMillis();
+            long currentTimeMillis = clock.milliseconds();
             long leaderEndOffset = logTablet.localLogEndOffset();
             for (int replicaId : candidateReplicas) {
                 if (isFollowerOutOfSync(

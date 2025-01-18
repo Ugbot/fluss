@@ -99,6 +99,7 @@ import com.alibaba.fluss.server.zk.data.TableRegistration;
 import com.alibaba.fluss.utils.FileUtils;
 import com.alibaba.fluss.utils.FlussPaths;
 import com.alibaba.fluss.utils.Preconditions;
+import com.alibaba.fluss.utils.clock.Clock;
 import com.alibaba.fluss.utils.concurrent.Scheduler;
 
 import org.slf4j.Logger;
@@ -181,6 +182,8 @@ public class ReplicaManager {
     // for metrics
     private final TabletServerMetricGroup serverMetricGroup;
 
+    private final Clock clock;
+
     public ReplicaManager(
             Configuration conf,
             Scheduler scheduler,
@@ -193,7 +196,8 @@ public class ReplicaManager {
             CoordinatorGateway coordinatorGateway,
             CompletedKvSnapshotCommitter completedKvSnapshotCommitter,
             FatalErrorHandler fatalErrorHandler,
-            TabletServerMetricGroup serverMetricGroup)
+            TabletServerMetricGroup serverMetricGroup,
+            Clock clock)
             throws IOException {
         this(
                 conf,
@@ -208,7 +212,8 @@ public class ReplicaManager {
                 completedKvSnapshotCommitter,
                 fatalErrorHandler,
                 serverMetricGroup,
-                new RemoteLogManager(conf, zkClient, coordinatorGateway));
+                new RemoteLogManager(conf, zkClient, coordinatorGateway),
+                clock);
     }
 
     @VisibleForTesting
@@ -225,7 +230,8 @@ public class ReplicaManager {
             CompletedKvSnapshotCommitter completedKvSnapshotCommitter,
             FatalErrorHandler fatalErrorHandler,
             TabletServerMetricGroup serverMetricGroup,
-            RemoteLogManager remoteLogManager)
+            RemoteLogManager remoteLogManager,
+            Clock clock)
             throws IOException {
         this.conf = conf;
         this.zkClient = zkClient;
@@ -262,6 +268,7 @@ public class ReplicaManager {
                         zkClient, completedKvSnapshotCommitter, kvSnapshotResource, conf);
         this.remoteLogManager = remoteLogManager;
         this.serverMetricGroup = serverMetricGroup;
+        this.clock = clock;
         registerMetrics();
     }
 
@@ -1446,7 +1453,8 @@ public class ReplicaManager {
                                 metadataCache,
                                 fatalErrorHandler,
                                 bucketMetricGroup,
-                                getTableDescriptor(tablePath, zkClient, schema));
+                                getTableDescriptor(tablePath, zkClient, schema),
+                                clock);
                 allReplicas.put(tb, new OnlineReplica(replica));
                 replicaOpt = Optional.of(replica);
             } else if (hostedReplica instanceof OnlineReplica) {

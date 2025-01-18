@@ -265,7 +265,8 @@ public class ReplicaTestBase {
                 snapshotReporter,
                 NOPErrorHandler.INSTANCE,
                 TestingMetricGroups.TABLET_SERVER_METRICS,
-                remoteLogManager);
+                remoteLogManager,
+                manualClock);
     }
 
     @AfterEach
@@ -294,6 +295,10 @@ public class ReplicaTestBase {
 
         if (rpcClient != null) {
             rpcClient.close();
+        }
+
+        if (scheduler != null) {
+            scheduler.shutdown();
         }
 
         // clear zk environment.
@@ -433,7 +438,8 @@ public class ReplicaTestBase {
                 serverMetadataCache,
                 NOPErrorHandler.INSTANCE,
                 metricGroup,
-                TableDescriptor.builder().schema(DATA1_SCHEMA).distributedBy(3).build());
+                TableDescriptor.builder().schema(DATA1_SCHEMA).distributedBy(3).build(),
+                manualClock);
     }
 
     private void initRemoteLogEnv() throws Exception {
