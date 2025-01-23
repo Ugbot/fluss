@@ -129,7 +129,8 @@ public class ArrowLogWriteBatchTest {
                                 maxSizeInBytes,
                                 DATA1_ROW_TYPE,
                                 ArrowCompressionInfo.NO_COMPRESSION),
-                        new PreAllocatedPagedOutputView(memorySegmentList));
+                        new PreAllocatedPagedOutputView(memorySegmentList),
+                        System.currentTimeMillis());
         assertThat(arrowLogWriteBatch.pooledMemorySegments()).isEqualTo(memorySegmentList);
 
         int count = 0;
@@ -181,7 +182,8 @@ public class ArrowLogWriteBatchTest {
                         maxSizeInBytes,
                         DATA1_ROW_TYPE,
                         ArrowCompressionInfo.NO_COMPRESSION),
-                new UnmanagedPagedOutputView(128));
+                new UnmanagedPagedOutputView(128),
+                System.currentTimeMillis());
     }
 
     private WriteCallback newWriteCallback() {

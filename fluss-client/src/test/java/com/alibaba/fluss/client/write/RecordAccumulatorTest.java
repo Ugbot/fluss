@@ -44,6 +44,7 @@ import com.alibaba.fluss.rpc.RpcClient;
 import com.alibaba.fluss.rpc.gateway.TabletServerGateway;
 import com.alibaba.fluss.rpc.metrics.TestingClientMetricGroup;
 import com.alibaba.fluss.utils.CloseableIterator;
+import com.alibaba.fluss.utils.clock.ManualClock;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -58,6 +59,7 @@ import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 import static com.alibaba.fluss.record.DefaultLogRecordBatch.RECORD_BATCH_HEADER_SIZE;
@@ -95,7 +97,7 @@ public class RecordAccumulatorTest {
                     throw new RuntimeException(exception);
                 }
             };
-
+    private final ManualClock clock = new ManualClock(System.currentTimeMillis());
     private Configuration conf;
     private Cluster cluster;
 
@@ -150,7 +152,7 @@ public class RecordAccumulatorTest {
     @Test
     void testFull() throws Exception {
         // test case assumes that the records do not fill the batch completely
-        int batchSize = 1025;
+        int batchSize = 1024;
         IndexedRow row = row(DATA1_ROW_TYPE, new Object[] {1, "a"});
 
         RecordAccumulator accum = createTestRecordAccumulator(batchSize, 10L * batchSize);
@@ -391,6 +393,47 @@ public class RecordAccumulatorTest {
         assertThatThrownBy(accum::awaitFlushCompletion).isInstanceOf(InterruptedException.class);
     }
 
+    @Test
+    public void testNextReadyCheckDelay() throws Exception {
+        int batchTimeout = 10;
+        int batchSize = 1024;
+        IndexedRow row = row(DATA1_ROW_TYPE, new Object[] {1, "a"});
+        // test case assumes that the records do not fill the batch completely
+        RecordAccumulator accum =
+                createTestRecordAccumulator(batchTimeout, batchSize, 256, 10 * batchSize);
+        // Just short of going over the limit so we trigger linger time
+        int appends = expectedNumAppends(row, batchSize);
+
+        // Add data for bucket 1
+        for (int i = 0; i < appends; i++) {
+            accum.append(createRecord(row), writeCallback, cluster, bucket1.getBucketId(), false);
+        }
+        RecordAccumulator.ReadyCheckResult result = accum.ready(cluster);
+        assertThat(result.readyNodes).isEmpty();
+        assertThat(result.nextReadyCheckDelayMs).isEqualTo(batchTimeout);
+
+        clock.advanceTime(batchTimeout / 2, TimeUnit.MILLISECONDS);
+
+        // Add data for bucket 3
+        for (int i = 0; i < appends; i++) {
+            accum.append(createRecord(row), writeCallback, cluster, bucket3.getBucketId(), false);
+        }
+        result = accum.ready(cluster);
+        assertThat(result.readyNodes).hasSize(0);
+        assertThat(result.nextReadyCheckDelayMs).isEqualTo(batchTimeout / 2);
+
+        // Append one more data for bucket1 should make the batch full and sendable immediately
+        accum.append(createRecord(row), writeCallback, cluster, bucket1.getBucketId(), false);
+
+        result = accum.ready(cluster);
+        // server for bucket1 should be ready now
+        assertThat(result.readyNodes).hasSize(1).contains(node1);
+        // Note this can actually be < batchTimeout because it may use delays from bucket that
+        // aren't sendable
+        // but have leaders with other sendable data.
+        assertThat(result.nextReadyCheckDelayMs).isLessThanOrEqualTo(batchTimeout);
+    }
+
     private WriteRecord createRecord(InternalRow row) {
         return new WriteRecord(DATA1_PHYSICAL_TABLE_PATH, WriteKind.APPEND, row, null);
     }
@@ -494,7 +537,8 @@ public class RecordAccumulatorTest {
                                 () -> cluster.getRandomTabletServer(),
                                 RpcClient.create(conf, TestingClientMetricGroup.newInstance()),
                                 TabletServerGateway.class)),
-                TestingWriterMetricGroup.newInstance());
+                TestingWriterMetricGroup.newInstance(),
+                clock);
     }
 
     private long getTestBatchSize(InternalRow row) {
