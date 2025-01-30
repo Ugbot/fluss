@@ -19,11 +19,12 @@ package com.alibaba.fluss.server.coordinator;
 import com.alibaba.fluss.cluster.ServerType;
 import com.alibaba.fluss.config.ConfigOptions;
 import com.alibaba.fluss.config.Configuration;
+import com.alibaba.fluss.exception.InvalidConfigException;
 import com.alibaba.fluss.exception.InvalidDatabaseException;
 import com.alibaba.fluss.exception.InvalidTableException;
 import com.alibaba.fluss.fs.FileSystem;
 import com.alibaba.fluss.metadata.DatabaseDescriptor;
-import com.alibaba.fluss.metadata.MergeEngine;
+import com.alibaba.fluss.metadata.MergeEngineType;
 import com.alibaba.fluss.metadata.Schema;
 import com.alibaba.fluss.metadata.TableDescriptor;
 import com.alibaba.fluss.metadata.TablePath;
@@ -51,7 +52,7 @@ import com.alibaba.fluss.server.coordinator.event.CommitLakeTableSnapshotEvent;
 import com.alibaba.fluss.server.coordinator.event.CommitRemoteLogManifestEvent;
 import com.alibaba.fluss.server.coordinator.event.EventManager;
 import com.alibaba.fluss.server.entity.CommitKvSnapshotData;
-import com.alibaba.fluss.server.kv.mergeengine.VersionRowMerger;
+import com.alibaba.fluss.server.kv.rowmerger.VersionedRowMerger;
 import com.alibaba.fluss.server.kv.snapshot.CompletedSnapshot;
 import com.alibaba.fluss.server.kv.snapshot.CompletedSnapshotJsonSerde;
 import com.alibaba.fluss.server.metadata.ServerMetadataCache;
@@ -61,7 +62,6 @@ import com.alibaba.fluss.server.zk.ZooKeeperClient;
 import com.alibaba.fluss.server.zk.data.TableAssignment;
 import com.alibaba.fluss.types.DataType;
 import com.alibaba.fluss.types.DataTypeRoot;
-import com.alibaba.fluss.types.RowType;
 import com.alibaba.fluss.utils.AutoPartitionStrategy;
 import com.alibaba.fluss.utils.concurrent.FutureUtils;
 
@@ -158,6 +158,8 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
             }
         }
 
+        sanityCheckMergeEngine(tableDescriptor);
+
         int bucketCount = defaultBucketNumber;
         // not set distribution
         if (!tableDescriptor.getTableDistribution().isPresent()) {
@@ -185,37 +187,11 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
             sanityCheckPartitionedTable(tableDescriptor);
         }
 
-        MergeEngine mergeEngine = tableDescriptor.getMergeEngine();
-        if (mergeEngine != null) {
-            checkMergeEngine(mergeEngine, tableDescriptor.getSchema());
-        }
-
         // then create table;
         metadataManager.createTable(
                 tablePath, tableDescriptor, tableAssignment, request.isIgnoreIfExists());
 
         return CompletableFuture.completedFuture(response);
-    }
-
-    private void checkMergeEngine(MergeEngine mergeEngine, Schema schema) {
-        if (mergeEngine.getType() == MergeEngine.Type.VERSION) {
-            String column = mergeEngine.getColumn();
-            RowType rowType = schema.toRowType();
-            int fieldIndex = rowType.getFieldIndex(column);
-            if (fieldIndex == -1) {
-                throw new InvalidTableException(
-                        String.format(
-                                "The version merge engine column %s does not exist.", column));
-            }
-            DataType dataType = rowType.getTypeAt(fieldIndex);
-            if (!VersionRowMerger.VERSION_MERGE_ENGINE_SUPPORTED_DATA_TYPES.contains(
-                    dataType.getTypeRoot())) {
-                throw new InvalidTableException(
-                        String.format(
-                                "The version merge engine column does not support type %s .",
-                                dataType));
-            }
-        }
     }
 
     private void sanityCheckPartitionedTable(TableDescriptor tableDescriptor) {
@@ -247,6 +223,34 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
                     String.format(
                             "Currently, partitioned table only supports STRING type partition key, but got partition key '%s' with data type %s.",
                             partitionKey, partitionDataType));
+        }
+    }
+
+    private void sanityCheckMergeEngine(TableDescriptor tableDescriptor) {
+        Configuration config = Configuration.fromMap(tableDescriptor.getProperties());
+        MergeEngineType mergeEngine = config.get(ConfigOptions.TABLE_MERGE_ENGINE);
+        if (mergeEngine != null) {
+            if (!tableDescriptor.hasPrimaryKey()) {
+                throw new InvalidConfigException(
+                        "Merge engine is only supported in primary key table.");
+            }
+            if (mergeEngine == MergeEngineType.VERSIONED) {
+                Optional<String> versionColumn =
+                        config.getOptional(ConfigOptions.TABLE_MERGE_ENGINE_VERSION_COLUMN);
+                if (!versionColumn.isPresent()) {
+                    throw new InvalidConfigException(
+                            String.format(
+                                    "'%s' must be set for versioned merge engine.",
+                                    ConfigOptions.TABLE_MERGE_ENGINE_VERSION_COLUMN.key()));
+                }
+                try {
+                    VersionedRowMerger.createVersionComparator(
+                            tableDescriptor.getSchema().toRowType(), versionColumn.get());
+                } catch (IllegalArgumentException e) {
+                    throw new InvalidConfigException(
+                            "Failed to create versioned merge engine: " + e.getMessage());
+                }
+            }
         }
     }
 

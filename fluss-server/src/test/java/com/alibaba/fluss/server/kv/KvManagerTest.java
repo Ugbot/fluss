@@ -247,7 +247,7 @@ final class KvManagerTest {
 
     private void put(KvTablet kvTablet, KvRecord... kvRecords) throws Exception {
         KvRecordBatch kvRecordBatch = kvRecordBatchFactory.ofRecords(Arrays.asList(kvRecords));
-        kvTablet.putAsLeader(kvRecordBatch, null, DATA1_SCHEMA_PK);
+        kvTablet.putAsLeader(kvRecordBatch, null);
         // flush to make sure data is visible
         kvTablet.flush(Long.MAX_VALUE, NOPErrorHandler.INSTANCE);
     }
@@ -265,7 +265,8 @@ final class KvManagerTest {
                 tableBucket,
                 logTablet,
                 KvFormat.COMPACTED,
-                null,
+                DATA1_SCHEMA_PK,
+                new Configuration(),
                 ArrowCompressionInfo.NO_COMPRESSION);
     }
 

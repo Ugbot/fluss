@@ -238,6 +238,53 @@ class FlussAdminITCase extends ClientToServerITCaseBase {
                 .cause()
                 .isInstanceOf(InvalidConfigException.class)
                 .hasMessage("'table.log.tiered.local-segments' must be greater than 0.");
+
+        TableDescriptor t4 =
+                TableDescriptor.builder()
+                        .schema(DEFAULT_SCHEMA) // no pk
+                        .comment("test table")
+                        .property(ConfigOptions.TABLE_MERGE_ENGINE.key(), "versioned")
+                        .build();
+        // should throw exception
+        assertThatThrownBy(() -> admin.createTable(tablePath, t4, false).get())
+                .cause()
+                .isInstanceOf(InvalidConfigException.class)
+                .hasMessage(
+                        "'%s' must be set for versioned merge engine.",
+                        ConfigOptions.TABLE_MERGE_ENGINE_VERSION_COLUMN.key());
+
+        TableDescriptor t5 =
+                TableDescriptor.builder()
+                        .schema(DEFAULT_SCHEMA) // no pk
+                        .comment("test table")
+                        .property(ConfigOptions.TABLE_MERGE_ENGINE.key(), "versioned")
+                        .property(
+                                ConfigOptions.TABLE_MERGE_ENGINE_VERSION_COLUMN.key(),
+                                "non-existed")
+                        .build();
+        // should throw exception
+        assertThatThrownBy(() -> admin.createTable(tablePath, t5, false).get())
+                .cause()
+                .isInstanceOf(InvalidConfigException.class)
+                .hasMessage(
+                        "Failed to create versioned merge engine: The version column 'non-existed' "
+                                + "for versioned merge engine doesn't exist in schema.");
+
+        TableDescriptor t6 =
+                TableDescriptor.builder()
+                        .schema(DEFAULT_SCHEMA) // no pk
+                        .comment("test table")
+                        .property(ConfigOptions.TABLE_MERGE_ENGINE.key(), "versioned")
+                        .property(ConfigOptions.TABLE_MERGE_ENGINE_VERSION_COLUMN.key(), "name")
+                        .build();
+        // should throw exception
+        assertThatThrownBy(() -> admin.createTable(tablePath, t6, false).get())
+                .cause()
+                .isInstanceOf(InvalidConfigException.class)
+                .hasMessage(
+                        "Failed to create versioned merge engine: The version column 'name' "
+                                + "for versioned merge engine must be one type of "
+                                + "[INT, BIGINT, TIMESTAMP, TIMESTAMP_LTZ], but is STRING.");
     }
 
     @Test

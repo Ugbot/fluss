@@ -19,6 +19,7 @@ package com.alibaba.fluss.server.replica;
 import com.alibaba.fluss.annotation.VisibleForTesting;
 import com.alibaba.fluss.compression.ArrowCompressionInfo;
 import com.alibaba.fluss.config.ConfigOptions;
+import com.alibaba.fluss.config.Configuration;
 import com.alibaba.fluss.exception.FencedLeaderEpochException;
 import com.alibaba.fluss.exception.InvalidColumnProjectionException;
 import com.alibaba.fluss.exception.InvalidTimestampException;
@@ -31,7 +32,6 @@ import com.alibaba.fluss.exception.NotLeaderOrFollowerException;
 import com.alibaba.fluss.fs.FsPath;
 import com.alibaba.fluss.metadata.KvFormat;
 import com.alibaba.fluss.metadata.LogFormat;
-import com.alibaba.fluss.metadata.MergeEngine;
 import com.alibaba.fluss.metadata.PhysicalTablePath;
 import com.alibaba.fluss.metadata.Schema;
 import com.alibaba.fluss.metadata.TableBucket;
@@ -171,10 +171,11 @@ public final class Replica {
     private final LogFormat logFormat;
     private final ArrowCompressionInfo arrowCompressionInfo;
     private final KvFormat kvFormat;
-    private final @Nullable MergeEngine mergeEngine;
     private final long logTTLMs;
     private final boolean dataLakeEnabled;
     private final int tieredLogLocalSegments;
+    // TODO: merge above config fields into a table config
+    private final Configuration tableConfig;
     private final AtomicReference<Integer> leaderReplicaIdOpt = new AtomicReference<>();
     private final ReadWriteLock leaderIsrUpdateLock = new ReentrantReadWriteLock();
     private final Clock clock;
@@ -240,7 +241,7 @@ public final class Replica {
         this.logTTLMs = tableDescriptor.getLogTTLMs();
         this.dataLakeEnabled = tableDescriptor.isDataLakeEnabled();
         this.tieredLogLocalSegments = tableDescriptor.getTieredLogLocalSegments();
-        this.mergeEngine = tableDescriptor.getMergeEngine();
+        this.tableConfig = Configuration.fromMap(tableDescriptor.getProperties());
         this.partitionKeys = tableDescriptor.getPartitionKeys();
         this.snapshotContext = snapshotContext;
         // create a closeable registry for the replica
@@ -622,7 +623,8 @@ public final class Replica {
                                 tableBucket,
                                 logTablet,
                                 kvFormat,
-                                mergeEngine,
+                                schema,
+                                tableConfig,
                                 arrowCompressionInfo);
             }
             logTablet.updateMinRetainOffset(restoreStartOffset);
@@ -848,7 +850,7 @@ public final class Replica {
                     KvTablet kv = this.kvTablet;
                     checkNotNull(
                             kv, "KvTablet for the replica to put kv records shouldn't be null.");
-                    LogAppendInfo logAppendInfo = kv.putAsLeader(kvRecords, targetColumns, schema);
+                    LogAppendInfo logAppendInfo = kv.putAsLeader(kvRecords, targetColumns);
                     // we may need to increment high watermark.
                     maybeIncrementLeaderHW(logTablet, clock.milliseconds());
                     return logAppendInfo;

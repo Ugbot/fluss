@@ -140,9 +140,9 @@ public final class TableDescriptor implements Serializable {
                     "For Primary Key Table, if kv format is compacted, log format must be arrow.");
         }
 
-        if (!hasPrimaryKey() && getMergeEngine() != null) {
+        if (!hasPrimaryKey() && getMergeEngineType() != null) {
             throw new IllegalArgumentException(
-                    "Merge-engine is only supported in primary key table.");
+                    "Merge engine is only supported in primary key table.");
         }
 
         // TODO: generalize the validation for ConfigOption
@@ -293,8 +293,8 @@ public final class TableDescriptor implements Serializable {
         return configuration().get(ConfigOptions.TABLE_DATALAKE_ENABLED);
     }
 
-    public @Nullable MergeEngine getMergeEngine() {
-        return MergeEngine.create(properties);
+    public @Nullable MergeEngineType getMergeEngineType() {
+        return configuration().get(ConfigOptions.TABLE_MERGE_ENGINE);
     }
 
     /** Gets the Arrow compression type and compression level of the table. */

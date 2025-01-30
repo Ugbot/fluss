@@ -36,7 +36,7 @@ import com.alibaba.fluss.config.Configuration;
 import com.alibaba.fluss.config.MemorySize;
 import com.alibaba.fluss.metadata.KvFormat;
 import com.alibaba.fluss.metadata.LogFormat;
-import com.alibaba.fluss.metadata.MergeEngine;
+import com.alibaba.fluss.metadata.MergeEngineType;
 import com.alibaba.fluss.metadata.Schema;
 import com.alibaba.fluss.metadata.TableBucket;
 import com.alibaba.fluss.metadata.TableDescriptor;
@@ -53,7 +53,6 @@ import com.alibaba.fluss.types.StringType;
 import com.alibaba.fluss.utils.Preconditions;
 
 import org.apache.commons.lang3.StringUtils;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
@@ -113,7 +112,6 @@ class FlussTableITCase extends ClientToServerITCaseBase {
 
     @ParameterizedTest
     @ValueSource(booleans = {true, false})
-    @Disabled("TODO, fix me in #116")
     void testAppendWithSmallBuffer(boolean indexedFormat) throws Exception {
         TableDescriptor desc =
                 indexedFormat
@@ -931,7 +929,7 @@ class FlussTableITCase extends ClientToServerITCaseBase {
         TableDescriptor tableDescriptor =
                 TableDescriptor.builder()
                         .schema(DATA1_SCHEMA_PK)
-                        .property(ConfigOptions.TABLE_MERGE_ENGINE, MergeEngine.Type.FIRST_ROW)
+                        .property(ConfigOptions.TABLE_MERGE_ENGINE, MergeEngineType.FIRST_ROW)
                         .build();
         RowType rowType = DATA1_SCHEMA_PK.toRowType();
         createTable(DATA1_TABLE_PATH_PK, tableDescriptor, false);
@@ -1065,7 +1063,7 @@ class FlussTableITCase extends ClientToServerITCaseBase {
         TableDescriptor tableDescriptor =
                 TableDescriptor.builder()
                         .schema(DATA3_SCHEMA_PK)
-                        .property(ConfigOptions.TABLE_MERGE_ENGINE, MergeEngine.Type.VERSION)
+                        .property(ConfigOptions.TABLE_MERGE_ENGINE, MergeEngineType.VERSIONED)
                         .property(ConfigOptions.TABLE_MERGE_ENGINE_VERSION_COLUMN, "b")
                         .build();
         RowType rowType = DATA3_SCHEMA_PK.toRowType();

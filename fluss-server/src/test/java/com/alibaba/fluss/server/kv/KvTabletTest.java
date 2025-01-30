@@ -23,7 +23,6 @@ import com.alibaba.fluss.exception.OutOfOrderSequenceException;
 import com.alibaba.fluss.memory.TestingMemorySegmentPool;
 import com.alibaba.fluss.metadata.KvFormat;
 import com.alibaba.fluss.metadata.LogFormat;
-import com.alibaba.fluss.metadata.MergeEngine;
 import com.alibaba.fluss.metadata.PhysicalTablePath;
 import com.alibaba.fluss.metadata.Schema;
 import com.alibaba.fluss.metadata.TableBucket;
@@ -41,6 +40,7 @@ import com.alibaba.fluss.row.encode.ValueEncoder;
 import com.alibaba.fluss.server.kv.prewrite.KvPreWriteBuffer.Key;
 import com.alibaba.fluss.server.kv.prewrite.KvPreWriteBuffer.KvEntry;
 import com.alibaba.fluss.server.kv.prewrite.KvPreWriteBuffer.Value;
+import com.alibaba.fluss.server.kv.rowmerger.RowMerger;
 import com.alibaba.fluss.server.log.FetchIsolation;
 import com.alibaba.fluss.server.log.LogAppendInfo;
 import com.alibaba.fluss.server.log.LogTablet;
@@ -100,11 +100,7 @@ class KvTabletTest {
     private ExecutorService executor;
 
     @BeforeEach
-    void beforeEach() throws Exception {
-        PhysicalTablePath tablePath = PhysicalTablePath.of(TablePath.of("testDb", "t1"));
-        logTablet = createLogTablet(tempLogDir, 0L, tablePath);
-        TableBucket tableBucket = logTablet.getTableBucket();
-        kvTablet = createKvTablet(tablePath, tableBucket, logTablet, tmpKvDir, null);
+    void beforeEach() {
         executor = Executors.newFixedThreadPool(2);
     }
 
@@ -113,6 +109,14 @@ class KvTabletTest {
         if (executor != null) {
             executor.shutdown();
         }
+    }
+
+    private void initLogTabletAndKvTablet(Schema schema, Map<String, String> tableConfig)
+            throws Exception {
+        PhysicalTablePath tablePath = PhysicalTablePath.of(TablePath.of("testDb", "t1"));
+        logTablet = createLogTablet(tempLogDir, 0L, tablePath);
+        TableBucket tableBucket = logTablet.getTableBucket();
+        kvTablet = createKvTablet(tablePath, tableBucket, logTablet, tmpKvDir, schema, tableConfig);
     }
 
     private LogTablet createLogTablet(File tempLogDir, long tableId, PhysicalTablePath tablePath)
@@ -137,8 +141,11 @@ class KvTabletTest {
             TableBucket tableBucket,
             LogTablet logTablet,
             File tmpKvDir,
-            MergeEngine mergeEngine)
+            Schema schema,
+            Map<String, String> tableConfig)
             throws Exception {
+        RowMerger rowMerger =
+                RowMerger.create(Configuration.fromMap(tableConfig), schema, KvFormat.COMPACTED);
         return KvTablet.create(
                 tablePath,
                 tableBucket,
@@ -148,13 +155,15 @@ class KvTabletTest {
                 new RootAllocator(Long.MAX_VALUE),
                 new TestingMemorySegmentPool(10 * 1024),
                 KvFormat.COMPACTED,
-                mergeEngine,
+                schema,
+                rowMerger,
                 ArrowCompressionInfo.NO_COMPRESSION);
     }
 
     @Test
-    void testInvalidPartialUpdate() throws Exception {
+    void testInvalidPartialUpdate1() throws Exception {
         final Schema schema1 = DATA2_SCHEMA;
+        initLogTabletAndKvTablet(schema1, new HashMap<>());
         KvRecordTestUtils.KvRecordFactory data2kvRecordFactory =
                 KvRecordTestUtils.KvRecordFactory.of(schema1.toRowType());
         KvRecordBatch kvRecordBatch =
@@ -162,12 +171,15 @@ class KvTabletTest {
                         Collections.singletonList(
                                 data2kvRecordFactory.ofRecord(
                                         "k1".getBytes(), new Object[] {1, null, null})));
-        // target columns don't contains primary key columns
-        assertThatThrownBy(() -> kvTablet.putAsLeader(kvRecordBatch, new int[] {1, 2}, schema1))
+        // target columns don't contain primary key columns
+        assertThatThrownBy(() -> kvTablet.putAsLeader(kvRecordBatch, new int[] {1, 2}))
                 .isInstanceOf(InvalidTargetColumnException.class)
                 .hasMessage(
                         "The target write columns [b, c] must contain the primary key columns [a].");
+    }
 
+    @Test
+    void testInvalidPartialUpdate2() throws Exception {
         // the column not in target columns is not null
         final Schema schema2 =
                 Schema.newBuilder()
@@ -176,11 +188,19 @@ class KvTabletTest {
                         .column("c", new StringType(false))
                         .primaryKey("a")
                         .build();
-        assertThatThrownBy(() -> kvTablet.putAsLeader(kvRecordBatch, new int[] {0, 1}, schema2))
+        initLogTabletAndKvTablet(schema2, new HashMap<>());
+        KvRecordTestUtils.KvRecordFactory data2kvRecordFactory =
+                KvRecordTestUtils.KvRecordFactory.of(schema2.toRowType());
+        KvRecordBatch kvRecordBatch =
+                kvRecordBatchFactory.ofRecords(
+                        Collections.singletonList(
+                                data2kvRecordFactory.ofRecord(
+                                        "k1".getBytes(), new Object[] {1, null, "str"})));
+        assertThatThrownBy(() -> kvTablet.putAsLeader(kvRecordBatch, new int[] {0, 1}))
                 .isInstanceOf(InvalidTargetColumnException.class)
                 .hasMessage(
                         "Partial Update requires all columns except primary key to be nullable, but column c is NOT NULL.");
-        assertThatThrownBy(() -> kvTablet.putAsLeader(kvRecordBatch, new int[] {0, 2}, schema2))
+        assertThatThrownBy(() -> kvTablet.putAsLeader(kvRecordBatch, new int[] {0, 2}))
                 .isInstanceOf(InvalidTargetColumnException.class)
                 .hasMessage(
                         "Partial Update requires all columns except primary key to be nullable, but column c is NOT NULL.");
@@ -188,7 +208,7 @@ class KvTabletTest {
 
     @Test
     void testPartialUpdateAndDelete() throws Exception {
-        Schema dataSchema = DATA2_SCHEMA;
+        initLogTabletAndKvTablet(DATA2_SCHEMA, new HashMap<>());
         RowType rowType = DATA2_SCHEMA.toRowType();
         KvRecordTestUtils.KvRecordFactory data2kvRecordFactory =
                 KvRecordTestUtils.KvRecordFactory.of(rowType);
@@ -206,7 +226,7 @@ class KvTabletTest {
 
         int[] targetColumns = new int[] {0};
 
-        kvTablet.putAsLeader(kvRecordBatch, targetColumns, dataSchema);
+        kvTablet.putAsLeader(kvRecordBatch, targetColumns);
         long endOffset = logTablet.localLogEndOffset();
 
         // expected cdc log records for putting order: batch1, batch2;
@@ -246,7 +266,7 @@ class KvTabletTest {
                                         "k2".getBytes(), new Object[] {2, "v23", null})));
 
         targetColumns = new int[] {0, 1};
-        kvTablet.putAsLeader(kvRecordBatch2, targetColumns, dataSchema);
+        kvTablet.putAsLeader(kvRecordBatch2, targetColumns);
 
         expectedLogs =
                 Collections.singletonList(
@@ -286,7 +306,7 @@ class KvTabletTest {
                                         "k3".getBytes(), new Object[] {3, null, "v211"})));
 
         targetColumns = new int[] {0, 2};
-        kvTablet.putAsLeader(kvRecordBatch3, targetColumns, dataSchema);
+        kvTablet.putAsLeader(kvRecordBatch3, targetColumns);
 
         expectedLogs =
                 Collections.singletonList(
@@ -317,7 +337,7 @@ class KvTabletTest {
                 kvRecordBatchFactory.ofRecords(
                         Collections.singletonList(
                                 data2kvRecordFactory.ofRecord("k1".getBytes(), null)));
-        kvTablet.putAsLeader(kvRecordBatch, targetColumns, dataSchema);
+        kvTablet.putAsLeader(kvRecordBatch, targetColumns);
 
         // check cdc log, should produce -U, +U
         actualLogRecords = readLogRecords(endOffset);
@@ -344,7 +364,7 @@ class KvTabletTest {
                 kvRecordBatchFactory.ofRecords(
                         Collections.singletonList(
                                 data2kvRecordFactory.ofRecord("k1".getBytes(), null)));
-        kvTablet.putAsLeader(kvRecordBatch, targetColumns, dataSchema);
+        kvTablet.putAsLeader(kvRecordBatch, targetColumns);
         // check cdc log, should produce -U, +U
         actualLogRecords = readLogRecords(endOffset);
         expectedLogs =
@@ -363,6 +383,7 @@ class KvTabletTest {
 
     @Test
     void testPutWithMultiThread() throws Exception {
+        initLogTabletAndKvTablet(DATA1_SCHEMA_PK, new HashMap<>());
         // create two kv batches
         KvRecordBatch kvRecordBatch1 =
                 kvRecordBatchFactory.ofRecords(
@@ -466,13 +487,13 @@ class KvTabletTest {
                 executor.submit(
                         () -> {
                             Thread.sleep(random.nextInt(100));
-                            return kvTablet.putAsLeader(kvRecordBatch1, null, DATA1_SCHEMA_PK);
+                            return kvTablet.putAsLeader(kvRecordBatch1, null);
                         }));
         putFutures.add(
                 executor.submit(
                         () -> {
                             Thread.sleep(random.nextInt(100));
-                            return kvTablet.putAsLeader(kvRecordBatch2, null, DATA1_SCHEMA_PK);
+                            return kvTablet.putAsLeader(kvRecordBatch2, null);
                         }));
 
         List<Long> actualLogEndOffset = new ArrayList<>();
@@ -501,6 +522,7 @@ class KvTabletTest {
 
     @Test
     void testPutAsLeaderWithOutOfOrderSequenceException() throws Exception {
+        initLogTabletAndKvTablet(DATA1_SCHEMA_PK, new HashMap<>());
         long writeId = 100L;
         List<KvRecord> kvData1 =
                 Arrays.asList(
@@ -515,7 +537,7 @@ class KvTabletTest {
                         kvRecordFactory.ofRecord("k1".getBytes(), new Object[] {1, "v21"}),
                         kvRecordFactory.ofRecord("k1".getBytes(), null));
         KvRecordBatch kvRecordBatch2 = kvRecordBatchFactory.ofRecords(kvData2, writeId, 3);
-        kvTablet.putAsLeader(kvRecordBatch1, null, DATA1_SCHEMA_PK);
+        kvTablet.putAsLeader(kvRecordBatch1, null);
 
         KvEntry kv1 =
                 KvEntry.of(
@@ -543,7 +565,7 @@ class KvTabletTest {
         assertThat(kvTablet.getKvPreWriteBuffer().getMaxLSN()).isEqualTo(3);
 
         // the second batch will be ignored.
-        assertThatThrownBy(() -> kvTablet.putAsLeader(kvRecordBatch2, null, DATA1_SCHEMA_PK))
+        assertThatThrownBy(() -> kvTablet.putAsLeader(kvRecordBatch2, null))
                 .isInstanceOf(OutOfOrderSequenceException.class)
                 .hasMessageContaining(
                         "Out of order batch sequence for writer 100 at offset 8 in table-bucket "
@@ -554,18 +576,10 @@ class KvTabletTest {
     }
 
     @Test
-    void testFirstRowMergeEngine(@TempDir File tempLogDir, @TempDir File tmpKvDir)
-            throws Exception {
-        PhysicalTablePath tablePath =
-                PhysicalTablePath.of(TablePath.of("testDb", "test_first_row"));
-
-        LogTablet logTablet = createLogTablet(tempLogDir, 1L, tablePath);
-        TableBucket tableBucket = logTablet.getTableBucket();
+    void testFirstRowMergeEngine() throws Exception {
         Map<String, String> config = new HashMap<>();
         config.put("table.merge-engine", "first_row");
-        KvTablet kvTablet =
-                createKvTablet(
-                        tablePath, tableBucket, logTablet, tmpKvDir, MergeEngine.create(config));
+        initLogTabletAndKvTablet(DATA1_SCHEMA_PK, config);
 
         List<KvRecord> kvData1 =
                 Arrays.asList(
@@ -573,7 +587,7 @@ class KvTabletTest {
                         kvRecordFactory.ofRecord("k2".getBytes(), new Object[] {2, "v21"}),
                         kvRecordFactory.ofRecord("k2".getBytes(), new Object[] {2, "v23"}));
         KvRecordBatch kvRecordBatch1 = kvRecordBatchFactory.ofRecords(kvData1);
-        kvTablet.putAsLeader(kvRecordBatch1, null, DATA1_SCHEMA_PK);
+        kvTablet.putAsLeader(kvRecordBatch1, null);
         long endOffset = logTablet.localLogEndOffset();
         LogRecords actualLogRecords = readLogRecords(logTablet);
         List<MemoryLogRecords> expectedLogs =
@@ -592,7 +606,7 @@ class KvTabletTest {
                         kvRecordFactory.ofRecord("k1".getBytes(), null),
                         kvRecordFactory.ofRecord("k3".getBytes(), new Object[] {3, "v31"}));
         KvRecordBatch kvRecordBatch2 = kvRecordBatchFactory.ofRecords(kvData2);
-        kvTablet.putAsLeader(kvRecordBatch2, null, DATA1_SCHEMA_PK);
+        kvTablet.putAsLeader(kvRecordBatch2, null);
 
         expectedLogs =
                 Collections.singletonList(
@@ -606,24 +620,13 @@ class KvTabletTest {
     }
 
     @Test
-    void testVersionRowMergeEngine(@TempDir File tempLogDir, @TempDir File tmpKvDir)
-            throws Exception {
-
+    void testVersionRowMergeEngine() throws Exception {
+        Map<String, String> config = new HashMap<>();
+        config.put("table.merge-engine", "versioned");
+        config.put("table.merge-engine.versioned.ver-column", "b");
+        initLogTabletAndKvTablet(DATA3_SCHEMA_PK, config);
         KvRecordTestUtils.KvRecordFactory kvRecordFactory =
                 KvRecordTestUtils.KvRecordFactory.of(DATA3_SCHEMA_PK.toRowType());
-
-        PhysicalTablePath tablePath =
-                PhysicalTablePath.of(TablePath.of("testDb", "test_version_row"));
-
-        LogTablet logTablet = createLogTablet(tempLogDir, 1L, tablePath);
-        TableBucket tableBucket = logTablet.getTableBucket();
-
-        Map<String, String> config = new HashMap<>();
-        config.put("table.merge-engine", "version");
-        config.put("table.merge-engine.version.column", "b");
-        MergeEngine mergeEngine = MergeEngine.create(config);
-        KvTablet kvTablet =
-                createKvTablet(tablePath, tableBucket, logTablet, tmpKvDir, mergeEngine);
 
         List<KvRecord> kvData1 =
                 Arrays.asList(
@@ -631,7 +634,7 @@ class KvTabletTest {
                         kvRecordFactory.ofRecord("k2".getBytes(), new Object[] {2, 1000L}),
                         kvRecordFactory.ofRecord("k2".getBytes(), new Object[] {2, 1001L}));
         KvRecordBatch kvRecordBatch1 = kvRecordBatchFactory.ofRecords(kvData1);
-        kvTablet.putAsLeader(kvRecordBatch1, null, DATA3_SCHEMA_PK);
+        kvTablet.putAsLeader(kvRecordBatch1, null);
 
         long endOffset = logTablet.localLogEndOffset();
         LogRecords actualLogRecords = readLogRecords(logTablet);
@@ -661,7 +664,7 @@ class KvTabletTest {
                         kvRecordFactory.ofRecord("k1".getBytes(), null), // not update
                         kvRecordFactory.ofRecord("k3".getBytes(), new Object[] {3, 1000L})); // +I
         KvRecordBatch kvRecordBatch2 = kvRecordBatchFactory.ofRecords(kvData2);
-        kvTablet.putAsLeader(kvRecordBatch2, null, DATA3_SCHEMA_PK);
+        kvTablet.putAsLeader(kvRecordBatch2, null);
 
         expectedLogs =
                 Collections.singletonList(
