@@ -14,14 +14,14 @@
 # limitations under the License.
 ################################################################################
 
-name: Feature Request 🚀
-description: Add new feature, improvement, and more
-type: "feature"
+name: Task 📌
+description: A specific piece of work
+type: "task"
 body:
   - type: markdown
     attributes:
       value: |
-        Thank you very much for your feature proposal!
+        Thank you very much for your work!
   - type: checkboxes
     attributes:
       label: Search before asking
@@ -33,22 +33,15 @@ body:
           required: true
   - type: textarea
     attributes:
-      label: Motivation
-      description: Please describe the feature and elaborate on the use case and motivation behind it
+      label: Description
+      description: Please describe the task and the purpose of the work.
     validations:
       required: true
-  - type: textarea
-    attributes:
-      label: Solution
-      description: Describe the proposed solution and add related materials like links if any.
-  - type: textarea
-    attributes:
-      label: Anything else?
   - type: checkboxes
     attributes:
       label: Willingness to contribute
       description: >
-        We look forward to the community of developers or users helping develop Fluss features together. If you are willing to submit a PR to implement the feature, please check the box.
+        We look forward to the community of developers or users helping develop Fluss together. If you are willing to submit a PR to implement the task, please check the box.
       options:
         - label: I'm willing to submit a PR!
   - type: markdown
