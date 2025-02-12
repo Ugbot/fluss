@@ -312,6 +312,46 @@ class FlinkCatalogITCase {
                 .hasMessage("Cannot discover a connector using option: 'connector'='fluss'");
     }
 
+    @Test
+    void testCreateTableWithUnknownOptions() {
+        // create fluss table with unknown options whose prefix is 'table.*' or 'client.*'
+        tEnv.executeSql(
+                "create table test_table_unknown_options (a int, b int)"
+                        + " with ('connector' = 'fluss', 'bootstrap.servers' = 'localhost:9092', 'table.unknown.option' = 'table-unknown-val', 'client.unknown.option' = 'client-unknown-val')");
+
+        // test table as source
+        String sourcePlan = tEnv.explainSql("select * from test_table_unknown_options");
+        assertThat(sourcePlan)
+                .contains(
+                        "TableSourceScan(table=[[testcatalog, fluss, test_table_unknown_options]], fields=[a, b])");
+
+        // test table as sink
+        String sinkPlan = tEnv.explainSql("insert into test_table_unknown_options values (1, 2)");
+        assertThat(sinkPlan)
+                .contains(
+                        "Sink(table=[testcatalog.fluss.test_table_unknown_options], fields=[EXPR$0, EXPR$1])");
+
+        // create fluss table with other invalid unknown option
+        tEnv.executeSql(
+                "create table test_table_other_unknown_options (a int, b int)"
+                        + " with ('connector' = 'fluss', 'bootstrap.servers' = 'localhost:9092', 'other.unknown.option' = 'other-unknown-val')");
+
+        // test invalid table as source
+        assertThatThrownBy(() -> tEnv.explainSql("select * from test_table_other_unknown_options"))
+                .cause()
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("Unsupported options found for 'fluss'");
+
+        // test invalid table as sink
+        assertThatThrownBy(
+                        () ->
+                                tEnv.explainSql(
+                                        "insert into test_table_other_unknown_options values (1, 2)"))
+                .cause()
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("Unsupported options found for 'fluss'");
+    }
+
     private static void assertOptionsEqual(
             Map<String, String> actualOptions, Map<String, String> expectedOptions) {
         actualOptions.remove(ConfigOptions.BOOTSTRAP_SERVERS.key());

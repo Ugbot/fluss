@@ -71,7 +71,7 @@ public class FlinkTableFactory implements DynamicTableSourceFactory, DynamicTabl
         }
 
         FactoryUtil.TableFactoryHelper helper = FactoryUtil.createTableFactoryHelper(this, context);
-        helper.validate();
+        helper.validateExcept("table.", "client.");
 
         boolean isStreamingMode =
                 context.getConfiguration().get(ExecutionOptions.RUNTIME_MODE)
@@ -135,7 +135,7 @@ public class FlinkTableFactory implements DynamicTableSourceFactory, DynamicTabl
     @Override
     public DynamicTableSink createDynamicTableSink(Context context) {
         FactoryUtil.TableFactoryHelper helper = FactoryUtil.createTableFactoryHelper(this, context);
-        helper.validate();
+        helper.validateExcept("table.", "client.");
 
         boolean isStreamingMode =
                 context.getConfiguration().get(ExecutionOptions.RUNTIME_MODE)
