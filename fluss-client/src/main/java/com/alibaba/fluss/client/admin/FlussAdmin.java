@@ -176,7 +176,7 @@ public class FlussAdmin implements Admin {
     }
 
     @Override
-    public CompletableFuture<Void> deleteDatabase(
+    public CompletableFuture<Void> dropDatabase(
             String databaseName, boolean ignoreIfNotExists, boolean cascade) {
         DropDatabaseRequest request = new DropDatabaseRequest();
 
@@ -232,7 +232,7 @@ public class FlussAdmin implements Admin {
     }
 
     @Override
-    public CompletableFuture<Void> deleteTable(TablePath tablePath, boolean ignoreIfNotExists) {
+    public CompletableFuture<Void> dropTable(TablePath tablePath, boolean ignoreIfNotExists) {
         DropTableRequest request = new DropTableRequest();
         request.setIgnoreIfNotExists(ignoreIfNotExists)
                 .setTablePath()
