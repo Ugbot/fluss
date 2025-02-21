@@ -35,6 +35,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
 
@@ -96,6 +97,12 @@ public class CompletedSnapshotStoreManager {
                 });
     }
 
+    public void removeCompletedSnapshotStoreByTableBuckets(Set<TableBucket> tableBuckets) {
+        for (TableBucket tableBucket : tableBuckets) {
+            bucketCompletedSnapshotStores.remove(tableBucket);
+        }
+    }
+
     private CompletedSnapshotStore createCompletedSnapshotStore(
             TableBucket tableBucket, Executor ioExecutor) throws Exception {
         final CompletedSnapshotHandleStore completedSnapshotHandleStore =
@@ -133,5 +140,9 @@ public class CompletedSnapshotStoreManager {
                 retrievedSnapshots,
                 completedSnapshotHandleStore,
                 ioExecutor);
+    }
+
+    public Map<TableBucket, CompletedSnapshotStore> getBucketCompletedSnapshotStores() {
+        return bucketCompletedSnapshotStores;
     }
 }

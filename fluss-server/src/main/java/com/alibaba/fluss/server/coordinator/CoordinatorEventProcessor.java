@@ -499,6 +499,15 @@ public class CoordinatorEventProcessor implements EventProcessor {
     }
 
     private void processDropTable(DropTableEvent dropTableEvent) {
+        // If this is a primary key table, drop the kv snapshot store.
+        TableInfo dropTableInfo = coordinatorContext.getTableInfoById(dropTableEvent.getTableId());
+        if (dropTableInfo.hasPrimaryKey()) {
+            Set<TableBucket> deleteTableBuckets =
+                    coordinatorContext.getAllBucketsForTable(dropTableEvent.getTableId());
+            completedSnapshotStoreManager.removeCompletedSnapshotStoreByTableBuckets(
+                    deleteTableBuckets);
+        }
+
         coordinatorContext.queueTableDeletion(Collections.singleton(dropTableEvent.getTableId()));
         tableManager.onDeleteTable(dropTableEvent.getTableId());
         if (dropTableEvent.isAutoPartitionTable()) {
@@ -510,6 +519,18 @@ public class CoordinatorEventProcessor implements EventProcessor {
         TablePartition tablePartition =
                 new TablePartition(
                         dropPartitionEvent.getTableId(), dropPartitionEvent.getPartitionId());
+
+        // If this is a primary key table partition, drop the kv snapshot store.
+        TableInfo dropTableInfo =
+                coordinatorContext.getTableInfoById(dropPartitionEvent.getTableId());
+        if (dropTableInfo.hasPrimaryKey()) {
+            Set<TableBucket> deleteTableBuckets =
+                    coordinatorContext.getAllBucketsForPartition(
+                            dropPartitionEvent.getTableId(), dropPartitionEvent.getPartitionId());
+            completedSnapshotStoreManager.removeCompletedSnapshotStoreByTableBuckets(
+                    deleteTableBuckets);
+        }
+
         coordinatorContext.queuePartitionDeletion(Collections.singleton(tablePartition));
         tableManager.onDeletePartition(
                 dropPartitionEvent.getTableId(), dropPartitionEvent.getPartitionId());
