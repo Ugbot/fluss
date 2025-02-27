@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package com.alibaba.fluss.connector.flink.sink;
+package com.alibaba.fluss.connector.flink.sink.writer;
 
 import com.alibaba.fluss.client.table.writer.Upsert;
 import com.alibaba.fluss.client.table.writer.UpsertWriter;
@@ -22,6 +22,7 @@ import com.alibaba.fluss.config.Configuration;
 import com.alibaba.fluss.metadata.TablePath;
 import com.alibaba.fluss.row.InternalRow;
 
+import org.apache.flink.metrics.groups.SinkWriterMetricGroup;
 import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.types.RowKind;
 
@@ -30,14 +31,12 @@ import javax.annotation.Nullable;
 import java.io.IOException;
 import java.util.concurrent.CompletableFuture;
 
-/** An upsert sink for fluss primary key table. */
-class UpsertSinkFunction extends FlinkSinkFunction {
-
-    private static final long serialVersionUID = 1L;
+/** An upsert sink writer or fluss primary key table. */
+public class UpsertSinkWriter extends FlinkSinkWriter {
 
     private transient UpsertWriter upsertWriter;
 
-    UpsertSinkFunction(
+    public UpsertSinkWriter(
             TablePath tablePath,
             Configuration flussConfig,
             RowType tableRowType,
@@ -47,8 +46,8 @@ class UpsertSinkFunction extends FlinkSinkFunction {
     }
 
     @Override
-    public void open(org.apache.flink.configuration.Configuration config) {
-        super.open(config);
+    public void initialize(SinkWriterMetricGroup metricGroup) {
+        super.initialize(metricGroup);
         Upsert upsert = table.newUpsert();
         if (targetColumnIndexes != null) {
             upsert = upsert.partialUpdate(targetColumnIndexes);
@@ -69,7 +68,7 @@ class UpsertSinkFunction extends FlinkSinkFunction {
     }
 
     @Override
-    void flush() throws IOException {
+    public void flush(boolean endOfInput) throws IOException, InterruptedException {
         upsertWriter.flush();
         checkAsyncException();
     }

@@ -14,27 +14,26 @@
  * limitations under the License.
  */
 
-package com.alibaba.fluss.connector.flink.sink;
+package com.alibaba.fluss.connector.flink.sink.writer;
 
 import com.alibaba.fluss.client.table.writer.AppendWriter;
 import com.alibaba.fluss.config.Configuration;
 import com.alibaba.fluss.metadata.TablePath;
 import com.alibaba.fluss.row.InternalRow;
 
+import org.apache.flink.metrics.groups.SinkWriterMetricGroup;
 import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.types.RowKind;
 
 import java.io.IOException;
 import java.util.concurrent.CompletableFuture;
 
-/** An append only sink for fluss log table. */
-class AppendSinkFunction extends FlinkSinkFunction {
-
-    private static final long serialVersionUID = 1L;
+/** An append only sink writer for fluss log table. */
+public class AppendSinkWriter extends FlinkSinkWriter {
 
     private transient AppendWriter appendWriter;
 
-    AppendSinkFunction(
+    public AppendSinkWriter(
             TablePath tablePath,
             Configuration flussConfig,
             RowType tableRowType,
@@ -43,8 +42,8 @@ class AppendSinkFunction extends FlinkSinkFunction {
     }
 
     @Override
-    public void open(org.apache.flink.configuration.Configuration config) {
-        super.open(config);
+    public void initialize(SinkWriterMetricGroup metricGroup) {
+        super.initialize(metricGroup);
         appendWriter = table.newAppend().createWriter();
         LOG.info("Finished opening Fluss {}.", this.getClass().getSimpleName());
     }
@@ -55,13 +54,8 @@ class AppendSinkFunction extends FlinkSinkFunction {
     }
 
     @Override
-    void flush() throws IOException {
+    public void flush(boolean endOfInput) throws IOException {
         appendWriter.flush();
         checkAsyncException();
-    }
-
-    @Override
-    public void close() throws Exception {
-        super.close();
     }
 }
