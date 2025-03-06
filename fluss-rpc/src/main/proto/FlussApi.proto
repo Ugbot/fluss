@@ -19,6 +19,13 @@ package fluss;
 option java_package = "com.alibaba.fluss.rpc.messages";
 option optimize_for = LITE_RUNTIME;
 
+/**
+* NOTICE: To ensure a smooth upgrade to Proto3 syntax while maintaining backward compatibility in
+* the future, please adhere to the following limitations:
+* 1. DO NOT USE "default" keyword, proto3 removes the support of "default"
+* 2. DO NOT USE "enum" type
+ */
+
 // the message indicates a failed request of a server failure.
 message ErrorResponse {
   required int32 error_code = 1;
