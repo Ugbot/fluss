@@ -24,4 +24,4 @@ With built-in replication for fault tolerance, horizontal scalability, and advan
 - [Architecture](concepts/architecture.md): Learn about Fluss's architecture.
 - [Table Design](table-design/overview.md): Explore Fluss's table types, partitions and buckets.
 - [Lakehouse](streaming-lakehouse/overview.md): Integrate Fluss with your Lakehouse to bring low-latency data to your Lakehouse analytics.
-- [Development](dev/ide-setup.md): Set up your development environment and contribute to the community.
+- [Development](/community/dev/ide-setup): Set up your development environment and contribute to the community.
