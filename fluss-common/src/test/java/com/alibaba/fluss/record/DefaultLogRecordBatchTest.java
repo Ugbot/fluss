@@ -60,7 +60,7 @@ public class DefaultLogRecordBatchTest extends LogTestBase {
         List<IndexedRow> rows = new ArrayList<>();
         for (int i = 0; i < recordNumber; i++) {
             IndexedRow row = TestInternalRowGenerator.genIndexedRowForAllType();
-            builder.append(RowKind.INSERT, row);
+            builder.append(ChangeType.INSERT, row);
             rows.add(row);
         }
 
@@ -88,7 +88,7 @@ public class DefaultLogRecordBatchTest extends LogTestBase {
             while (iter.hasNext()) {
                 LogRecord record = iter.next();
                 assertThat(record.logOffset()).isEqualTo(i);
-                assertThat(record.getRowKind()).isEqualTo(RowKind.INSERT);
+                assertThat(record.getChangeType()).isEqualTo(ChangeType.INSERT);
                 assertThat(record.getRow()).isEqualTo(rows.get(i));
                 i++;
             }

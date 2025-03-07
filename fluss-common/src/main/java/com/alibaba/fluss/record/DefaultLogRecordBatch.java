@@ -112,7 +112,7 @@ public class DefaultLogRecordBatch implements LogRecordBatch {
     static final int RECORDS_OFFSET = RECORDS_COUNT_OFFSET + RECORDS_COUNT_LENGTH;
 
     public static final int RECORD_BATCH_HEADER_SIZE = RECORDS_OFFSET;
-    public static final int ARROW_ROWKIND_OFFSET = RECORD_BATCH_HEADER_SIZE;
+    public static final int ARROW_CHANGETYPE_OFFSET = RECORD_BATCH_HEADER_SIZE;
     public static final int LOG_OVERHEAD = LENGTH_OFFSET + LENGTH_LENGTH;
 
     private MemorySegment segment;
@@ -300,10 +300,11 @@ public class DefaultLogRecordBatch implements LogRecordBatch {
 
     private CloseableIterator<LogRecord> columnRecordIterator(
             RowType rowType, VectorSchemaRoot root, BufferAllocator allocator, long timestamp) {
-        int rowKindOffset = position + ARROW_ROWKIND_OFFSET;
-        RowKindVector rowKindVector = new RowKindVector(segment, rowKindOffset, getRecordCount());
-        int arrowOffset = rowKindOffset + rowKindVector.sizeInBytes();
-        int arrowLength = sizeInBytes() - ARROW_ROWKIND_OFFSET - rowKindVector.sizeInBytes();
+        int changeTypeOffset = position + ARROW_CHANGETYPE_OFFSET;
+        ChangeTypeVector changeTypeVector =
+                new ChangeTypeVector(segment, changeTypeOffset, getRecordCount());
+        int arrowOffset = changeTypeOffset + changeTypeVector.sizeInBytes();
+        int arrowLength = sizeInBytes() - ARROW_CHANGETYPE_OFFSET - changeTypeVector.sizeInBytes();
         ArrowReader reader =
                 ArrowUtils.createArrowReader(
                         segment, arrowOffset, arrowLength, root, allocator, rowType);
@@ -317,10 +318,10 @@ public class DefaultLogRecordBatch implements LogRecordBatch {
 
             @Override
             protected LogRecord readNext(long baseOffset) {
-                RowKind rowKind = rowKindVector.getRowKind(rowId);
+                ChangeType changeType = changeTypeVector.getChangeType(rowId);
                 LogRecord record =
                         new GenericRecord(
-                                baseOffset + rowId, timestamp, rowKind, reader.read(rowId));
+                                baseOffset + rowId, timestamp, changeType, reader.read(rowId));
                 rowId++;
                 return record;
             }

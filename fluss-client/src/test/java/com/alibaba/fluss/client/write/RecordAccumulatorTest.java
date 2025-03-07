@@ -30,13 +30,13 @@ import com.alibaba.fluss.metadata.TableBucket;
 import com.alibaba.fluss.metadata.TableDescriptor;
 import com.alibaba.fluss.metadata.TableInfo;
 import com.alibaba.fluss.metadata.TablePath;
+import com.alibaba.fluss.record.ChangeType;
 import com.alibaba.fluss.record.DefaultKvRecord;
 import com.alibaba.fluss.record.IndexedLogRecord;
 import com.alibaba.fluss.record.LogRecord;
 import com.alibaba.fluss.record.LogRecordBatch;
 import com.alibaba.fluss.record.LogRecordReadContext;
 import com.alibaba.fluss.record.MemoryLogRecords;
-import com.alibaba.fluss.record.RowKind;
 import com.alibaba.fluss.row.BinaryRow;
 import com.alibaba.fluss.row.GenericRow;
 import com.alibaba.fluss.row.arrow.ArrowWriter;
@@ -277,7 +277,7 @@ class RecordAccumulatorTest {
                 CloseableIterator<LogRecord> iter = iterator.next().records(readContext)) {
             for (int i = 0; i < appends; i++) {
                 LogRecord record = iter.next();
-                assertThat(record.getRowKind()).isEqualTo(RowKind.APPEND_ONLY);
+                assertThat(record.getChangeType()).isEqualTo(ChangeType.APPEND_ONLY);
                 assertThat(record.getRow()).isEqualTo(row);
             }
             assertThat(iter.hasNext()).isFalse();
@@ -311,7 +311,7 @@ class RecordAccumulatorTest {
                 LogRecordReadContext.createIndexedReadContext(
                         DATA1_ROW_TYPE, DATA1_TABLE_INFO.getSchemaId())) {
             LogRecord record = logRecordBatch.records(readContext).next();
-            assertThat(record.getRowKind()).isEqualTo(RowKind.APPEND_ONLY);
+            assertThat(record.getChangeType()).isEqualTo(ChangeType.APPEND_ONLY);
             assertThat(record.logOffset()).isEqualTo(0L);
             assertThat(record.getRow()).isEqualTo(row1);
         }

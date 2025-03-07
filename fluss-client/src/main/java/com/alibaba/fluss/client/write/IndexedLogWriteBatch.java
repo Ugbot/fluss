@@ -22,8 +22,8 @@ import com.alibaba.fluss.memory.AbstractPagedOutputView;
 import com.alibaba.fluss.memory.MemorySegment;
 import com.alibaba.fluss.metadata.PhysicalTablePath;
 import com.alibaba.fluss.metadata.TableBucket;
+import com.alibaba.fluss.record.ChangeType;
 import com.alibaba.fluss.record.MemoryLogRecordsIndexedBuilder;
-import com.alibaba.fluss.record.RowKind;
 import com.alibaba.fluss.record.bytesview.BytesView;
 import com.alibaba.fluss.row.indexed.IndexedRow;
 import com.alibaba.fluss.rpc.messages.ProduceLogRequest;
@@ -76,7 +76,7 @@ public final class IndexedLogWriteBatch extends WriteBatch {
         if (!recordsBuilder.hasRoomFor(row) || isClosed()) {
             return false;
         } else {
-            recordsBuilder.append(RowKind.APPEND_ONLY, row);
+            recordsBuilder.append(ChangeType.APPEND_ONLY, row);
             recordCount++;
             callbacks.add(callback);
             return true;

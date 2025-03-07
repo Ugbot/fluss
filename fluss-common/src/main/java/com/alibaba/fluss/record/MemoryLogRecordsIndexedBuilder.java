@@ -112,17 +112,17 @@ public class MemoryLogRecordsIndexedBuilder implements AutoCloseable {
         return sizeInBytes + IndexedLogRecord.sizeOf(row) <= writeLimit;
     }
 
-    public void append(RowKind rowKind, IndexedRow row) throws Exception {
-        appendRecord(rowKind, row);
+    public void append(ChangeType changeType, IndexedRow row) throws Exception {
+        appendRecord(changeType, row);
     }
 
-    private void appendRecord(RowKind rowKind, IndexedRow row) throws IOException {
+    private void appendRecord(ChangeType changeType, IndexedRow row) throws IOException {
         if (isClosed) {
             throw new IllegalStateException(
                     "Tried to append a record, but MemoryLogRecordsBuilder is closed for record appends");
         }
 
-        int recordByteSizes = IndexedLogRecord.writeTo(pagedOutputView, rowKind, row);
+        int recordByteSizes = IndexedLogRecord.writeTo(pagedOutputView, changeType, row);
         currentRecordNumber++;
         sizeInBytes += recordByteSizes;
     }

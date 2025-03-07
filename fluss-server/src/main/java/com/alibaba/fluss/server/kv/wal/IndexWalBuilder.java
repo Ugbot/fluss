@@ -18,9 +18,9 @@ package com.alibaba.fluss.server.kv.wal;
 
 import com.alibaba.fluss.memory.ManagedPagedOutputView;
 import com.alibaba.fluss.memory.MemorySegmentPool;
+import com.alibaba.fluss.record.ChangeType;
 import com.alibaba.fluss.record.MemoryLogRecords;
 import com.alibaba.fluss.record.MemoryLogRecordsIndexedBuilder;
-import com.alibaba.fluss.record.RowKind;
 import com.alibaba.fluss.record.bytesview.BytesView;
 import com.alibaba.fluss.row.InternalRow;
 import com.alibaba.fluss.row.indexed.IndexedRow;
@@ -45,11 +45,11 @@ public class IndexWalBuilder implements WalBuilder {
     }
 
     @Override
-    public void append(RowKind rowKind, InternalRow row) throws Exception {
+    public void append(ChangeType changeType, InternalRow row) throws Exception {
         checkArgument(
                 row instanceof IndexedRow,
                 "IndexWalBuilder requires the log row to be IndexedRow.");
-        recordsBuilder.append(rowKind, (IndexedRow) row);
+        recordsBuilder.append(changeType, (IndexedRow) row);
     }
 
     @Override

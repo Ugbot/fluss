@@ -259,7 +259,7 @@ class FileLogProjectionTest {
                     while (records.hasNext()) {
                         LogRecord record = records.next();
                         assertThat(record.logOffset()).isEqualTo(expectedOffset);
-                        assertThat(record.getRowKind()).isEqualTo(RowKind.APPEND_ONLY);
+                        assertThat(record.getChangeType()).isEqualTo(ChangeType.APPEND_ONLY);
                         InternalRow row = record.getRow();
                         assertThat(row.getFieldCount()).isEqualTo(projectedFields.length);
                         Object[] objs = new Object[projectedFields.length];

@@ -50,9 +50,9 @@ public class RecordAndPosAssert extends AbstractAssert<RecordAndPosAssert, Recor
         assertThat(actual.record().logOffset())
                 .as("RecordAndPos#reocrd()#getOffset()")
                 .isEqualTo(expected.record().logOffset());
-        assertThat(actual.record().getRowKind())
-                .as("RecordAndPos#reocrd()#getRowKind()")
-                .isEqualTo(expected.record().getRowKind());
+        assertThat(actual.record().getChangeType())
+                .as("RecordAndPos#reocrd()#getChangeType()")
+                .isEqualTo(expected.record().getChangeType());
         assertThatRow(actual.record().getRow())
                 .withSchema(rowType)
                 .isEqualTo(expected.record().getRow());

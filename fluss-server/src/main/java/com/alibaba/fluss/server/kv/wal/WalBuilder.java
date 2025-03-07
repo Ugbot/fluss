@@ -16,14 +16,14 @@
 
 package com.alibaba.fluss.server.kv.wal;
 
+import com.alibaba.fluss.record.ChangeType;
 import com.alibaba.fluss.record.MemoryLogRecords;
-import com.alibaba.fluss.record.RowKind;
 import com.alibaba.fluss.row.InternalRow;
 
 /** The interface to build write-ahead-log batch ({@link MemoryLogRecords}) for kv store. */
 public interface WalBuilder {
 
-    void append(RowKind rowKind, InternalRow row) throws Exception;
+    void append(ChangeType changeType, InternalRow row) throws Exception;
 
     MemoryLogRecords build() throws Exception;
 

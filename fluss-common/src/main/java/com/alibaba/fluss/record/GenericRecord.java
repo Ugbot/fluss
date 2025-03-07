@@ -24,13 +24,13 @@ import com.alibaba.fluss.row.InternalRow;
 public class GenericRecord implements LogRecord {
     private final long logOffset;
     private final long timestamp;
-    private final RowKind rowKind;
+    private final ChangeType changeType;
     private final InternalRow row;
 
-    public GenericRecord(long logOffset, long timestamp, RowKind rowKind, InternalRow row) {
+    public GenericRecord(long logOffset, long timestamp, ChangeType changeType, InternalRow row) {
         this.logOffset = logOffset;
         this.timestamp = timestamp;
-        this.rowKind = rowKind;
+        this.changeType = changeType;
         this.row = row;
     }
 
@@ -45,8 +45,8 @@ public class GenericRecord implements LogRecord {
     }
 
     @Override
-    public RowKind getRowKind() {
-        return rowKind;
+    public ChangeType getChangeType() {
+        return changeType;
     }
 
     @Override

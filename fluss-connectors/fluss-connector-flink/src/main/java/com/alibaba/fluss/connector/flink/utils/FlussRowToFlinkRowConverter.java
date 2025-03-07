@@ -57,7 +57,7 @@ public class FlussRowToFlinkRowConverter {
     }
 
     public RowData toFlinkRowData(ScanRecord scanRecord) {
-        return toFlinkRowData(scanRecord.getRow(), toFlinkRowKind(scanRecord.getRowKind()));
+        return toFlinkRowData(scanRecord.getRow(), toFlinkRowKind(scanRecord.getChangeType()));
     }
 
     public RowData toFlinkRowData(InternalRow flussRow) {

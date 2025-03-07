@@ -28,7 +28,7 @@ import com.alibaba.fluss.utils.crc.Crc32C;
 
 import java.io.IOException;
 
-import static com.alibaba.fluss.record.DefaultLogRecordBatch.ARROW_ROWKIND_OFFSET;
+import static com.alibaba.fluss.record.DefaultLogRecordBatch.ARROW_CHANGETYPE_OFFSET;
 import static com.alibaba.fluss.record.DefaultLogRecordBatch.BASE_OFFSET_LENGTH;
 import static com.alibaba.fluss.record.DefaultLogRecordBatch.CRC_OFFSET;
 import static com.alibaba.fluss.record.DefaultLogRecordBatch.LAST_OFFSET_DELTA_OFFSET;
@@ -49,7 +49,7 @@ public class MemoryLogRecordsArrowBuilder implements AutoCloseable {
     private final byte magic;
     private final ArrowWriter arrowWriter;
     private final long writerEpoch;
-    private final RowKindVectorWriter rowKindWriter;
+    private final ChangeTypeVectorWriter changeTypeWriter;
     private final MemorySegment firstSegment;
     private final AbstractPagedOutputView pagedOutputView;
 
@@ -84,12 +84,12 @@ public class MemoryLogRecordsArrowBuilder implements AutoCloseable {
         this.pagedOutputView = pagedOutputView;
         this.firstSegment = pagedOutputView.getCurrentSegment();
         checkArgument(
-                firstSegment.size() >= ARROW_ROWKIND_OFFSET,
+                firstSegment.size() >= ARROW_CHANGETYPE_OFFSET,
                 "The size of first segment of pagedOutputView is too small, need at least "
-                        + ARROW_ROWKIND_OFFSET
+                        + ARROW_CHANGETYPE_OFFSET
                         + " bytes.");
-        this.rowKindWriter = new RowKindVectorWriter(firstSegment, ARROW_ROWKIND_OFFSET);
-        this.estimatedSizeInBytes = ARROW_ROWKIND_OFFSET;
+        this.changeTypeWriter = new ChangeTypeVectorWriter(firstSegment, ARROW_CHANGETYPE_OFFSET);
+        this.estimatedSizeInBytes = ARROW_CHANGETYPE_OFFSET;
         this.recordCount = 0;
     }
 
@@ -121,7 +121,7 @@ public class MemoryLogRecordsArrowBuilder implements AutoCloseable {
 
         // serialize the arrow batch to dynamically allocated memory segments
         arrowWriter.serializeToOutputView(
-                pagedOutputView, ARROW_ROWKIND_OFFSET + rowKindWriter.sizeInBytes());
+                pagedOutputView, ARROW_CHANGETYPE_OFFSET + changeTypeWriter.sizeInBytes());
         recordCount = arrowWriter.getRecordsCount();
         bytesView =
                 MultiBytesView.builder()
@@ -142,14 +142,14 @@ public class MemoryLogRecordsArrowBuilder implements AutoCloseable {
      * Try to append a record to the builder. Return true if the record is appended successfully,
      * false if the builder is full.
      */
-    public void append(RowKind rowKind, InternalRow row) throws Exception {
+    public void append(ChangeType changeType, InternalRow row) throws Exception {
         if (isClosed) {
             throw new IllegalStateException(
                     "Tried to append a record, but MemoryLogRecordsArrowBuilder is closed for record appends");
         }
 
         arrowWriter.writeRow(row);
-        rowKindWriter.writeRowKind(rowKind);
+        changeTypeWriter.writeChangeType(changeType);
         reCalculateSizeInBytes = true;
     }
 
@@ -199,8 +199,8 @@ public class MemoryLogRecordsArrowBuilder implements AutoCloseable {
         if (reCalculateSizeInBytes) {
             // make size in bytes up-to-date
             estimatedSizeInBytes =
-                    ARROW_ROWKIND_OFFSET
-                            + rowKindWriter.sizeInBytes()
+                    ARROW_CHANGETYPE_OFFSET
+                            + changeTypeWriter.sizeInBytes()
                             + arrowWriter.estimatedSizeInBytes();
         }
 

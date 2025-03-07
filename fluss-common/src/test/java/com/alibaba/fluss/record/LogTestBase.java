@@ -93,9 +93,9 @@ public abstract class LogTestBase {
 
     private void assertIndexedRecordEquals(
             LogRecord actualRecord, LogRecord expectedRecord, IndexedRow row, int offsetDelta) {
-        assertThat(actualRecord.getRowKind())
-                .isEqualTo(expectedRecord.getRowKind())
-                .isEqualTo(RowKind.APPEND_ONLY);
+        assertThat(actualRecord.getChangeType())
+                .isEqualTo(expectedRecord.getChangeType())
+                .isEqualTo(ChangeType.APPEND_ONLY);
         assertThat(actualRecord.logOffset())
                 .isEqualTo(expectedRecord.logOffset())
                 .isEqualTo(baseLogOffset + offsetDelta);

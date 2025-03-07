@@ -20,7 +20,7 @@ import com.alibaba.fluss.annotation.PublicEvolving;
 import com.alibaba.fluss.row.InternalRow;
 
 /**
- * A log record is a tuple consisting of a unique offset in the log, a rowKind and a row.
+ * A log record is a tuple consisting of a unique offset in the log, a changeType and a row.
  *
  * @since 0.1
  */
@@ -42,11 +42,11 @@ public interface LogRecord {
     long timestamp();
 
     /**
-     * Get the log record's {@link RowKind}.
+     * Get the log record's {@link ChangeType}.
      *
-     * @return the record's {@link RowKind}.
+     * @return the record's {@link ChangeType}.
      */
-    RowKind getRowKind();
+    ChangeType getChangeType();
 
     /**
      * Get the log record's row.

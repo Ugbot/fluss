@@ -17,6 +17,7 @@
 package com.alibaba.fluss.connector.flink.utils;
 
 import com.alibaba.fluss.client.table.scanner.ScanRecord;
+import com.alibaba.fluss.record.ChangeType;
 import com.alibaba.fluss.row.indexed.IndexedRow;
 import com.alibaba.fluss.row.indexed.IndexedRowWriter;
 import com.alibaba.fluss.types.DataType;
@@ -50,8 +51,7 @@ class FlussRowToFlinkRowConverterTest {
         try (IndexedRowWriter writer = genRecordForAllTypes(createAllTypes())) {
             row.pointTo(writer.segment(), 0, writer.position());
 
-            ScanRecord scanRecord =
-                    new ScanRecord(0, 1L, com.alibaba.fluss.record.RowKind.UPDATE_BEFORE, row);
+            ScanRecord scanRecord = new ScanRecord(0, 1L, ChangeType.UPDATE_BEFORE, row);
 
             RowData flinkRow = flussRowToFlinkRowConverter.toFlinkRowData(scanRecord);
             assertThat(flinkRow.getArity()).isEqualTo(rowType.getFieldCount());

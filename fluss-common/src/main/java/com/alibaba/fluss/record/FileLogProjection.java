@@ -52,7 +52,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-import static com.alibaba.fluss.record.DefaultLogRecordBatch.ARROW_ROWKIND_OFFSET;
+import static com.alibaba.fluss.record.DefaultLogRecordBatch.ARROW_CHANGETYPE_OFFSET;
 import static com.alibaba.fluss.record.DefaultLogRecordBatch.LENGTH_OFFSET;
 import static com.alibaba.fluss.record.DefaultLogRecordBatch.LOG_OVERHEAD;
 import static com.alibaba.fluss.record.DefaultLogRecordBatch.RECORDS_COUNT_OFFSET;
@@ -185,8 +185,8 @@ public class FileLogProjection {
                 continue;
             }
 
-            int rowKindBytes = logHeaderBuffer.getInt(RECORDS_COUNT_OFFSET);
-            long arrowHeaderOffset = position + RECORD_BATCH_HEADER_SIZE + rowKindBytes;
+            int changeTypeBytes = logHeaderBuffer.getInt(RECORDS_COUNT_OFFSET);
+            long arrowHeaderOffset = position + RECORD_BATCH_HEADER_SIZE + changeTypeBytes;
             // read arrow header
             arrowHeaderBuffer.rewind();
             readFullyOrFail(channel, arrowHeaderBuffer, arrowHeaderOffset, "arrow header");
@@ -213,7 +213,7 @@ public class FileLogProjection {
 
             int newBatchSizeInBytes =
                     RECORD_BATCH_HEADER_SIZE
-                            + rowKindBytes
+                            + changeTypeBytes
                             + currentProjection.arrowMetadataLength
                             + (int) arrowBodyLength; // safe to cast to int
             if (newBatchSizeInBytes > maxBytes) {
@@ -241,7 +241,7 @@ public class FileLogProjection {
             // 5. build log records
             builder.addBytes(logHeader);
             // TODO: we can eliminate the rowkind in the future
-            builder.addBytes(channel, position + ARROW_ROWKIND_OFFSET, rowKindBytes);
+            builder.addBytes(channel, position + ARROW_CHANGETYPE_OFFSET, changeTypeBytes);
             builder.addBytes(headerMetadata);
             final long bufferOffset = arrowHeaderOffset + ARROW_HEADER_SIZE + arrowMetadataSize;
             projectedArrowBatch.buffers.forEach(
