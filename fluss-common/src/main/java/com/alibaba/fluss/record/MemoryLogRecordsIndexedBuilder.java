@@ -52,6 +52,7 @@ public class MemoryLogRecordsIndexedBuilder implements AutoCloseable {
     private final byte magic;
     private final AbstractPagedOutputView pagedOutputView;
     private final MemorySegment firstSegment;
+    private final boolean appendOnly;
 
     private BytesView builtBuffer = null;
     private long writerId;
@@ -65,7 +66,9 @@ public class MemoryLogRecordsIndexedBuilder implements AutoCloseable {
             int schemaId,
             int writeLimit,
             byte magic,
-            AbstractPagedOutputView pagedOutputView) {
+            AbstractPagedOutputView pagedOutputView,
+            boolean appendOnly) {
+        this.appendOnly = appendOnly;
         checkArgument(
                 schemaId <= Short.MAX_VALUE,
                 "schemaId shouldn't be greater than the max value of short: " + Short.MAX_VALUE);
@@ -87,9 +90,14 @@ public class MemoryLogRecordsIndexedBuilder implements AutoCloseable {
     }
 
     public static MemoryLogRecordsIndexedBuilder builder(
-            int schemaId, int writeLimit, AbstractPagedOutputView outputView) {
+            int schemaId, int writeLimit, AbstractPagedOutputView outputView, boolean appendOnly) {
         return new MemoryLogRecordsIndexedBuilder(
-                BUILDER_DEFAULT_OFFSET, schemaId, writeLimit, CURRENT_LOG_MAGIC_VALUE, outputView);
+                BUILDER_DEFAULT_OFFSET,
+                schemaId,
+                writeLimit,
+                CURRENT_LOG_MAGIC_VALUE,
+                outputView,
+                appendOnly);
     }
 
     @VisibleForTesting
@@ -101,7 +109,7 @@ public class MemoryLogRecordsIndexedBuilder implements AutoCloseable {
             AbstractPagedOutputView outputView)
             throws IOException {
         return new MemoryLogRecordsIndexedBuilder(
-                baseLogOffset, schemaId, writeLimit, magic, outputView);
+                baseLogOffset, schemaId, writeLimit, magic, outputView, false);
     }
 
     /**
@@ -120,6 +128,11 @@ public class MemoryLogRecordsIndexedBuilder implements AutoCloseable {
         if (isClosed) {
             throw new IllegalStateException(
                     "Tried to append a record, but MemoryLogRecordsBuilder is closed for record appends");
+        }
+        if (appendOnly && changeType != ChangeType.APPEND_ONLY) {
+            throw new IllegalArgumentException(
+                    "Only append-only change type is allowed for append-only arrow log builder, but got "
+                            + changeType);
         }
 
         int recordByteSizes = IndexedLogRecord.writeTo(pagedOutputView, changeType, row);
@@ -190,6 +203,8 @@ public class MemoryLogRecordsIndexedBuilder implements AutoCloseable {
         outputView.writeUnsignedInt(0);
 
         outputView.writeShort((short) schemaId);
+        // write attributes (currently only appendOnly flag)
+        outputView.writeBoolean(appendOnly);
         // skip write attribute byte for now.
         outputView.setPosition(LAST_OFFSET_DELTA_OFFSET);
         if (currentRecordNumber > 0) {

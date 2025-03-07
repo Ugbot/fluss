@@ -58,7 +58,7 @@ public final class IndexedLogWriteBatch extends WriteBatch {
         super(tableBucket, physicalTablePath, createdMs);
         this.outputView = outputView;
         this.recordsBuilder =
-                MemoryLogRecordsIndexedBuilder.builder(schemaId, writeLimit, outputView);
+                MemoryLogRecordsIndexedBuilder.builder(schemaId, writeLimit, outputView, true);
     }
 
     @Override

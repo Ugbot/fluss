@@ -204,7 +204,7 @@ class RecordAccumulatorTest {
         double averageBatchSize =
                 batches.get(node1.id()).stream().mapToInt(b -> b.build().getBytesLength()).sum()
                         / (batchCount * 1.0);
-        assertThat(averageBatchSize).isBetween(batchSize * 0.9, batchSize * 1.1);
+        assertThat(averageBatchSize).isBetween(batchSize * 0.8, batchSize * 1.1);
     }
 
     private void appendUntilCompressionRatioStable(RecordAccumulator accum, int batchSize)

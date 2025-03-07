@@ -41,7 +41,8 @@ public class IndexWalBuilder implements WalBuilder {
         this.outputView = new ManagedPagedOutputView(memorySegmentPool);
         // unlimited write size as we don't know the WAL size in advance
         this.recordsBuilder =
-                MemoryLogRecordsIndexedBuilder.builder(schemaId, Integer.MAX_VALUE, outputView);
+                MemoryLogRecordsIndexedBuilder.builder(
+                        schemaId, Integer.MAX_VALUE, outputView, false);
     }
 
     @Override

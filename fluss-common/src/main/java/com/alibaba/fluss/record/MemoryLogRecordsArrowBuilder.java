@@ -31,8 +31,8 @@ import java.io.IOException;
 import static com.alibaba.fluss.record.DefaultLogRecordBatch.ARROW_CHANGETYPE_OFFSET;
 import static com.alibaba.fluss.record.DefaultLogRecordBatch.BASE_OFFSET_LENGTH;
 import static com.alibaba.fluss.record.DefaultLogRecordBatch.CRC_OFFSET;
-import static com.alibaba.fluss.record.DefaultLogRecordBatch.LAST_OFFSET_DELTA_OFFSET;
 import static com.alibaba.fluss.record.DefaultLogRecordBatch.LENGTH_LENGTH;
+import static com.alibaba.fluss.record.DefaultLogRecordBatch.RECORD_BATCH_HEADER_SIZE;
 import static com.alibaba.fluss.record.DefaultLogRecordBatch.SCHEMA_ID_OFFSET;
 import static com.alibaba.fluss.record.LogRecordBatch.CURRENT_LOG_MAGIC_VALUE;
 import static com.alibaba.fluss.record.LogRecordBatch.NO_BATCH_SEQUENCE;
@@ -52,6 +52,7 @@ public class MemoryLogRecordsArrowBuilder implements AutoCloseable {
     private final ChangeTypeVectorWriter changeTypeWriter;
     private final MemorySegment firstSegment;
     private final AbstractPagedOutputView pagedOutputView;
+    private final boolean appendOnly;
 
     private MultiBytesView bytesView = null;
     private long writerId;
@@ -67,7 +68,9 @@ public class MemoryLogRecordsArrowBuilder implements AutoCloseable {
             int schemaId,
             byte magic,
             ArrowWriter arrowWriter,
-            AbstractPagedOutputView pagedOutputView) {
+            AbstractPagedOutputView pagedOutputView,
+            boolean appendOnly) {
+        this.appendOnly = appendOnly;
         checkArgument(
                 schemaId <= Short.MAX_VALUE,
                 "schemaId shouldn't be greater than the max value of short: " + Short.MAX_VALUE);
@@ -89,7 +92,7 @@ public class MemoryLogRecordsArrowBuilder implements AutoCloseable {
                         + ARROW_CHANGETYPE_OFFSET
                         + " bytes.");
         this.changeTypeWriter = new ChangeTypeVectorWriter(firstSegment, ARROW_CHANGETYPE_OFFSET);
-        this.estimatedSizeInBytes = ARROW_CHANGETYPE_OFFSET;
+        this.estimatedSizeInBytes = RECORD_BATCH_HEADER_SIZE;
         this.recordCount = 0;
     }
 
@@ -100,14 +103,22 @@ public class MemoryLogRecordsArrowBuilder implements AutoCloseable {
             ArrowWriter arrowWriter,
             AbstractPagedOutputView outputView) {
         return new MemoryLogRecordsArrowBuilder(
-                baseLogOffset, schemaId, CURRENT_LOG_MAGIC_VALUE, arrowWriter, outputView);
+                baseLogOffset, schemaId, CURRENT_LOG_MAGIC_VALUE, arrowWriter, outputView, false);
     }
 
     /** Builder with limited write size and the memory segment used to serialize records. */
     public static MemoryLogRecordsArrowBuilder builder(
-            int schemaId, ArrowWriter arrowWriter, AbstractPagedOutputView outputView) {
+            int schemaId,
+            ArrowWriter arrowWriter,
+            AbstractPagedOutputView outputView,
+            boolean appendOnly) {
         return new MemoryLogRecordsArrowBuilder(
-                BUILDER_DEFAULT_OFFSET, schemaId, CURRENT_LOG_MAGIC_VALUE, arrowWriter, outputView);
+                BUILDER_DEFAULT_OFFSET,
+                schemaId,
+                CURRENT_LOG_MAGIC_VALUE,
+                arrowWriter,
+                outputView,
+                appendOnly);
     }
 
     public MultiBytesView build() throws IOException {
@@ -147,9 +158,16 @@ public class MemoryLogRecordsArrowBuilder implements AutoCloseable {
             throw new IllegalStateException(
                     "Tried to append a record, but MemoryLogRecordsArrowBuilder is closed for record appends");
         }
+        if (appendOnly && changeType != ChangeType.APPEND_ONLY) {
+            throw new IllegalArgumentException(
+                    "Only append-only change type is allowed for append-only arrow log builder, but got "
+                            + changeType);
+        }
 
         arrowWriter.writeRow(row);
-        changeTypeWriter.writeChangeType(changeType);
+        if (!appendOnly) {
+            changeTypeWriter.writeChangeType(changeType);
+        }
         reCalculateSizeInBytes = true;
     }
 
@@ -223,10 +241,11 @@ public class MemoryLogRecordsArrowBuilder implements AutoCloseable {
         outputView.writeLong(0);
         // write empty crc first.
         outputView.writeUnsignedInt(0);
-
+        // write schema id
         outputView.writeShort((short) schemaId);
-        // skip write attributes
-        outputView.setPosition(LAST_OFFSET_DELTA_OFFSET);
+        // write attributes (currently only appendOnly flag)
+        outputView.writeBoolean(appendOnly);
+        // write lastOffsetDelta
         if (recordCount > 0) {
             outputView.writeInt(recordCount - 1);
         } else {

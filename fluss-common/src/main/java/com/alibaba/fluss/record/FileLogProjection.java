@@ -52,7 +52,9 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+import static com.alibaba.fluss.record.DefaultLogRecordBatch.APPEND_ONLY_FLAG_MASK;
 import static com.alibaba.fluss.record.DefaultLogRecordBatch.ARROW_CHANGETYPE_OFFSET;
+import static com.alibaba.fluss.record.DefaultLogRecordBatch.ATTRIBUTES_OFFSET;
 import static com.alibaba.fluss.record.DefaultLogRecordBatch.LENGTH_OFFSET;
 import static com.alibaba.fluss.record.DefaultLogRecordBatch.LOG_OVERHEAD;
 import static com.alibaba.fluss.record.DefaultLogRecordBatch.RECORDS_COUNT_OFFSET;
@@ -185,8 +187,19 @@ public class FileLogProjection {
                 continue;
             }
 
-            int changeTypeBytes = logHeaderBuffer.getInt(RECORDS_COUNT_OFFSET);
-            long arrowHeaderOffset = position + RECORD_BATCH_HEADER_SIZE + changeTypeBytes;
+            boolean isAppendOnly =
+                    (logHeaderBuffer.get(ATTRIBUTES_OFFSET) & APPEND_ONLY_FLAG_MASK) > 0;
+
+            final int changeTypeBytes;
+            final long arrowHeaderOffset;
+            if (isAppendOnly) {
+                changeTypeBytes = 0;
+                arrowHeaderOffset = position + RECORD_BATCH_HEADER_SIZE;
+            } else {
+                changeTypeBytes = logHeaderBuffer.getInt(RECORDS_COUNT_OFFSET);
+                arrowHeaderOffset = position + RECORD_BATCH_HEADER_SIZE + changeTypeBytes;
+            }
+
             // read arrow header
             arrowHeaderBuffer.rewind();
             readFullyOrFail(channel, arrowHeaderBuffer, arrowHeaderOffset, "arrow header");
@@ -235,13 +248,15 @@ public class FileLogProjection {
             logHeaderBuffer.position(LENGTH_OFFSET);
             logHeaderBuffer.putInt(newBatchSizeInBytes - LOG_OVERHEAD);
             logHeaderBuffer.rewind();
+            // the logHeader can't be reused, as it will be sent to network
             byte[] logHeader = new byte[RECORD_BATCH_HEADER_SIZE];
             logHeaderBuffer.get(logHeader);
 
             // 5. build log records
             builder.addBytes(logHeader);
-            // TODO: we can eliminate the rowkind in the future
-            builder.addBytes(channel, position + ARROW_CHANGETYPE_OFFSET, changeTypeBytes);
+            if (!isAppendOnly) {
+                builder.addBytes(channel, position + ARROW_CHANGETYPE_OFFSET, changeTypeBytes);
+            }
             builder.addBytes(headerMetadata);
             final long bufferOffset = arrowHeaderOffset + ARROW_HEADER_SIZE + arrowMetadataSize;
             projectedArrowBatch.buffers.forEach(
