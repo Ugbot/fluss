@@ -35,7 +35,7 @@ CREATE TABLE T (
 INSERT INTO T VALUES (1, 2.0, 't1');
 INSERT INTO T VALUES (1, 3.0, 't2');
 
-SELECT * FROM T;
+SELECT * FROM T WHERE k = 1;
 
 -- Output
 -- +---+-----+------+

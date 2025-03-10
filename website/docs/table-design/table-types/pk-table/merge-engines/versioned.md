@@ -41,7 +41,6 @@ The version column can be of the following data types:
 ## Example:
 
 ```sql title="Flink SQL"
-
 CREATE TABLE VERSIONED (
     a INT NOT NULL PRIMARY KEY NOT ENFORCED,
     b STRING, 
@@ -50,11 +49,12 @@ CREATE TABLE VERSIONED (
     'table.merge-engine' = 'versioned',
     'table.merge-engine.versioned.ver-column' = 'ts'
 );
+
 INSERT INTO VERSIONED (a, b, ts) VALUES (1, 'v1', 1000);
 
 -- insert data with ts < 1000, no update will be made
 INSERT INTO VERSIONED (a, b, ts) VALUES (1, 'v2', 999);
-SELECT * FROM VERSIONED;
+SELECT * FROM VERSIONED WHERE a = 1;
 -- Output
 -- +---+-----+------+
 -- | a | b   | ts   |
@@ -65,7 +65,7 @@ SELECT * FROM VERSIONED;
 
 -- insert data with ts > 1000, update will be made
 INSERT INTO VERSIONED (a, b, ts) VALUES (1, 'v3', 2000);
-SELECT * FROM VERSIONED;
+SELECT * FROM VERSIONED WHERE a = 1;
 -- Output
 -- +---+-----+------+
 -- | a | b   | ts   |
@@ -74,13 +74,12 @@ SELECT * FROM VERSIONED;
 -- +---+-----+------+
 
 -- insert data with ts = null, no update will be made
-INSERT INTO VERSIONED (a, b, ts) VALUES (1, 'v4', null);
-SELECT * FROM VERSIONED;
+INSERT INTO VERSIONED (a, b, ts) VALUES (1, 'v4', CAST(null as BIGINT));
+SELECT * FROM VERSIONED WHERE a = 1;
 -- Output
 -- +---+-----+------+
 -- | a | b   | ts   |
 -- +---+-----+------+
 -- | 1 | v3  | 2000 |
 -- +---+-----+------+
-
 ```
