@@ -29,8 +29,7 @@ import java.util.Set;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Unit tests for {@link
- * com.alibaba.fluss.flink.source.state.FlussSourceEnumeratorStateSerializer}.
+ * Unit tests for {@link com.alibaba.fluss.flink.source.state.FlussSourceEnumeratorStateSerializer}.
  */
 class SourceEnumeratorStateSerializerTest {
 

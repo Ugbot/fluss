@@ -57,12 +57,12 @@ If you haven’t downloaded Flink, you can download [the binary release](https:/
 ```shell
 tar -xzf flink-1.20.1-bin-scala_2.12.tgz
 ```
-- **Copy Fluss Connector Jar**
+- **Copy Fluss Flink Bundled Jar**
 
-Download [Fluss connector jar](/downloads#fluss-connector) and copy to the lib directory of your Flink home.
+Download [Fluss Flink Bundled jar](/downloads) and copy to the `lib` directory of your Flink home.
 
 ```shell
-cp fluss-connector-flink-$FLUSS_VERSION$.jar <FLINK_HOME>/lib/
+cp fluss-flink-$FLUSS_VERSION$.jar <FLINK_HOME>/lib/
 ```
 :::note
 If you use [Amazon S3](http://aws.amazon.com/s3/), [Aliyun OSS](https://www.aliyun.com/product/oss) or [HDFS(Hadoop Distributed File System)](https://hadoop.apache.org/docs/stable/) as Fluss's [remote storage](maintenance/tiered-storage/remote-storage.md),

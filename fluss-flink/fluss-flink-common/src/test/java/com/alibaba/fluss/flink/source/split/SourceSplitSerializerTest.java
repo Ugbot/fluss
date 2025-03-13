@@ -24,8 +24,8 @@ import org.junit.jupiter.params.provider.ValueSource;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Unit tests for {@link com.alibaba.fluss.flink.source.split.SourceSplitSerializer} of
- * serializing {@link com.alibaba.fluss.flink.source.split.SnapshotSplit} and {@link
+ * Unit tests for {@link com.alibaba.fluss.flink.source.split.SourceSplitSerializer} of serializing
+ * {@link com.alibaba.fluss.flink.source.split.SnapshotSplit} and {@link
  * com.alibaba.fluss.flink.source.split.LogSplit}.
  */
 class SourceSplitSerializerTest {

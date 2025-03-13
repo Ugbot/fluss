@@ -54,6 +54,7 @@ class FlinkSink implements Sink<RowData> {
         return flinkSinkWriter;
     }
 
+    @Override
     public SinkWriter<RowData> createWriter(WriterInitContext context) throws IOException {
         FlinkSinkWriter flinkSinkWriter = builder.createWriter();
         flinkSinkWriter.initialize(InternalSinkWriterMetricGroup.wrap(context.metricGroup()));

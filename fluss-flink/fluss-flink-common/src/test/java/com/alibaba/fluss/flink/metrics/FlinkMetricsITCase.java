@@ -17,8 +17,8 @@
 package com.alibaba.fluss.flink.metrics;
 
 import com.alibaba.fluss.config.ConfigOptions;
-import com.alibaba.fluss.flink.source.testutils.FlinkTestBase;
 import com.alibaba.fluss.exception.FlussRuntimeException;
+import com.alibaba.fluss.flink.source.testutils.FlinkTestBase;
 import com.alibaba.fluss.metadata.Schema;
 import com.alibaba.fluss.metadata.TableDescriptor;
 import com.alibaba.fluss.metadata.TablePath;

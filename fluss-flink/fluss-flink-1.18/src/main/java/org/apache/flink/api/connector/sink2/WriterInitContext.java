@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package org.apache.flink.api.common;
+package org.apache.flink.api.connector.sink2;
 
 /** Placeholder class to resolve compatibility issues. */
-public interface JobInfo {}
+public interface WriterInitContext extends Sink.InitContext {}

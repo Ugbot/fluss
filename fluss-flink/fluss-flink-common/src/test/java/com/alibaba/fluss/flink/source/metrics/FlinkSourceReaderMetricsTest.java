@@ -31,9 +31,7 @@ import static com.alibaba.fluss.flink.source.metrics.FlinkSourceReaderMetrics.PA
 import static com.alibaba.fluss.flink.source.metrics.FlinkSourceReaderMetrics.READER_METRIC_GROUP;
 import static org.assertj.core.api.Assertions.assertThat;
 
-/**
- * Unit test for {@link com.alibaba.fluss.flink.source.metrics.FlinkSourceReaderMetrics}.
- */
+/** Unit test for {@link com.alibaba.fluss.flink.source.metrics.FlinkSourceReaderMetrics}. */
 class FlinkSourceReaderMetricsTest {
 
     @Test
