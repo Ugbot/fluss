@@ -69,7 +69,7 @@
         <module>fluss-test-utils</module>
         <module>fluss-test-coverage</module>
         <module>fluss-server</module>
-        <module>fluss-connectors</module>
+        <module>fluss-flink</module>
         <module>fluss-protogen</module>
         <module>fluss-benchmark</module>
         <module>fluss-lake</module>
