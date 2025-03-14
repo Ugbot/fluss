@@ -37,8 +37,9 @@ body:
       description: What Fluss version are you using?
       multiple: false
       options:
-        - "0.5.0 (latest release)"
         - "main (development)"
+        - "v0.6 (latest release)"
+        - "v0.5"
     validations:
       required: true
   - type: textarea
