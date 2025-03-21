@@ -28,8 +28,6 @@ import com.alibaba.fluss.testutils.common.AllCallbackWrapper;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import java.time.Duration;
 import java.util.Collections;
@@ -42,8 +40,6 @@ import static org.assertj.core.api.AssertionsForClassTypes.assertThat;
 
 /** Test for {@link CoordinatorChannelManager} . */
 class CoordinatorChannelManagerTest {
-
-    private static final Logger LOG = LoggerFactory.getLogger(CoordinatorChannelManagerTest.class);
 
     @RegisterExtension
     public static final AllCallbackWrapper<ZooKeeperExtension> ZOO_KEEPER_EXTENSION_WRAPPER =

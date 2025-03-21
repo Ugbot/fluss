@@ -181,6 +181,7 @@ public class ReplicaManager {
 
     // for metrics
     private final TabletServerMetricGroup serverMetricGroup;
+    private final String internalListenerName;
 
     private final Clock clock;
 
@@ -268,6 +269,7 @@ public class ReplicaManager {
                         zkClient, completedKvSnapshotCommitter, kvSnapshotResource, conf);
         this.remoteLogManager = remoteLogManager;
         this.serverMetricGroup = serverMetricGroup;
+        this.internalListenerName = conf.get(ConfigOptions.INTERNAL_LISTENER_NAME);
         this.clock = clock;
         registerMetrics();
     }
@@ -814,8 +816,10 @@ public class ReplicaManager {
                                 serverId, replica.getTableBucket()));
             }
 
-            ServerNode leader = metadataCache.getTabletServer(leaderId);
-            if (leader == null) {
+            // fetch from leader server node with internal endpoint.
+            Optional<ServerNode> leader =
+                    metadataCache.getTabletServer(leaderId, internalListenerName);
+            if (!leader.isPresent()) {
                 throw new NotLeaderOrFollowerException(
                         String.format(
                                 "Could not find leader in server metadata by id for replica %s while make follower",
@@ -827,7 +831,7 @@ public class ReplicaManager {
             bucketAndStatus.put(
                     tableBucket,
                     new InitialFetchStatus(
-                            tableBucket.getTableId(), leader, logTablet.localLogEndOffset()));
+                            tableBucket.getTableId(), leader.get(), logTablet.localLogEndOffset()));
         }
         replicaFetcherManager.addFetcherForBuckets(bucketAndStatus);
     }
