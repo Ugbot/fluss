@@ -111,6 +111,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.Set;
@@ -1441,7 +1442,8 @@ public final class Replica {
         return updatedState;
     }
 
-    private IsrState.PendingShrinkIsrState prepareIsrShrink(
+    @VisibleForTesting
+    IsrState.PendingShrinkIsrState prepareIsrShrink(
             IsrState.CommittedIsrState currentState,
             List<Integer> isrToSend,
             List<Integer> outOfSyncFollowerReplicas) {
@@ -1461,52 +1463,65 @@ public final class Replica {
         return updatedState;
     }
 
+    @VisibleForTesting
+    CompletableFuture<LeaderAndIsr> submitAdjustIsr(IsrState.PendingIsrState proposedIsrState) {
+        return submitAdjustIsr(proposedIsrState, new CompletableFuture<>());
+    }
+
     private CompletableFuture<LeaderAndIsr> submitAdjustIsr(
-            IsrState.PendingIsrState proposedIsrState) {
+            IsrState.PendingIsrState proposedIsrState, CompletableFuture<LeaderAndIsr> result) {
         LOG.debug("Submitting ISR state change {}.", proposedIsrState);
-        CompletableFuture<LeaderAndIsr> future =
-                adjustIsrManager.submit(tableBucket, proposedIsrState.sentLeaderAndIsr());
+        adjustIsrManager
+                .submit(tableBucket, proposedIsrState.sentLeaderAndIsr())
+                .whenComplete(
+                        (leaderAndIsr, exception) -> {
+                            AtomicBoolean hwIncremented = new AtomicBoolean(false);
+                            AtomicBoolean shouldRetry = new AtomicBoolean(false);
 
-        return future.whenComplete(
-                (leaderAndIsr, exception) -> {
-                    AtomicBoolean hwIncremented = new AtomicBoolean(false);
-                    AtomicBoolean shouldRetry = new AtomicBoolean(false);
-
-                    inWriteLock(
-                            leaderIsrUpdateLock,
-                            () -> {
-                                if (isrState != proposedIsrState) {
-                                    // This means replicaState was updated through leader election
-                                    // or some other mechanism before we got the AdjustIsr response.
-                                    // We don't know what happened on the coordinator server
-                                    // exactly, but we do know this response is out of date, so we
-                                    // ignore it.
-                                    LOG.debug(
-                                            "Ignoring failed ISR update to {} since we have already updated state to {}",
-                                            proposedIsrState,
-                                            isrState);
-                                } else if (leaderAndIsr != null) {
-                                    hwIncremented.set(
-                                            handleAdjustIsrUpdate(proposedIsrState, leaderAndIsr));
-                                } else {
-                                    shouldRetry.set(
-                                            handleAdjustIsrError(
+                            inWriteLock(
+                                    leaderIsrUpdateLock,
+                                    () -> {
+                                        if (!Objects.equals(isrState, proposedIsrState)) {
+                                            // This means replicaState was updated through leader
+                                            // election or some other mechanism before we got the
+                                            // AdjustIsr response.
+                                            // We don't know what happened on the coordinator server
+                                            // exactly, but we do know this response is out of date,
+                                            // so we ignore it.
+                                            LOG.debug(
+                                                    "Ignoring failed ISR update to {} since we have already updated state to {}",
                                                     proposedIsrState,
-                                                    Errors.forException(exception)));
+                                                    isrState);
+                                        } else if (leaderAndIsr != null) {
+                                            hwIncremented.set(
+                                                    handleAdjustIsrUpdate(
+                                                            proposedIsrState, leaderAndIsr));
+                                        } else {
+                                            shouldRetry.set(
+                                                    handleAdjustIsrError(
+                                                            proposedIsrState,
+                                                            Errors.forException(exception)));
+                                        }
+                                    });
+
+                            if (hwIncremented.get()) {
+                                tryCompleteDelayedOperations();
+                            }
+
+                            // Send the AdjustIsr request outside the leaderIsrUpdateLock since the
+                            // completion logic may increment the high watermark (and consequently
+                            // complete delayed operations).
+                            if (shouldRetry.get()) {
+                                submitAdjustIsr(proposedIsrState, result);
+                            } else {
+                                if (exception != null) {
+                                    result.completeExceptionally(exception);
+                                } else {
+                                    result.complete(leaderAndIsr);
                                 }
-                            });
-
-                    if (hwIncremented.get()) {
-                        tryCompleteDelayedOperations();
-                    }
-
-                    // Send the AdjustIsr request outside the leaderIsrUpdateLock since the
-                    // completion logic may increment the high watermark (and consequently complete
-                    // delayed operations).
-                    if (shouldRetry.get()) {
-                        submitAdjustIsr(proposedIsrState);
-                    }
-                });
+                            }
+                        });
+        return result;
     }
 
     /**
@@ -1592,6 +1607,12 @@ public final class Replica {
                 LOG.debug(
                         "Failed to adjust isr to {} because the request is invalid. Replica state may be out of sync, "
                                 + "awaiting new the latest metadata.",
+                        proposedIsrState);
+                return false;
+            case FENCED_LEADER_EPOCH_EXCEPTION:
+                LOG.debug(
+                        "Failed to adjust isr to {} because the leader epoch is fenced which indicate this replica "
+                                + "maybe no long leader. Replica state may be out of sync, awaiting new the latest metadata.",
                         proposedIsrState);
                 return false;
             default:
