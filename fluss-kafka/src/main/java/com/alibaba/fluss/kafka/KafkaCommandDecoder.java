@@ -43,6 +43,10 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import static org.apache.kafka.common.protocol.ApiKeys.API_VERSIONS;
 import static org.apache.kafka.common.protocol.ApiKeys.PRODUCE;
 
+/**
+ * A decoder that decodes the incoming ByteBuf into Kafka requests and sends them to the
+ * corresponding RequestChannel.
+ */
 public class KafkaCommandDecoder extends SimpleChannelInboundHandler<ByteBuf> {
     private static final Logger LOG = LoggerFactory.getLogger(KafkaCommandDecoder.class);
 

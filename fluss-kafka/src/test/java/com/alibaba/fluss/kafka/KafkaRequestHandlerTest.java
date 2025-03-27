@@ -33,6 +33,7 @@ import java.util.concurrent.CompletableFuture;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+/** Tests for {@link KafkaRequestHandler}. */
 public class KafkaRequestHandlerTest {
 
     @Test

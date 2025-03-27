@@ -80,6 +80,10 @@ This file is based on the checkstyle file of Apache Beam.
             <property name="checkFormat" value="$1"/>
         </module>
 
+
+        <!-- Checks for missing Javadoc comments for class, enum, interface -->
+        <module name="MissingJavadocType"/>
+
         <!--
 
         FLUSS CUSTOM CHECKS

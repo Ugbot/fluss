@@ -78,6 +78,7 @@ import com.alibaba.fluss.rpc.messages.UpdateMetadataResponse;
 
 import java.util.concurrent.CompletableFuture;
 
+/** A testing implementation of the {@link TabletServerGateway} interface. */
 public class TestingTabletGatewayService extends RpcGatewayService implements TabletServerGateway {
     @Override
     public ServerType providerType() {

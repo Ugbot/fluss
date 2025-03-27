@@ -28,6 +28,7 @@ import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+/** Tests for Kafka configuration. */
 public class KafkaConfigsTest {
     @Test
     public void testFromMap() throws Exception {
