@@ -16,7 +16,6 @@
 
 package com.alibaba.fluss.server.replica.fetcher;
 
-import com.alibaba.fluss.cluster.ServerNode;
 import com.alibaba.fluss.config.ConfigOptions;
 import com.alibaba.fluss.config.Configuration;
 import com.alibaba.fluss.metadata.TableBucket;
@@ -41,7 +40,7 @@ import static com.alibaba.fluss.server.utils.RpcMessageUtils.makeListOffsetsRequ
 /** Facilitates fetches from a remote replica leader in one tablet server. */
 final class RemoteLeaderEndpoint implements LeaderEndpoint {
     private final int followerServerId;
-    private final ServerNode remoteNode;
+    private final int remoteServerId;
     private final TabletServerGateway tabletServerGateway;
     /** The max size for the fetch response. */
     private final int maxFetchSize;
@@ -54,10 +53,10 @@ final class RemoteLeaderEndpoint implements LeaderEndpoint {
     RemoteLeaderEndpoint(
             Configuration conf,
             int followerServerId,
-            ServerNode remoteNode,
+            int remoteServerId,
             TabletServerGateway tabletServerGateway) {
         this.followerServerId = followerServerId;
-        this.remoteNode = remoteNode;
+        this.remoteServerId = remoteServerId;
         this.maxFetchSize = (int) conf.get(ConfigOptions.LOG_REPLICA_FETCH_MAX_BYTES).getBytes();
         this.maxFetchSizeForBucket =
                 (int) conf.get(ConfigOptions.LOG_REPLICA_FETCH_MAX_BYTES_FOR_BUCKET).getBytes();
@@ -68,8 +67,8 @@ final class RemoteLeaderEndpoint implements LeaderEndpoint {
     }
 
     @Override
-    public ServerNode leaderNode() {
-        return remoteNode;
+    public int leaderServerId() {
+        return remoteServerId;
     }
 
     @Override
