@@ -782,7 +782,6 @@ public class ReplicaManager {
                 // stop the remote log tiering tasks for followers
                 remoteLogManager.stopLogTiering(replica);
                 result.put(tb, new NotifyLeaderAndIsrResultForBucket(tb));
-                replicasBecomeFollower.add(replica);
             } catch (Exception e) {
                 LOG.error("Error make replica {} to follower", tb, e);
                 result.put(

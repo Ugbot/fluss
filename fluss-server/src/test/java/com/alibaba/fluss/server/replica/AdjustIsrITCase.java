@@ -150,10 +150,17 @@ public class AdjustIsrITCase {
                                                 .getHighWatermark())
                                 .isEqualTo(10L));
 
-        isr.add(stopFollower);
         currentLeaderAndIsr = zkClient.getLeaderAndIsr(tb).get();
+        LeaderAndIsr newLeaderAndIsr =
+                new LeaderAndIsr(
+                        currentLeaderAndIsr.leader(),
+                        currentLeaderAndIsr.leaderEpoch() + 1,
+                        isr,
+                        currentLeaderAndIsr.coordinatorEpoch(),
+                        currentLeaderAndIsr.bucketEpoch());
+        isr.add(stopFollower);
         followerGateway.notifyLeaderAndIsr(
-                makeNotifyLeaderAndIsrRequest(DATA1_TABLE_PATH, tb, currentLeaderAndIsr, isr));
+                makeNotifyLeaderAndIsrRequest(DATA1_TABLE_PATH, tb, newLeaderAndIsr, isr));
         // retry until the stop follower add back to ISR.
         retry(
                 Duration.ofMinutes(1),
