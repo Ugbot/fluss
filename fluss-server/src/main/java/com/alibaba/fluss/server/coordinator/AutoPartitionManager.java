@@ -23,6 +23,7 @@ import com.alibaba.fluss.config.ConfigOptions;
 import com.alibaba.fluss.config.Configuration;
 import com.alibaba.fluss.exception.PartitionAlreadyExistsException;
 import com.alibaba.fluss.exception.PartitionNotExistException;
+import com.alibaba.fluss.exception.TooManyPartitionsException;
 import com.alibaba.fluss.metadata.ResolvedPartitionSpec;
 import com.alibaba.fluss.metadata.TableInfo;
 import com.alibaba.fluss.metadata.TablePath;
@@ -245,16 +246,29 @@ public class AutoPartitionManager implements AutoCloseable {
             try {
                 metadataManager.createPartition(
                         tablePath, tableId, partitionAssignment, partition, false);
+                currentPartitions.add(partition.getPartitionName());
+                LOG.info(
+                        "Auto partitioning created partition {} for table [{}].",
+                        partition,
+                        tablePath);
             } catch (PartitionAlreadyExistsException e) {
                 LOG.info(
                         "Auto partitioning skip to create partition {} for table [{}] as the partition is exist.",
                         partition,
                         tablePath);
+            } catch (TooManyPartitionsException t) {
+                LOG.warn(
+                        "Auto partitioning skip to create partition {} for table [{}], "
+                                + "because exceed the maximum number of partitions.",
+                        partition,
+                        tablePath);
+            } catch (Exception e) {
+                LOG.error(
+                        "Auto partitioning failed to create partition {} for table [{}].",
+                        partition,
+                        tablePath,
+                        e);
             }
-
-            currentPartitions.add(partition.getPartitionName());
-            LOG.info(
-                    "Auto partitioning created partition {} for table [{}].", partition, tablePath);
         }
     }
 
