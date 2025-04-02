@@ -278,43 +278,37 @@ public class MetadataUpdater {
         List<InetSocketAddress> inetSocketAddresses =
                 ClientUtils.parseAndValidateAddresses(conf.get(ConfigOptions.BOOTSTRAP_SERVERS));
         Cluster cluster = null;
+        Exception exception = null;
         for (InetSocketAddress address : inetSocketAddresses) {
-            cluster = tryToInitializeCluster(rpcClient, address);
-            if (cluster != null) {
+            try {
+                cluster = tryToInitializeCluster(rpcClient, address);
                 break;
+            } catch (Exception e) {
+                exception = e;
             }
         }
 
-        if (cluster == null) {
+        if (cluster == null && exception != null) {
             String errorMsg =
                     "Failed to initialize fluss client connection to server because no "
                             + "bootstrap server is validate. bootstrap servers: "
                             + inetSocketAddresses;
             LOG.error(errorMsg);
-            throw new IllegalStateException(errorMsg);
+            throw new IllegalStateException(errorMsg, exception);
         }
 
         return cluster;
     }
 
-    private static @Nullable Cluster tryToInitializeCluster(
-            RpcClient rpcClient, InetSocketAddress address) {
+    private static Cluster tryToInitializeCluster(RpcClient rpcClient, InetSocketAddress address)
+            throws Exception {
         ServerNode serverNode =
                 new ServerNode(
                         -1, address.getHostString(), address.getPort(), ServerType.COORDINATOR);
-        try {
-            AdminReadOnlyGateway adminReadOnlyGateway =
-                    GatewayClientProxy.createGatewayProxy(
-                            () -> serverNode, rpcClient, AdminReadOnlyGateway.class);
-            return sendMetadataRequestAndRebuildCluster(
-                    adminReadOnlyGateway, Collections.emptySet());
-        } catch (Exception e) {
-            LOG.error(
-                    "Failed to initialize fluss client connection to bootstrap server: {}",
-                    address,
-                    e);
-            return null;
-        }
+        AdminReadOnlyGateway adminReadOnlyGateway =
+                GatewayClientProxy.createGatewayProxy(
+                        () -> serverNode, rpcClient, AdminReadOnlyGateway.class);
+        return sendMetadataRequestAndRebuildCluster(adminReadOnlyGateway, Collections.emptySet());
     }
 
     /** Invalid the bucket metadata for the given physical table paths. */

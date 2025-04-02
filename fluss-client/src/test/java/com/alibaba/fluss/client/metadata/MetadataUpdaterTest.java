@@ -16,8 +16,14 @@
 
 package com.alibaba.fluss.client.metadata;
 
+import com.alibaba.fluss.client.Connection;
+import com.alibaba.fluss.client.ConnectionFactory;
+import com.alibaba.fluss.client.admin.Admin;
+import com.alibaba.fluss.client.utils.MetadataUtils;
 import com.alibaba.fluss.cluster.Cluster;
 import com.alibaba.fluss.cluster.ServerNode;
+import com.alibaba.fluss.config.Configuration;
+import com.alibaba.fluss.metadata.TablePath;
 import com.alibaba.fluss.rpc.RpcClient;
 import com.alibaba.fluss.server.testutils.FlussClusterExtension;
 
@@ -27,6 +33,7 @@ import org.junit.jupiter.api.extension.RegisterExtension;
 import java.util.Collections;
 import java.util.List;
 
+import static com.alibaba.fluss.record.TestData.DATA1_TABLE_DESCRIPTOR;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /** Test for update metadata of {@link MetadataUpdater}. */
@@ -35,6 +42,36 @@ class MetadataUpdaterTest {
     @RegisterExtension
     public static final FlussClusterExtension FLUSS_CLUSTER_EXTENSION =
             FlussClusterExtension.builder().setNumOfTabletServers(2).build();
+
+    @Test
+    void testRebuildClusterNTimes() throws Exception {
+        Configuration clientConf = FLUSS_CLUSTER_EXTENSION.getClientConfig();
+        Connection conn = ConnectionFactory.createConnection(clientConf);
+        Admin admin = conn.getAdmin();
+        TablePath tablePath = TablePath.of("fluss", "test");
+        admin.createTable(tablePath, DATA1_TABLE_DESCRIPTOR, true).get();
+        admin.close();
+        conn.close();
+
+        RpcClient rpcClient = FLUSS_CLUSTER_EXTENSION.getRpcClient();
+        MetadataUpdater metadataUpdater = new MetadataUpdater(clientConf, rpcClient);
+        // update metadata
+        metadataUpdater.updateMetadata(Collections.singleton(tablePath), null, null);
+        Cluster cluster = metadataUpdater.getCluster();
+
+        // repeat 20K times to reproduce StackOverflowError if there is
+        // any N levels UnmodifiableCollection
+        for (int i = 0; i < 20000; i++) {
+            cluster =
+                    MetadataUtils.sendMetadataRequestAndRebuildCluster(
+                            FLUSS_CLUSTER_EXTENSION.newCoordinatorClient(),
+                            true,
+                            cluster,
+                            null,
+                            null,
+                            null);
+        }
+    }
 
     @Test
     void testUpdateWithEmptyMetadataResponse() throws Exception {
@@ -79,5 +116,8 @@ class MetadataUpdaterTest {
         assertThat(metadataUpdater.getCluster().getAliveTabletServers())
                 .isEqualTo(newCluster.getAliveTabletServers())
                 .hasSize(1);
+
+        // recover the coordinator
+        FLUSS_CLUSTER_EXTENSION.startCoordinatorServer();
     }
 }
