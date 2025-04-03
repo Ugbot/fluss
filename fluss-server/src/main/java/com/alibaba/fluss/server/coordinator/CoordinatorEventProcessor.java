@@ -176,7 +176,7 @@ public class CoordinatorEventProcessor implements EventProcessor {
         this.serverMetadataCache = serverMetadataCache;
         this.coordinatorChannelManager = coordinatorChannelManager;
         this.coordinatorContext = coordinatorContext;
-        this.coordinatorEventManager = new CoordinatorEventManager(this);
+        this.coordinatorEventManager = new CoordinatorEventManager(this, coordinatorMetricGroup);
         this.replicaStateMachine =
                 new ReplicaStateMachine(
                         coordinatorContext,
@@ -211,10 +211,10 @@ public class CoordinatorEventProcessor implements EventProcessor {
         this.autoPartitionManager = autoPartitionManager;
         this.coordinatorMetricGroup = coordinatorMetricGroup;
         this.internalListenerName = conf.getString(ConfigOptions.INTERNAL_LISTENER_NAME);
-        registerMetric();
+        registerMetrics();
     }
 
-    private void registerMetric() {
+    private void registerMetrics() {
         coordinatorMetricGroup.gauge(MetricNames.ACTIVE_COORDINATOR_COUNT, () -> 1);
         coordinatorMetricGroup.gauge(
                 MetricNames.ACTIVE_TABLET_SERVER_COUNT, () -> tabletServerCount);

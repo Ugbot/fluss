@@ -240,7 +240,8 @@ class TableBucketStateMachineTest {
                         Executors.newFixedThreadPool(
                                 1, new ExecutorThreadFactory("test-coordinator-io")));
         CoordinatorEventManager eventManager =
-                new CoordinatorEventManager(coordinatorEventProcessor);
+                new CoordinatorEventManager(
+                        coordinatorEventProcessor, TestingMetricGroups.COORDINATOR_METRICS);
         coordinatorRequestBatch =
                 new CoordinatorRequestBatch(testCoordinatorChannelManager, eventManager);
         tableBucketStateMachine =
