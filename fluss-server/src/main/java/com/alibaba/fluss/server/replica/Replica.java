@@ -807,7 +807,15 @@ public final class Replica {
                     validateInSyncReplicaSize(requiredAcks);
 
                     // TODO WRITE a leader epoch.
-                    LogAppendInfo appendInfo = logTablet.appendAsLeader(memoryLogRecords);
+                    LogAppendInfo appendInfo;
+                    try {
+                        appendInfo = logTablet.appendAsLeader(memoryLogRecords);
+                    } catch (IOException e) {
+                        LOG.error("Error while appending records to {}", tableBucket, e);
+                        fatalErrorHandler.onFatalError(e);
+                        throw new LogStorageException(
+                                "Error while appending records to " + tableBucket, e);
+                    }
 
                     // we may need to increment high watermark if isr could be down to 1 or the
                     // replica count is 1.
@@ -843,7 +851,15 @@ public final class Replica {
                     KvTablet kv = this.kvTablet;
                     checkNotNull(
                             kv, "KvTablet for the replica to put kv records shouldn't be null.");
-                    LogAppendInfo logAppendInfo = kv.putAsLeader(kvRecords, targetColumns);
+                    LogAppendInfo logAppendInfo;
+                    try {
+                        logAppendInfo = kv.putAsLeader(kvRecords, targetColumns);
+                    } catch (IOException e) {
+                        LOG.error("Error while putting records to {}", tableBucket, e);
+                        fatalErrorHandler.onFatalError(e);
+                        throw new KvStorageException(
+                                "Error while putting records to " + tableBucket, e);
+                    }
                     // we may need to increment high watermark.
                     maybeIncrementLeaderHW(logTablet, clock.milliseconds());
                     return logAppendInfo;
