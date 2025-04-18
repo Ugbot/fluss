@@ -50,8 +50,10 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
+import static com.alibaba.fluss.config.FlussConfigUtils.CLIENT_PREFIX;
 import static com.alibaba.fluss.flink.catalog.FlinkCatalog.LAKE_TABLE_SPLITTER;
 import static com.alibaba.fluss.flink.utils.FlinkConnectorOptionsUtils.getBucketKeyIndexes;
 import static com.alibaba.fluss.flink.utils.FlinkConnectorOptionsUtils.getBucketKeys;
@@ -119,7 +121,8 @@ public class FlinkTableFactory implements DynamicTableSourceFactory, DynamicTabl
 
         return new FlinkTableSource(
                 toFlussTablePath(context.getObjectIdentifier()),
-                toFlussClientConfig(tableOptions, context.getConfiguration()),
+                toFlussClientConfig(
+                        context.getCatalogTable().getOptions(), context.getConfiguration()),
                 tableOutputType,
                 primaryKeyIndexes,
                 bucketKeyIndexes,
@@ -151,7 +154,8 @@ public class FlinkTableFactory implements DynamicTableSourceFactory, DynamicTabl
 
         return new FlinkTableSink(
                 toFlussTablePath(context.getObjectIdentifier()),
-                toFlussClientConfig(tableOptions, context.getConfiguration()),
+                toFlussClientConfig(
+                        context.getCatalogTable().getOptions(), context.getConfiguration()),
                 rowType,
                 context.getPrimaryKeyIndexes(),
                 partitionKeys,
@@ -200,17 +204,19 @@ public class FlinkTableFactory implements DynamicTableSourceFactory, DynamicTabl
     }
 
     private static Configuration toFlussClientConfig(
-            ReadableConfig tableOptions, ReadableConfig flinkConfig) {
+            Map<String, String> tableOptions, ReadableConfig flinkConfig) {
         Configuration flussConfig = new Configuration();
         flussConfig.setString(
                 ConfigOptions.BOOTSTRAP_SERVERS.key(),
-                tableOptions.get(FlinkConnectorOptions.BOOTSTRAP_SERVERS));
+                tableOptions.get(FlinkConnectorOptions.BOOTSTRAP_SERVERS.key()));
+
         // forward all client configs
-        for (ConfigOption<?> option : FlinkConnectorOptions.CLIENT_OPTIONS) {
-            if (tableOptions.get(option) != null) {
-                flussConfig.setString(option.key(), tableOptions.get(option).toString());
-            }
-        }
+        tableOptions.forEach(
+                (key, value) -> {
+                    if (key.startsWith(CLIENT_PREFIX)) {
+                        flussConfig.setString(key, value);
+                    }
+                });
 
         // pass flink io tmp dir to fluss client.
         flussConfig.setString(
