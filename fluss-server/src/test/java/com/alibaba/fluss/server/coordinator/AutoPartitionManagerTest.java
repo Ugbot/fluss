@@ -114,7 +114,9 @@ class AutoPartitionManagerTest {
                                 .expectedPartitions("20240910", "20240911", "20240912", "20240913")
                                 .manualCreatedPartition("20240915")
                                 .manualDroppedPartition("20240910")
-                                .advanceClock(c -> c.plusDays(3))
+                                // plus 23 hours to make sure the partition can be created since
+                                // we introduce jitter for create day partition
+                                .advanceClock(c -> c.plusDays(3).plus(Duration.ofHours(23)))
                                 // current partition is "20240913", retain "20240911", "20240912"
                                 .expectedPartitionsAfterAdvance(
                                         "20240911",
@@ -194,7 +196,7 @@ class AutoPartitionManagerTest {
 
         TableInfo table = createPartitionedTable(2, 4, params.timeUnit);
         TablePath tablePath = table.getTablePath();
-        autoPartitionManager.addAutoPartitionTable(table);
+        autoPartitionManager.addAutoPartitionTable(table, true);
         // the first auto-partition task is a non-periodic task
         periodicExecutor.triggerNonPeriodicScheduledTask();
 
@@ -271,9 +273,10 @@ class AutoPartitionManagerTest {
         // create a partitioned with -1 retention to never auto-drop partitions
         TableInfo table = createPartitionedTable(-1, 4, AutoPartitionTimeUnit.DAY);
         TablePath tablePath = table.getTablePath();
-        autoPartitionManager.addAutoPartitionTable(table);
-        // the first auto-partition task is a non-periodic task
-        periodicExecutor.triggerPeriodicScheduledTasks();
+        autoPartitionManager.addAutoPartitionTable(table, true);
+        // when the partitioned table is added, the partition crate task should be scheduled
+        // immediately
+        periodicExecutor.triggerNonPeriodicScheduledTask();
 
         Map<String, Long> partitions = zookeeperClient.getPartitionNameAndIds(tablePath);
         // pre-create 4 partitions including current partition
@@ -300,7 +303,8 @@ class AutoPartitionManagerTest {
             autoPartitionManager.addPartition(tableId, i + "");
         }
 
-        clock.advanceTime(Duration.ofDays(4));
+        // make sure the partitions can be created automatically
+        clock.advanceTime(Duration.ofDays(4).plusHours(23));
         periodicExecutor.triggerPeriodicScheduledTasks();
         partitions = zookeeperClient.getPartitionNameAndIds(tablePath);
         assertThat(partitions.keySet())
@@ -317,6 +321,53 @@ class AutoPartitionManagerTest {
                         "20250102",
                         "20250103",
                         "20250104");
+    }
+
+    @Test
+    void testAutoCreateDayPartitionShouldJitter() throws Exception {
+        ZonedDateTime startTime =
+                LocalDateTime.parse("2025-04-19T00:00:00").atZone(ZoneId.systemDefault());
+        long startMs = startTime.toInstant().toEpochMilli();
+        ManualClock clock = new ManualClock(startMs);
+        ManuallyTriggeredScheduledExecutorService periodicExecutor =
+                new ManuallyTriggeredScheduledExecutorService();
+        AutoPartitionManager autoPartitionManager =
+                new AutoPartitionManager(
+                        new TestingMetadataCache(3),
+                        metadataManager,
+                        new Configuration(),
+                        clock,
+                        periodicExecutor);
+        autoPartitionManager.start();
+
+        // create one day partition table
+        TableInfo table = createPartitionedTable(-1, 4, AutoPartitionTimeUnit.DAY);
+        TablePath tablePath = table.getTablePath();
+        autoPartitionManager.addAutoPartitionTable(table, true);
+        periodicExecutor.triggerNonPeriodicScheduledTasks();
+        Map<String, Long> partitions = zookeeperClient.getPartitionNameAndIds(tablePath);
+        // pre-create 4 partitions including current partition
+        assertThat(partitions.keySet())
+                .containsExactlyInAnyOrder("20250419", "20250420", "20250422", "20250421");
+
+        Integer delayInMinutes =
+                autoPartitionManager.getAutoCreateDayDelayMinutes(table.getTableId());
+        // advance 1 day + (delayInMinutes - 1), should still no next partition to create
+        // since the current minutes in day don't advance the delayInMinutes
+        clock.advanceTime(Duration.ofDays(1).plusMinutes(delayInMinutes - 1));
+        periodicExecutor.triggerPeriodicScheduledTasks();
+        partitions = zookeeperClient.getPartitionNameAndIds(tablePath);
+        assertThat(partitions.keySet())
+                .containsExactlyInAnyOrder("20250419", "20250420", "20250422", "20250421");
+
+        // now, advance a minutes again, should create a new partition since
+        // the current minutes in day advance the delayInMinutes
+        clock.advanceTime(Duration.ofMinutes(1));
+        periodicExecutor.triggerPeriodicScheduledTasks();
+        partitions = zookeeperClient.getPartitionNameAndIds(tablePath);
+        assertThat(partitions.keySet())
+                .containsExactlyInAnyOrder(
+                        "20250419", "20250420", "20250421", "20250422", "20250423");
     }
 
     private static class TestParams {
