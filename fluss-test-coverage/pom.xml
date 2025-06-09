@@ -280,6 +280,7 @@
                                         <exclude>com.alibaba.fluss.Bucket</exclude>
                                         <exclude>com.alibaba.fluss.remote.*</exclude>
                                         <exclude>com.alibaba.fluss.compression.*</exclude>
+                                        <exclude>com.alibaba.fluss.security.auth.sasl.plain.PlainSaslServer.PlainSaslServerFactory</exclude>
                                         <!-- start exclude for flink-connector -->
                                         <exclude>com.alibaba.fluss.flink.catalog.*
                                         </exclude>
@@ -337,7 +338,7 @@
                                         <exclude>com.alibaba.fluss.tools.ci.*</exclude>
                                         <!-- exclude for fluss-dist -->
                                         <exclude>com.alibaba.fluss.dist.DummyClass</exclude>
-                                        <exclde>com.alibaba.fluss.lake.paimon.FlussDataTypeToPaimonDataType</exclde>
+                                        <exclude>com.alibaba.fluss.lake.paimon.FlussDataTypeToPaimonDataType</exclude>
                                         <!-- start exclude for flink tiering service -->
                                         <exclude>com.alibaba.fluss.flink.tiering.source.TieringWriterInitContext</exclude>
                                         <exclude>com.alibaba.fluss.flink.tiering.source.TieringSourceReader</exclude>
