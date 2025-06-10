@@ -282,8 +282,6 @@
                                         <exclude>com.alibaba.fluss.compression.*</exclude>
                                         <exclude>com.alibaba.fluss.security.auth.sasl.plain.PlainSaslServer.PlainSaslServerFactory</exclude>
                                         <!-- start exclude for flink-connector -->
-                                        <exclude>com.alibaba.fluss.flink.catalog.*
-                                        </exclude>
                                         <exclude>com.alibaba.fluss.flink.utils.*</exclude>
                                         <exclude>com.alibaba.fluss.flink.source.*
                                         </exclude>
