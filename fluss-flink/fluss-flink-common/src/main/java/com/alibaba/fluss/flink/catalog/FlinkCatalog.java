@@ -24,6 +24,7 @@ import com.alibaba.fluss.config.Configuration;
 import com.alibaba.fluss.exception.FlussRuntimeException;
 import com.alibaba.fluss.exception.InvalidTableException;
 import com.alibaba.fluss.flink.lakehouse.LakeCatalog;
+import com.alibaba.fluss.flink.procedure.ProcedureManager;
 import com.alibaba.fluss.flink.utils.CatalogExceptionUtils;
 import com.alibaba.fluss.flink.utils.DataLakeUtils;
 import com.alibaba.fluss.flink.utils.FlinkConversions;
@@ -57,6 +58,7 @@ import org.apache.flink.table.catalog.exceptions.FunctionNotExistException;
 import org.apache.flink.table.catalog.exceptions.PartitionAlreadyExistsException;
 import org.apache.flink.table.catalog.exceptions.PartitionNotExistException;
 import org.apache.flink.table.catalog.exceptions.PartitionSpecInvalidException;
+import org.apache.flink.table.catalog.exceptions.ProcedureNotExistException;
 import org.apache.flink.table.catalog.exceptions.TableAlreadyExistException;
 import org.apache.flink.table.catalog.exceptions.TableNotExistException;
 import org.apache.flink.table.catalog.exceptions.TableNotPartitionedException;
@@ -65,6 +67,7 @@ import org.apache.flink.table.catalog.stats.CatalogColumnStatistics;
 import org.apache.flink.table.catalog.stats.CatalogTableStatistics;
 import org.apache.flink.table.expressions.Expression;
 import org.apache.flink.table.factories.Factory;
+import org.apache.flink.table.procedures.Procedure;
 
 import javax.annotation.Nullable;
 
@@ -650,6 +653,26 @@ public class FlinkCatalog implements Catalog {
 
     protected TablePath toTablePath(ObjectPath objectPath) {
         return TablePath.of(objectPath.getDatabaseName(), objectPath.getObjectName());
+    }
+
+    @Override
+    public List<String> listProcedures(String dbName)
+            throws DatabaseNotExistException, CatalogException {
+        if (!databaseExists(dbName)) {
+            throw new DatabaseNotExistException(getName(), dbName);
+        }
+        return ProcedureManager.listProcedures();
+    }
+
+    @Override
+    public Procedure getProcedure(ObjectPath procedurePath)
+            throws ProcedureNotExistException, CatalogException {
+        Optional<Procedure> procedure = ProcedureManager.getProcedure(admin, procedurePath);
+        if (procedure.isPresent()) {
+            return procedure.get();
+        } else {
+            throw new ProcedureNotExistException(catalogName, procedurePath);
+        }
     }
 
     private void mayInitLakeCatalogCatalog(Configuration tableOptions) {
