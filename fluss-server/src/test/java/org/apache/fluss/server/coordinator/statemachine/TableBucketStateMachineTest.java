@@ -34,6 +34,7 @@ import org.apache.fluss.server.coordinator.LakeCatalogDynamicLoader;
 import org.apache.fluss.server.coordinator.LakeTableTieringManager;
 import org.apache.fluss.server.coordinator.MetadataManager;
 import org.apache.fluss.server.coordinator.TestCoordinatorChannelManager;
+import org.apache.fluss.server.coordinator.TestCoordinatorContext;
 import org.apache.fluss.server.coordinator.event.CoordinatorEventManager;
 import org.apache.fluss.server.coordinator.lease.KvSnapshotLeaseManager;
 import org.apache.fluss.server.coordinator.statemachine.ReplicaLeaderElection.ControlledShutdownLeaderElection;
@@ -41,9 +42,11 @@ import org.apache.fluss.server.coordinator.statemachine.TableBucketStateMachine.
 import org.apache.fluss.server.metadata.CoordinatorMetadataCache;
 import org.apache.fluss.server.metrics.group.TestingMetricGroups;
 import org.apache.fluss.server.zk.NOPErrorHandler;
+import org.apache.fluss.server.zk.ZkEpoch;
 import org.apache.fluss.server.zk.ZooKeeperClient;
 import org.apache.fluss.server.zk.ZooKeeperExtension;
 import org.apache.fluss.server.zk.data.LeaderAndIsr;
+import org.apache.fluss.server.zk.data.ZkVersion;
 import org.apache.fluss.shaded.guava32.com.google.common.collect.Sets;
 import org.apache.fluss.testutils.common.AllCallbackWrapper;
 import org.apache.fluss.utils.clock.SystemClock;
@@ -84,6 +87,8 @@ class TableBucketStateMachineTest {
 
     private static ZooKeeperClient zookeeperClient;
     private static CoordinatorContext coordinatorContext;
+    private static ZkEpoch zkEpoch;
+
     private TestCoordinatorChannelManager testCoordinatorChannelManager;
     private CoordinatorRequestBatch coordinatorRequestBatch;
     private AutoPartitionManager autoPartitionManager;
@@ -92,11 +97,12 @@ class TableBucketStateMachineTest {
     private KvSnapshotLeaseManager kvSnapshotLeaseManager;
 
     @BeforeAll
-    static void baseBeforeAll() {
+    static void baseBeforeAll() throws Exception {
         zookeeperClient =
                 ZOO_KEEPER_EXTENSION_WRAPPER
                         .getCustomExtension()
                         .getZooKeeperClient(NOPErrorHandler.INSTANCE);
+        zkEpoch = zookeeperClient.fenceBecomeCoordinatorLeader("1");
     }
 
     @BeforeEach
@@ -105,7 +111,7 @@ class TableBucketStateMachineTest {
         conf.setString(ConfigOptions.COORDINATOR_HOST, "localhost");
         String remoteDir = "/tmp/fluss/remote-data";
         conf.setString(ConfigOptions.REMOTE_DATA_DIR, remoteDir);
-        coordinatorContext = new CoordinatorContext();
+        coordinatorContext = new TestCoordinatorContext();
         testCoordinatorChannelManager = new TestCoordinatorChannelManager();
         coordinatorRequestBatch =
                 new CoordinatorRequestBatch(
@@ -157,9 +163,13 @@ class TableBucketStateMachineTest {
 
         // create LeaderAndIsr for t10/t11 info in zk,
         zookeeperClient.registerLeaderAndIsr(
-                new TableBucket(t1Id, 0), new LeaderAndIsr(0, 0, Arrays.asList(0, 1), 0, 0));
+                new TableBucket(t1Id, 0),
+                new LeaderAndIsr(0, 0, Arrays.asList(0, 1), 0, 0),
+                ZkVersion.MATCH_ANY_VERSION.getVersion());
         zookeeperClient.registerLeaderAndIsr(
-                new TableBucket(t1Id, 1), new LeaderAndIsr(2, 0, Arrays.asList(2, 3), 0, 0));
+                new TableBucket(t1Id, 1),
+                new LeaderAndIsr(2, 0, Arrays.asList(2, 3), 0, 0),
+                ZkVersion.MATCH_ANY_VERSION.getVersion());
         // update the LeaderAndIsr to context
         coordinatorContext.putBucketLeaderAndIsr(
                 t1b0, zookeeperClient.getLeaderAndIsr(new TableBucket(t1Id, 0)).get());
@@ -223,6 +233,8 @@ class TableBucketStateMachineTest {
         coordinatorContext.putTablePath(tableId, fakeTablePath);
         coordinatorContext.updateBucketReplicaAssignment(tableBucket, Arrays.asList(0, 1, 2));
         coordinatorContext.putBucketState(tableBucket, NewBucket);
+        coordinatorContext.setCoordinatorEpochAndZkVersion(
+                0, ZkVersion.MATCH_ANY_VERSION.getVersion());
         // case1: init a new leader for NewBucket to OnlineBucket
         tableBucketStateMachine.handleStateChange(Collections.singleton(tableBucket), OnlineBucket);
         // non any alive servers, the state change fail
@@ -268,6 +280,7 @@ class TableBucketStateMachineTest {
         CoordinatorEventProcessor coordinatorEventProcessor =
                 new CoordinatorEventProcessor(
                         zookeeperClient,
+                        zkEpoch,
                         serverMetadataCache,
                         new CoordinatorChannelManager(
                                 RpcClient.create(

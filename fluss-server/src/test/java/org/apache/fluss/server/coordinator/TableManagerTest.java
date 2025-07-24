@@ -113,7 +113,7 @@ class TableManagerTest {
 
     private void initTableManager() {
         testingEventManager = new TestingEventManager();
-        coordinatorContext = new CoordinatorContext();
+        coordinatorContext = new TestCoordinatorContext();
         testCoordinatorChannelManager = new TestCoordinatorChannelManager();
         Configuration conf = new Configuration();
         conf.setString(ConfigOptions.REMOTE_DATA_DIR, "/tmp/fluss/remote-data");

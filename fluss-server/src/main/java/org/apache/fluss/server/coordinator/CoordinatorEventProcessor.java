@@ -108,6 +108,7 @@ import org.apache.fluss.server.metadata.CoordinatorMetadataCache;
 import org.apache.fluss.server.metadata.ServerInfo;
 import org.apache.fluss.server.metrics.group.CoordinatorMetricGroup;
 import org.apache.fluss.server.utils.ServerRpcMessageUtils;
+import org.apache.fluss.server.zk.ZkEpoch;
 import org.apache.fluss.server.zk.ZooKeeperClient;
 import org.apache.fluss.server.zk.data.BucketAssignment;
 import org.apache.fluss.server.zk.data.LeaderAndIsr;
@@ -188,6 +189,7 @@ public class CoordinatorEventProcessor implements EventProcessor {
 
     public CoordinatorEventProcessor(
             ZooKeeperClient zooKeeperClient,
+            ZkEpoch zkEpoch,
             CoordinatorMetadataCache serverMetadataCache,
             CoordinatorChannelManager coordinatorChannelManager,
             CoordinatorContext coordinatorContext,
@@ -253,6 +255,9 @@ public class CoordinatorEventProcessor implements EventProcessor {
         this.ioExecutor = ioExecutor;
         this.lakeTableHelper =
                 new LakeTableHelper(zooKeeperClient, conf.getString(ConfigOptions.REMOTE_DATA_DIR));
+
+        this.coordinatorContext.setCoordinatorEpochAndZkVersion(
+                zkEpoch.getCoordinatorEpoch(), zkEpoch.getCoordinatorEpochZkVersion());
     }
 
     public CoordinatorEventManager getCoordinatorEventManager() {
@@ -1618,7 +1623,10 @@ public class CoordinatorEventProcessor implements EventProcessor {
             tableAssignment.forEach(
                     (bucket, replicas) ->
                             newTableAssignment.put(bucket, new BucketAssignment(replicas)));
-            zooKeeperClient.updateTableAssignment(tableId, new TableAssignment(newTableAssignment));
+            zooKeeperClient.updateTableAssignment(
+                    tableId,
+                    new TableAssignment(newTableAssignment),
+                    coordinatorContext.getCoordinatorEpochZkVersion());
         } else {
             Map<Integer, List<Integer>> partitionAssignment =
                     coordinatorContext.getPartitionAssignment(
@@ -1629,7 +1637,9 @@ public class CoordinatorEventProcessor implements EventProcessor {
                     (bucket, replicas) ->
                             newPartitionAssignment.put(bucket, new BucketAssignment(replicas)));
             zooKeeperClient.updatePartitionAssignment(
-                    partitionId, new PartitionAssignment(tableId, newPartitionAssignment));
+                    partitionId,
+                    new PartitionAssignment(tableId, newPartitionAssignment),
+                    coordinatorContext.getCoordinatorEpochZkVersion());
         }
     }
 
@@ -1675,7 +1685,8 @@ public class CoordinatorEventProcessor implements EventProcessor {
         }
 
         try {
-            zooKeeperClient.batchUpdateLeaderAndIsr(newLeaderAndIsrList);
+            zooKeeperClient.batchUpdateLeaderAndIsr(
+                    newLeaderAndIsrList, coordinatorContext.getCoordinatorEpochZkVersion());
             newLeaderAndIsrList.forEach(
                     (tableBucket, newLeaderAndIsr) ->
                             result.add(new AdjustIsrResultForBucket(tableBucket, newLeaderAndIsr)));
@@ -1686,7 +1697,10 @@ public class CoordinatorEventProcessor implements EventProcessor {
                 TableBucket tableBucket = entry.getKey();
                 LeaderAndIsr newLeaderAndIsr = entry.getValue();
                 try {
-                    zooKeeperClient.updateLeaderAndIsr(tableBucket, newLeaderAndIsr);
+                    zooKeeperClient.updateLeaderAndIsr(
+                            tableBucket,
+                            newLeaderAndIsr,
+                            coordinatorContext.getCoordinatorEpochZkVersion());
                 } catch (Exception e) {
                     LOG.error("Error when register leader and isr.", e);
                     result.add(
@@ -2212,7 +2226,8 @@ public class CoordinatorEventProcessor implements EventProcessor {
         LeaderAndIsr newLeaderAndIsr = leaderAndIsr.newLeaderAndIsr(leaderAndIsr.isr());
 
         coordinatorContext.putBucketLeaderAndIsr(tableBucket, newLeaderAndIsr);
-        zooKeeperClient.updateLeaderAndIsr(tableBucket, newLeaderAndIsr);
+        zooKeeperClient.updateLeaderAndIsr(
+                tableBucket, newLeaderAndIsr, coordinatorContext.getCoordinatorEpochZkVersion());
 
         coordinatorRequestBatch.newBatch();
         coordinatorRequestBatch.addNotifyLeaderRequestForTabletServers(

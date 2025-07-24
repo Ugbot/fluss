@@ -65,6 +65,7 @@ import org.apache.fluss.server.metadata.TableMetadata;
 import org.apache.fluss.server.metrics.group.TestingMetricGroups;
 import org.apache.fluss.server.tablet.TestTabletServerGateway;
 import org.apache.fluss.server.zk.NOPErrorHandler;
+import org.apache.fluss.server.zk.ZkEpoch;
 import org.apache.fluss.server.zk.ZooKeeperClient;
 import org.apache.fluss.server.zk.ZooKeeperExtension;
 import org.apache.fluss.server.zk.data.BucketAssignment;
@@ -148,6 +149,7 @@ class CoordinatorEventProcessorTest {
 
     private static ZooKeeperClient zookeeperClient;
     private static MetadataManager metadataManager;
+    private static ZkEpoch zkEpoch;
 
     private CoordinatorEventProcessor eventProcessor;
     private final String defaultDatabase = "db";
@@ -176,6 +178,7 @@ class CoordinatorEventProcessorTest {
                 new CoordinatorAddress(
                         "2", Endpoint.fromListenersString("CLIENT://localhost:10012")));
 
+        zkEpoch = zookeeperClient.fenceBecomeCoordinatorLeader("2");
         // register 3 tablet servers
         for (int i = 0; i < 3; i++) {
             zookeeperClient.registerTabletServer(
@@ -1058,9 +1061,10 @@ class CoordinatorEventProcessorTest {
     private CoordinatorEventProcessor buildCoordinatorEventProcessor() {
         return new CoordinatorEventProcessor(
                 zookeeperClient,
+                zkEpoch,
                 serverMetadataCache,
                 testCoordinatorChannelManager,
-                new CoordinatorContext(),
+                new TestCoordinatorContext(),
                 autoPartitionManager,
                 lakeTableTieringManager,
                 TestingMetricGroups.COORDINATOR_METRICS,

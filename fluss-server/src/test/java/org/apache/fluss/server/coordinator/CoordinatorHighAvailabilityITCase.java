@@ -23,18 +23,25 @@ import org.apache.fluss.cluster.ServerNode;
 import org.apache.fluss.cluster.ServerType;
 import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.config.Configuration;
+import org.apache.fluss.exception.InvalidCoordinatorException;
 import org.apache.fluss.exception.NotCoordinatorLeaderException;
+import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.rpc.GatewayClientProxy;
 import org.apache.fluss.rpc.RpcClient;
 import org.apache.fluss.rpc.gateway.CoordinatorGateway;
+import org.apache.fluss.rpc.gateway.TabletServerGateway;
 import org.apache.fluss.rpc.messages.CreateDatabaseRequest;
 import org.apache.fluss.rpc.messages.MetadataRequest;
+import org.apache.fluss.rpc.messages.UpdateMetadataRequest;
 import org.apache.fluss.rpc.metrics.TestingClientMetricGroup;
+import org.apache.fluss.server.tablet.TabletServer;
 import org.apache.fluss.server.zk.NOPErrorHandler;
 import org.apache.fluss.server.zk.ZooKeeperClient;
 import org.apache.fluss.server.zk.ZooKeeperExtension;
 import org.apache.fluss.server.zk.data.CoordinatorAddress;
+import org.apache.fluss.server.zk.data.LeaderAndIsr;
 import org.apache.fluss.shaded.curator5.org.apache.curator.framework.CuratorFramework;
+import org.apache.fluss.shaded.zookeeper3.org.apache.zookeeper.KeeperException;
 import org.apache.fluss.shaded.zookeeper3.org.apache.zookeeper.Watcher;
 import org.apache.fluss.shaded.zookeeper3.org.apache.zookeeper.ZooKeeper;
 import org.apache.fluss.testutils.common.AllCallbackWrapper;
@@ -44,7 +51,9 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
+import org.junit.jupiter.api.io.TempDir;
 
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.Arrays;
 import java.util.List;
@@ -78,7 +87,10 @@ class CoordinatorHighAvailabilityITCase {
 
     private CoordinatorServer coordinatorServer1;
     private CoordinatorServer coordinatorServer2;
+    private TabletServer tabletServer;
     private RpcClient rpcClient;
+
+    @TempDir Path tempDir;
 
     @BeforeAll
     static void baseBeforeAll() {
@@ -101,6 +113,9 @@ class CoordinatorHighAvailabilityITCase {
         }
         if (coordinatorServer2 != null) {
             coordinatorServer2.close();
+        }
+        if (tabletServer != null) {
+            tabletServer.close();
         }
         if (rpcClient != null) {
             rpcClient.close();
@@ -242,6 +257,122 @@ class CoordinatorHighAvailabilityITCase {
         createGatewayForServer(finalLeader).metadata(new MetadataRequest()).get();
     }
 
+    @Test
+    void testTabletServerRejectsStaleCoordinatorEpochAfterLeaderSwitch() throws Exception {
+        coordinatorServer1 = new CoordinatorServer(createConfiguration());
+        coordinatorServer2 = new CoordinatorServer(createConfiguration());
+        tabletServer = new TabletServer(createTabletServerConfiguration());
+
+        coordinatorServer1.start();
+        coordinatorServer2.start();
+        tabletServer.start();
+
+        waitUntilCoordinatorServerElected();
+        CoordinatorAddress firstLeaderAddr = zookeeperClient.getCoordinatorLeaderAddress().get();
+
+        CoordinatorServer leader = findServerById(firstLeaderAddr.getId());
+        CoordinatorServer standby = findServerByNotId(firstLeaderAddr.getId());
+
+        // Record old coordinator epoch before killing the leader
+        int oldCoordinatorEpoch = leader.getCoordinatorEventProcessor().getCoordinatorEpoch();
+
+        killZkSession(leader);
+        waitUntilNewLeaderElected(leader.getServerId());
+        assertThat(zookeeperClient.getCoordinatorLeaderAddress().get().getId())
+                .as("After killing leader, standby should become leader")
+                .isEqualTo(standby.getServerId());
+
+        int newCoordinatorEpoch = standby.getCoordinatorEventProcessor().getCoordinatorEpoch();
+
+        TabletServerGateway tsGateway = createGatewayForTabletServer(tabletServer);
+
+        // Send request with new coordinator epoch first to ensure the tablet server
+        // has updated its stored epoch to the latest value
+        tsGateway
+                .updateMetadata(
+                        new UpdateMetadataRequest().setCoordinatorEpoch(newCoordinatorEpoch))
+                .get();
+
+        // Send request with old coordinator epoch — tablet server should reject it
+        assertThatThrownBy(
+                        () ->
+                                tsGateway
+                                        .updateMetadata(
+                                                new UpdateMetadataRequest()
+                                                        .setCoordinatorEpoch(oldCoordinatorEpoch))
+                                        .get())
+                .satisfies(
+                        t ->
+                                assertThat(getRootCause(t))
+                                        .isInstanceOf(InvalidCoordinatorException.class));
+    }
+
+    @Test
+    void testZooKeeperRejectsStaleCoordinatorRequestAfterLeaderSwitch() throws Exception {
+        // 1. Start two coordinators, confirm leader
+        // 2. Record current coordinator epoch
+        // 3. Kill leader's ZK session, trigger leader switch
+        // 4. Wait for new leader election (epoch should increment)
+        // 5. Verify new leader can send requests to ZooKeeper
+        // 6. Verify requests with old ZkVersion epoch are rejected with BadVersionException
+        coordinatorServer1 = new CoordinatorServer(createConfiguration());
+        coordinatorServer2 = new CoordinatorServer(createConfiguration());
+
+        coordinatorServer1.start();
+        coordinatorServer2.start();
+
+        waitUntilCoordinatorServerElected();
+        CoordinatorAddress firstLeaderAddr = zookeeperClient.getCoordinatorLeaderAddress().get();
+
+        CoordinatorServer leader = findServerById(firstLeaderAddr.getId());
+        CoordinatorServer standby = findServerByNotId(firstLeaderAddr.getId());
+
+        killZkSession(leader);
+        waitUntilNewLeaderElected(leader.getServerId());
+        assertThat(zookeeperClient.getCoordinatorLeaderAddress().get().getId())
+                .as("After killing leader, standby should become leader")
+                .isEqualTo(standby.getServerId());
+
+        TableBucket tableBucket = new TableBucket(1, 1);
+        LeaderAndIsr leaderAndIsr = new LeaderAndIsr(0, 0, Arrays.asList(2, 3), 0, 0);
+
+        int newLeaderEpochZkVersion =
+                standby.getCoordinatorEventProcessor()
+                        .getCoordinatorContext()
+                        .getCoordinatorEpochZkVersion();
+        int oldLeaderEpochZkVersion =
+                leader.getCoordinatorEventProcessor()
+                        .getCoordinatorContext()
+                        .getCoordinatorEpochZkVersion();
+
+        assertThatThrownBy(
+                        () ->
+                                leader.getZooKeeperClient()
+                                        .registerLeaderAndIsr(
+                                                tableBucket, leaderAndIsr, oldLeaderEpochZkVersion))
+                .satisfies(
+                        t ->
+                                assertThat(getRootCause(t))
+                                        .isInstanceOf(KeeperException.BadVersionException.class));
+        standby.getZooKeeperClient()
+                .registerLeaderAndIsr(tableBucket, leaderAndIsr, newLeaderEpochZkVersion);
+        assertThat(zookeeperClient.getLeaderAndIsr(tableBucket)).hasValue(leaderAndIsr);
+    }
+
+    private TabletServerGateway createGatewayForTabletServer(TabletServer server) {
+        List<Endpoint> endpoints = server.getRpcServer().getBindEndpoints();
+        Endpoint endpoint = endpoints.get(0);
+        ServerNode serverNode =
+                new ServerNode(
+                        server.getServerId(),
+                        endpoint.getHost(),
+                        endpoint.getPort(),
+                        ServerType.TABLET_SERVER);
+
+        return GatewayClientProxy.createGatewayProxy(
+                () -> serverNode, rpcClient, TabletServerGateway.class);
+    }
+
     private CoordinatorGateway createGatewayForServer(CoordinatorServer server) {
         List<Endpoint> endpoints = server.getRpcServer().getBindEndpoints();
         Endpoint endpoint = endpoints.get(0);
@@ -272,6 +403,13 @@ class CoordinatorHighAvailabilityITCase {
         configuration.set(ConfigOptions.ZOOKEEPER_SESSION_TIMEOUT, Duration.ofSeconds(5));
         configuration.set(ConfigOptions.ZOOKEEPER_CONNECTION_TIMEOUT, Duration.ofSeconds(5));
         configuration.set(ConfigOptions.ZOOKEEPER_RETRY_WAIT, Duration.ofMillis(500));
+        return configuration;
+    }
+
+    private Configuration createTabletServerConfiguration() {
+        Configuration configuration = createConfiguration();
+        configuration.set(ConfigOptions.TABLET_SERVER_ID, 0);
+        configuration.setString(ConfigOptions.DATA_DIR, tempDir.toAbsolutePath().toString());
         return configuration;
     }
 
