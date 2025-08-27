@@ -20,6 +20,7 @@ package org.apache.fluss.rpc.protocol;
 import org.apache.fluss.exception.ApiException;
 import org.apache.fluss.exception.AuthenticationException;
 import org.apache.fluss.exception.AuthorizationException;
+import org.apache.fluss.exception.CacheMissException;
 import org.apache.fluss.exception.CorruptMessageException;
 import org.apache.fluss.exception.CorruptRecordException;
 import org.apache.fluss.exception.DatabaseAlreadyExistException;
@@ -223,6 +224,9 @@ public enum Errors {
     INELIGIBLE_REPLICA_EXCEPTION(
             55,
             "The new ISR contains at least one ineligible replica.",
+            IneligibleReplicaException::new),
+    CACHE_MISS(
+            56, "The requested metadata is not available in local cache.", CacheMissException::new);
             IneligibleReplicaException::new),
     INVALID_ALTER_TABLE_EXCEPTION(
             56, "The alter table is invalid.", InvalidAlterTableException::new);
