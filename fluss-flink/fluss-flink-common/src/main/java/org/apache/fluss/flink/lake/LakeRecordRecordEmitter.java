@@ -44,8 +44,26 @@ public class LakeRecordRecordEmitter<OUT> {
             ((LakeSnapshotSplitState) splitState).setRecordsToSkip(recordAndPos.readRecordsCount());
             sourceOutputFunc.accept(recordAndPos.record(), sourceOutput);
         } else if (splitState instanceof LakeSnapshotAndFlussLogSplitState) {
-            ((LakeSnapshotAndFlussLogSplitState) splitState)
-                    .setRecordsToSkip(recordAndPos.readRecordsCount());
+            LakeSnapshotAndFlussLogSplitState lakeSnapshotAndFlussLogSplitState =
+                    (LakeSnapshotAndFlussLogSplitState) splitState;
+
+            // set current split index
+            lakeSnapshotAndFlussLogSplitState.setCurrentLakeSplitIndex(
+                    recordAndPos.getCurrentSplitIndex());
+
+            // set records to skip to state
+            if (recordAndPos.readRecordsCount() > 0) {
+                lakeSnapshotAndFlussLogSplitState.setRecordsToSkip(recordAndPos.readRecordsCount());
+            }
+
+            ScanRecord scanRecord = recordAndPos.record();
+            // todo: may need a state to mark snapshot phase is finished
+            // just like what we do for HybridSnapshotLogSplitState
+            if (scanRecord.logOffset() >= 0) {
+                // record is with a valid offset, means it's in incremental phase,
+                // update the log offset
+                lakeSnapshotAndFlussLogSplitState.setNextLogOffset(scanRecord.logOffset() + 1);
+            }
             sourceOutputFunc.accept(recordAndPos.record(), sourceOutput);
         } else {
             throw new UnsupportedOperationException(

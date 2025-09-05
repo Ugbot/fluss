@@ -54,6 +54,17 @@ public class FlinkRowAssertionsUtils {
                 .containsExactlyInAnyOrderElementsOf(expected);
     }
 
+    public static void assertResultsExactOrder(
+            CloseableIterator<Row> iterator, List<Row> expected, boolean closeIterator) {
+        List<String> actual = collectRowsWithTimeout(iterator, expected.size(), closeIterator);
+        assertThat(actual)
+                .as(
+                        "Expected %d records but got %d after waiting. Actual results: %s",
+                        expected.size(), actual.size(), actual)
+                .containsExactlyElementsOf(
+                        expected.stream().map(Row::toString).collect(Collectors.toList()));
+    }
+
     public static void assertQueryResultExactOrder(
             TableEnvironment env, String query, List<String> expected) throws Exception {
         try (CloseableIterator<Row> rowIter = env.executeSql(query).collect()) {
@@ -100,7 +111,7 @@ public class FlinkRowAssertionsUtils {
             for (int i = 0; i < expectedCount; i++) {
                 // Wait for next record with timeout
                 if (!waitForNextWithTimeout(
-                        iterator, deadlineTimeMs - System.currentTimeMillis())) {
+                        iterator, Math.max(deadlineTimeMs - System.currentTimeMillis(), 1_000))) {
                     throw timeoutError(
                             System.currentTimeMillis() - startTimeMs, expectedCount, actual.size());
                 }
@@ -153,9 +164,11 @@ public class FlinkRowAssertionsUtils {
     private static boolean waitForNextWithTimeout(
             CloseableIterator<Row> iterator, long maxWaitTime) {
         CompletableFuture<Boolean> future = CompletableFuture.supplyAsync(iterator::hasNext);
+        System.out.println("Waiting for " + maxWaitTime + " ms to finish.");
         try {
             return future.get(maxWaitTime, TimeUnit.MILLISECONDS);
         } catch (TimeoutException e) {
+            System.err.println("Timeout waiting for " + maxWaitTime + " ms to finish.");
             future.cancel(true);
             return false;
         } catch (Exception e) {

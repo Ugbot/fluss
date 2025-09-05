@@ -32,23 +32,19 @@ public class LakeSnapshotAndFlussLogSplit extends SourceSplitBase {
 
     public static final byte LAKE_SNAPSHOT_FLUSS_LOG_SPLIT_KIND = -2;
 
-    // may be null when no snapshot data for the bucket
+    // may be null when no lake snapshot data for the bucket
     @Nullable private final List<LakeSplit> lakeSnapshotSplits;
 
-    /** The records to skip when reading the splits. */
-    private long recordOffset = 0;
-    // TODO: Support skip read file by record fileOffset
+    /**
+     * The index of the current split in the lake snapshot splits to be read, enable to skip read
+     * lake split via this lake split index.
+     */
+    private int currentLakeSplitIndex;
+    /** The records to skip when reading a split. */
+    private long recordOffset;
 
-    private final long startingOffset;
+    private long startingOffset;
     private final long stoppingOffset;
-
-    public LakeSnapshotAndFlussLogSplit(
-            TableBucket tableBucket,
-            @Nullable List<LakeSplit> snapshotSplits,
-            long startingOffset,
-            long stoppingOffset) {
-        this(tableBucket, null, snapshotSplits, startingOffset, stoppingOffset, 0);
-    }
 
     public LakeSnapshotAndFlussLogSplit(
             TableBucket tableBucket,
@@ -56,7 +52,7 @@ public class LakeSnapshotAndFlussLogSplit extends SourceSplitBase {
             @Nullable List<LakeSplit> snapshotSplits,
             long startingOffset,
             long stoppingOffset) {
-        this(tableBucket, partitionName, snapshotSplits, startingOffset, stoppingOffset, 0);
+        this(tableBucket, partitionName, snapshotSplits, startingOffset, stoppingOffset, 0, 0);
     }
 
     public LakeSnapshotAndFlussLogSplit(
@@ -65,16 +61,28 @@ public class LakeSnapshotAndFlussLogSplit extends SourceSplitBase {
             @Nullable List<LakeSplit> snapshotSplits,
             long startingOffset,
             long stoppingOffset,
-            long recordsToSkip) {
+            long recordsToSkip,
+            int currentLakeSplitIndex) {
         super(tableBucket, partitionName);
         this.lakeSnapshotSplits = snapshotSplits;
         this.startingOffset = startingOffset;
         this.stoppingOffset = stoppingOffset;
         this.recordOffset = recordsToSkip;
+        this.currentLakeSplitIndex = currentLakeSplitIndex;
     }
 
     public LakeSnapshotAndFlussLogSplit updateWithRecordsToSkip(long recordsToSkip) {
         this.recordOffset = recordsToSkip;
+        return this;
+    }
+
+    public LakeSnapshotAndFlussLogSplit updateWithCurrentLakeSplitIndex(int currentLakeSplitIndex) {
+        this.currentLakeSplitIndex = currentLakeSplitIndex;
+        return this;
+    }
+
+    public LakeSnapshotAndFlussLogSplit updateWithStartingOffset(long startingOffset) {
+        this.startingOffset = startingOffset;
         return this;
     }
 
@@ -95,6 +103,10 @@ public class LakeSnapshotAndFlussLogSplit extends SourceSplitBase {
         return true;
     }
 
+    public boolean isStreaming() {
+        return !getStoppingOffset().isPresent();
+    }
+
     protected byte splitKind() {
         return LAKE_SNAPSHOT_FLUSS_LOG_SPLIT_KIND;
     }
@@ -104,8 +116,13 @@ public class LakeSnapshotAndFlussLogSplit extends SourceSplitBase {
         return toSplitId("lake-hybrid-snapshot-log-", tableBucket);
     }
 
+    @Nullable
     public List<LakeSplit> getLakeSplits() {
         return lakeSnapshotSplits;
+    }
+
+    public int getCurrentLakeSplitIndex() {
+        return currentLakeSplitIndex;
     }
 
     @Override
@@ -115,6 +132,8 @@ public class LakeSnapshotAndFlussLogSplit extends SourceSplitBase {
                 + lakeSnapshotSplits
                 + ", recordOffset="
                 + recordOffset
+                + ", currentLakeSplitIndex="
+                + currentLakeSplitIndex
                 + ", startingOffset="
                 + startingOffset
                 + ", stoppingOffset="
