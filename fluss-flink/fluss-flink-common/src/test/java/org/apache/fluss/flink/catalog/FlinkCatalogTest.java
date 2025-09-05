@@ -67,12 +67,15 @@ import java.util.Map;
 import java.util.Optional;
 
 import static org.apache.fluss.config.ConfigOptions.BOOTSTRAP_SERVERS;
+import static org.apache.fluss.config.ConfigOptions.TABLE_DATALAKE_ENABLED;
+import static org.apache.fluss.config.ConfigOptions.TABLE_DATALAKE_FORMAT;
 import static org.apache.fluss.flink.FlinkConnectorOptions.BUCKET_KEY;
 import static org.apache.fluss.flink.FlinkConnectorOptions.BUCKET_NUMBER;
 import static org.apache.fluss.flink.FlinkConnectorOptions.SCAN_STARTUP_MODE;
 import static org.apache.fluss.flink.utils.CatalogTableTestUtils.addOptions;
 import static org.apache.fluss.flink.utils.CatalogTableTestUtils.checkEqualsIgnoreSchema;
 import static org.apache.fluss.flink.utils.CatalogTableTestUtils.checkEqualsRespectSchema;
+import static org.apache.fluss.metadata.DataLakeFormat.PAIMON;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -81,12 +84,21 @@ class FlinkCatalogTest {
 
     @RegisterExtension
     public static final FlussClusterExtension FLUSS_CLUSTER_EXTENSION =
-            FlussClusterExtension.builder().setNumOfTabletServers(1).build();
+            FlussClusterExtension.builder()
+                    .setClusterConf(initConfig())
+                    .setNumOfTabletServers(1)
+                    .build();
 
     private static final String CATALOG_NAME = "test-catalog";
     private static final String DEFAULT_DB = "default";
     static Catalog catalog;
     private final ObjectPath tableInDefaultDb = new ObjectPath(DEFAULT_DB, "t1");
+
+    private static Configuration initConfig() {
+        Configuration configuration = new Configuration();
+        configuration.set(ConfigOptions.DATALAKE_FORMAT, PAIMON);
+        return configuration;
+    }
 
     private ResolvedSchema createSchema() {
         return new ResolvedSchema(
@@ -253,6 +265,31 @@ class FlinkCatalogTest {
         assertThatThrownBy(() -> catalog.getTable(lakePath))
                 .isInstanceOf(TableNotExistException.class)
                 .hasMessageContaining("regularTable$lake does not exist");
+    }
+
+    @Test
+    void testCreateAlreadyExistsLakeTable() throws Exception {
+        Map<String, String> options = new HashMap<>();
+        options.put(TABLE_DATALAKE_ENABLED.key(), "true");
+        options.put(TABLE_DATALAKE_FORMAT.key(), PAIMON.name());
+        assertThatThrownBy(() -> catalog.getTable(tableInDefaultDb))
+                .isInstanceOf(TableNotExistException.class)
+                .hasMessage(
+                        String.format(
+                                "Table (or view) %s does not exist in Catalog %s.",
+                                tableInDefaultDb, CATALOG_NAME));
+        CatalogTable table = this.newCatalogTable(options);
+        catalog.createTable(this.tableInDefaultDb, table, false);
+        assertThat(catalog.tableExists(this.tableInDefaultDb)).isTrue();
+        // drop fluss table
+        catalog.dropTable(this.tableInDefaultDb, false);
+        // create the table again, should throw exception with ignore if exist = false
+        assertThatThrownBy(() -> catalog.createTable(this.tableInDefaultDb, table, false))
+                .isInstanceOf(CatalogException.class)
+                .hasMessage(
+                        String.format(
+                                "The table %s already exists in %s catalog, please first drop the table in %s catalog or use a new table name.",
+                                this.tableInDefaultDb, "paimon", "paimon"));
     }
 
     @Test
