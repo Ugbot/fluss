@@ -45,6 +45,7 @@ import org.apache.flink.api.common.RuntimeExecutionMode;
 import org.apache.flink.core.execution.JobClient;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.iceberg.DataFile;
+import org.apache.iceberg.FileScanTask;
 import org.apache.iceberg.Snapshot;
 import org.apache.iceberg.TableScan;
 import org.apache.iceberg.catalog.Catalog;
@@ -52,6 +53,7 @@ import org.apache.iceberg.data.IcebergGenerics;
 import org.apache.iceberg.data.Record;
 import org.apache.iceberg.data.parquet.GenericParquetReaders;
 import org.apache.iceberg.hadoop.HadoopCatalog;
+import org.apache.iceberg.io.CloseableIterable;
 import org.apache.iceberg.io.CloseableIterator;
 import org.apache.iceberg.parquet.Parquet;
 import org.junit.jupiter.api.AfterAll;
@@ -60,6 +62,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.extension.RegisterExtension;
 
 import java.io.Closeable;
+import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.file.Files;
@@ -185,18 +188,25 @@ public class FlinkIcebergTieringTestBase {
     }
 
     protected long createPkTable(TablePath tablePath) throws Exception {
-        return createPkTable(tablePath, 1);
+        return createPkTable(tablePath, false);
+    }
+
+    protected long createPkTable(TablePath tablePath, boolean enableAutoCompaction)
+            throws Exception {
+        return createPkTable(tablePath, 1, enableAutoCompaction);
     }
 
     protected long createLogTable(TablePath tablePath) throws Exception {
-        return createLogTable(tablePath, 1);
+        return createLogTable(tablePath, false);
     }
 
-    protected long createLogTable(TablePath tablePath, int bucketNum) throws Exception {
-        return createLogTable(tablePath, bucketNum, false);
+    protected long createLogTable(TablePath tablePath, boolean enableAutoCompaction)
+            throws Exception {
+        return createLogTable(tablePath, 1, false, enableAutoCompaction);
     }
 
-    protected long createLogTable(TablePath tablePath, int bucketNum, boolean isPartitioned)
+    protected long createLogTable(
+            TablePath tablePath, int bucketNum, boolean isPartitioned, boolean enableAutoCompaction)
             throws Exception {
         Schema.Builder schemaBuilder =
                 Schema.newBuilder().column("a", DataTypes.INT()).column("b", DataTypes.STRING());
@@ -214,12 +224,16 @@ public class FlinkIcebergTieringTestBase {
             tableBuilder.property(
                     ConfigOptions.TABLE_AUTO_PARTITION_TIME_UNIT, AutoPartitionTimeUnit.YEAR);
         }
+        if (enableAutoCompaction) {
+            tableBuilder.property(ConfigOptions.TABLE_DATALAKE_AUTO_COMPACTION.key(), "true");
+        }
         tableBuilder.schema(schemaBuilder.build());
         return createTable(tablePath, tableBuilder.build());
     }
 
-    protected long createPkTable(TablePath tablePath, int bucketNum) throws Exception {
-        TableDescriptor table1Descriptor =
+    protected long createPkTable(TablePath tablePath, int bucketNum, boolean enableAutoCompaction)
+            throws Exception {
+        TableDescriptor.Builder pkTableBuilder =
                 TableDescriptor.builder()
                         .schema(
                                 Schema.newBuilder()
@@ -246,9 +260,12 @@ public class FlinkIcebergTieringTestBase {
                                         .build())
                         .distributedBy(bucketNum)
                         .property(ConfigOptions.TABLE_DATALAKE_ENABLED.key(), "true")
-                        .property(ConfigOptions.TABLE_DATALAKE_FRESHNESS, Duration.ofMillis(500))
-                        .build();
-        return createTable(tablePath, table1Descriptor);
+                        .property(ConfigOptions.TABLE_DATALAKE_FRESHNESS, Duration.ofMillis(500));
+
+        if (enableAutoCompaction) {
+            pkTableBuilder.property(ConfigOptions.TABLE_DATALAKE_AUTO_COMPACTION.key(), "true");
+        }
+        return createTable(tablePath, pkTableBuilder.build());
     }
 
     protected long createTable(TablePath tablePath, TableDescriptor tableDescriptor)
@@ -381,6 +398,18 @@ public class FlinkIcebergTieringTestBase {
             }
             assertThat(flussRowIterator.hasNext()).isFalse();
         }
+    }
+
+    protected void checkFileCountInIcebergTable(TablePath tablePath, int expectedFileCount)
+            throws IOException {
+        org.apache.iceberg.Table table = icebergCatalog.loadTable(toIceberg(tablePath));
+        int count = 0;
+        try (CloseableIterable<FileScanTask> tasks = table.newScan().planFiles()) {
+            for (FileScanTask ignored : tasks) {
+                count++;
+            }
+        }
+        assertThat(count).isEqualTo(expectedFileCount);
     }
 
     protected void checkDataInIcebergAppendOnlyPartitionedTable(

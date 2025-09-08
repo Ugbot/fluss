@@ -33,6 +33,7 @@ import javax.annotation.Nullable;
 import java.util.List;
 
 import static org.apache.fluss.metadata.ResolvedPartitionSpec.PARTITION_SPEC_SEPARATOR;
+import static org.apache.fluss.metadata.TableDescriptor.BUCKET_COLUMN_NAME;
 
 /** Utility class for static conversions between Fluss and Iceberg types. */
 public class IcebergConversions {
@@ -70,13 +71,15 @@ public class IcebergConversions {
                         Expressions.and(
                                 expression,
                                 Expressions.equal(
-                                        partitionFields.get(partitionIndex++).name(), partition));
+                                        table.schema()
+                                                .findColumnName(
+                                                        partitionFields
+                                                                .get(partitionIndex++)
+                                                                .sourceId()),
+                                        partition));
             }
         }
-        expression =
-                Expressions.and(
-                        expression,
-                        Expressions.equal(partitionFields.get(partitionIndex).name(), bucket));
+        expression = Expressions.and(expression, Expressions.equal(BUCKET_COLUMN_NAME, bucket));
         return expression;
     }
 }

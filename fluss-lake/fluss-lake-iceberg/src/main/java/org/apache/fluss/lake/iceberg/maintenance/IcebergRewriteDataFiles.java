@@ -61,6 +61,7 @@ public class IcebergRewriteDataFiles {
 
     private static final Logger LOG = LoggerFactory.getLogger(IcebergRewriteDataFiles.class);
 
+    // TODO: make compaction strategy configurable
     private static final int MIN_FILES_TO_COMPACT = 3;
 
     private final Table table;
