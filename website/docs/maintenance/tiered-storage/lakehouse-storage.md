@@ -18,7 +18,10 @@ can gain much storage cost reduction and analytics performance improvement.
 
 ## Enable Lakehouse Storage
 
-Lakehouse Storage is disabled by default, you must enable it manually.
+Lakehouse Storage is disabled by default, you must enable it manually. 
+
+The following example uses Paimon for demonstration—other data lake formats follow similar steps, but require different configuration settings and JAR files.
+You can refer to the documentation of the corresponding data lake format integration for required configurations and JAR files. 
 
 ### Lakehouse Storage Cluster Configurations
 #### Modify `server.yaml`
@@ -55,7 +58,7 @@ Then, you must start the datalake tiering service to tier Fluss's data to the la
 - Put [fluss-flink connector jar](/downloads) into `${FLINK_HOME}/lib`, you should choose a connector version matching your Flink version. If you're using Flink 1.20, please use [fluss-flink-1.20-$FLUSS_VERSION$.jar](https://repo1.maven.org/maven2/org/apache/fluss/fluss-flink-1.20/$FLUSS_VERSION$/fluss-flink-1.20-$FLUSS_VERSION$.jar)
 - If you are using [Amazon S3](http://aws.amazon.com/s3/), [Aliyun OSS](https://www.aliyun.com/product/oss) or [HDFS(Hadoop Distributed File System)](https://hadoop.apache.org/docs/stable/) as Fluss's [remote storage](maintenance/tiered-storage/remote-storage.md),
   you should download the corresponding [Fluss filesystem jar](/downloads#filesystem-jars) and also put it into `${FLINK_HOME}/lib`
-- Put [fluss-lake-paimon jar](https://repo1.maven.org/maven2/org/apache/fluss/fluss-lake-paimon/$FLUSS_VERSION$/fluss-lake-paimon-$FLUSS_VERSION$.jar) into `${FLINK_HOME}/lib`, currently only paimon is supported, so you can only choose `fluss-lake-paimon`
+- Put [fluss-lake-paimon jar](https://repo1.maven.org/maven2/org/apache/fluss/fluss-lake-paimon/$FLUSS_VERSION$/fluss-lake-paimon-$FLUSS_VERSION$.jar) into `${FLINK_HOME}/lib`
 - [Download](https://flink.apache.org/downloads/) pre-bundled Hadoop jar `flink-shaded-hadoop-2-uber-*.jar` and put into `${FLINK_HOME}/lib`
 - Put Paimon's [filesystem jar](https://paimon.apache.org/docs/1.1/project/download/) into `${FLINK_HOME}/lib`, if you use s3 to store paimon data, please put `paimon-s3` jar into `${FLINK_HOME}/lib`
 - The other jars that Paimon may require, for example, if you use HiveCatalog, you will need to put hive related jars
