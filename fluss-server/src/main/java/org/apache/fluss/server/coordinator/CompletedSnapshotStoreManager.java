@@ -26,17 +26,18 @@ import org.apache.fluss.server.kv.snapshot.CompletedSnapshotStore;
 import org.apache.fluss.server.kv.snapshot.SharedKvFileRegistry;
 import org.apache.fluss.server.kv.snapshot.ZooKeeperCompletedSnapshotHandleStore;
 import org.apache.fluss.server.zk.ZooKeeperClient;
+import org.apache.fluss.utils.MapUtils;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import javax.annotation.concurrent.NotThreadSafe;
+import javax.annotation.concurrent.ThreadSafe;
 
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
 import java.util.function.Function;
 
@@ -48,13 +49,14 @@ import static org.apache.fluss.utils.Preconditions.checkNotNull;
  * {@link CompletedSnapshotStore} not exist for a {@link TableBucket}, it will create a new {@link
  * CompletedSnapshotStore} for it.
  */
-@NotThreadSafe
+@ThreadSafe
 public class CompletedSnapshotStoreManager {
 
     private static final Logger LOG = LoggerFactory.getLogger(CompletedSnapshotStoreManager.class);
     private final int maxNumberOfSnapshotsToRetain;
     private final ZooKeeperClient zooKeeperClient;
-    private final Map<TableBucket, CompletedSnapshotStore> bucketCompletedSnapshotStores;
+    private final ConcurrentHashMap<TableBucket, CompletedSnapshotStore>
+            bucketCompletedSnapshotStores;
     private final Executor ioExecutor;
     private final Function<ZooKeeperClient, CompletedSnapshotHandleStore>
             makeZookeeperCompletedSnapshotHandleStore;
@@ -67,7 +69,7 @@ public class CompletedSnapshotStoreManager {
                 maxNumberOfSnapshotsToRetain > 0, "maxNumberOfSnapshotsToRetain must be positive");
         this.maxNumberOfSnapshotsToRetain = maxNumberOfSnapshotsToRetain;
         this.zooKeeperClient = zooKeeperClient;
-        this.bucketCompletedSnapshotStores = new HashMap<>();
+        this.bucketCompletedSnapshotStores = MapUtils.newConcurrentHashMap();
         this.ioExecutor = ioExecutor;
         this.makeZookeeperCompletedSnapshotHandleStore = ZooKeeperCompletedSnapshotHandleStore::new;
     }
@@ -83,7 +85,7 @@ public class CompletedSnapshotStoreManager {
                 maxNumberOfSnapshotsToRetain > 0, "maxNumberOfSnapshotsToRetain must be positive");
         this.maxNumberOfSnapshotsToRetain = maxNumberOfSnapshotsToRetain;
         this.zooKeeperClient = zooKeeperClient;
-        this.bucketCompletedSnapshotStores = new HashMap<>();
+        this.bucketCompletedSnapshotStores = MapUtils.newConcurrentHashMap();
         this.ioExecutor = ioExecutor;
         this.makeZookeeperCompletedSnapshotHandleStore = makeZookeeperCompletedSnapshotHandleStore;
     }
@@ -191,7 +193,8 @@ public class CompletedSnapshotStoreManager {
                 ioExecutor);
     }
 
-    public Map<TableBucket, CompletedSnapshotStore> getBucketCompletedSnapshotStores() {
+    @VisibleForTesting
+    Map<TableBucket, CompletedSnapshotStore> getBucketCompletedSnapshotStores() {
         return bucketCompletedSnapshotStores;
     }
 }
