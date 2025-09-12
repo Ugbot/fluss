@@ -48,6 +48,7 @@ import org.apache.fluss.server.log.FetchIsolation;
 import org.apache.fluss.server.log.LogAppendInfo;
 import org.apache.fluss.server.log.LogTablet;
 import org.apache.fluss.server.log.LogTestUtils;
+import org.apache.fluss.server.metrics.group.TestingMetricGroups;
 import org.apache.fluss.shaded.arrow.org.apache.arrow.memory.RootAllocator;
 import org.apache.fluss.types.DataTypes;
 import org.apache.fluss.types.RowType;
@@ -145,6 +146,7 @@ class KvTabletTest {
                 tablePath,
                 logTabletDir,
                 conf,
+                TestingMetricGroups.TABLET_SERVER_METRICS,
                 0,
                 new FlussScheduler(1),
                 LogFormat.ARROW,
@@ -173,6 +175,7 @@ class KvTabletTest {
                 logTablet,
                 tmpKvDir,
                 conf,
+                TestingMetricGroups.TABLET_SERVER_METRICS,
                 new RootAllocator(Long.MAX_VALUE),
                 new TestingMemorySegmentPool(10 * 1024),
                 KvFormat.COMPACTED,
