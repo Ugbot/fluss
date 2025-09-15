@@ -295,7 +295,7 @@ Some metrics might not be exposed when using other JVM implementations (e.g. IBM
   <tbody>
     <tr>
       <th rowspan="9"><strong>coordinator</strong></th>
-      <td style={{textAlign: 'center', verticalAlign: 'middle' }} rowspan="9">-</td>
+      <td style={{textAlign: 'center', verticalAlign: 'middle' }} rowspan="7">-</td>
       <td>activeCoordinatorCount</td>
       <td>The number of active CoordinatorServer in this cluster.</td>
       <td>Gauge</td>
@@ -326,18 +326,19 @@ Some metrics might not be exposed when using other JVM implementations (e.g. IBM
       <td>Gauge</td>
     </tr>
     <tr>
-      <td>eventQueueSize</td>
-      <td>The number of events waiting to be processed in the queue.</td>
-      <td>Gauge</td>
-    </tr>
-    <tr>
       <td>eventQueueTimeMs</td>
       <td>The time that an event spent waiting in the queue to be processed.</td>
       <td>Histogram</td>
     </tr>
     <tr>
+      <td style={{textAlign: 'center', verticalAlign: 'middle' }} rowspan="2">event</td>
+      <td>eventQueueSize</td>
+      <td>The number of events currently waiting to be processed in the coordinator event queue. This metric is labeled with <code>event_type</code> to distinguish between different types of coordinator events.</td>
+      <td>Gauge</td>
+    </tr>
+    <tr>
       <td>eventProcessingTimeMs</td>
-      <td>The time that an event took to be processed.</td>
+      <td>The time that an event took to be processed by the coordinator event processor. This metric is labeled with <code>event_type</code> to distinguish between different types of coordinator events.</td>
       <td>Histogram</td>
     </tr>
   </tbody>
