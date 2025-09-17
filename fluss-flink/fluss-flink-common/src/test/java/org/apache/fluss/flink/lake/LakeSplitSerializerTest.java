@@ -42,8 +42,6 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class LakeSplitSerializerTest {
     private static final byte LAKE_SNAPSHOT_SPLIT_KIND = -1;
 
-    private static final int SERIALIZER_VERSION = 3;
-
     private static final byte[] TEST_DATA = "test-lake-split".getBytes();
 
     private static final int STOPPING_OFFSET = 1024;
@@ -61,8 +59,9 @@ class LakeSplitSerializerTest {
     @Test
     void testSerializeAndDeserializeLakeSnapshotSplit() throws IOException {
         // Prepare test data
+        int splitIndex = 1;
         LakeSnapshotSplit originalSplit =
-                new LakeSnapshotSplit(tableBucket, "2025-08-18", LAKE_SPLIT, 1);
+                new LakeSnapshotSplit(tableBucket, "2025-08-18", LAKE_SPLIT, splitIndex);
 
         DataOutputSerializer output = new DataOutputSerializer(STOPPING_OFFSET);
         serializer.serialize(output, originalSplit);
@@ -80,6 +79,40 @@ class LakeSplitSerializerTest {
         assertThat(tableBucket).isEqualTo(result.getTableBucket());
         assertThat("2025-08-18").isEqualTo(result.getPartitionName());
         assertThat(LAKE_SPLIT).isEqualTo(result.getLakeSplit());
+        assertThat(splitIndex).isEqualTo(result.getSplitIndex());
+    }
+
+    @Test
+    void testSerializeAndDeserializeLakeSnapshotSplitBackwardCompatibility() throws IOException {
+        SimpleVersionedSerializer<LakeSplit> sourceSplitSerializerV1 =
+                new TestSimpleVersionedSerializer();
+        SimpleVersionedSerializer<LakeSplit> sourceSplitSerializerV2 =
+                new TestSimpleVersionedSerializerV2();
+        LakeSplitSerializer serializerV1 = new LakeSplitSerializer(sourceSplitSerializerV1);
+        LakeSplitSerializer serializerV2 = new LakeSplitSerializer(sourceSplitSerializerV2);
+
+        // Prepare test data
+        int splitIndex = 1;
+        LakeSnapshotSplit originalSplit =
+                new LakeSnapshotSplit(tableBucket, "2025-08-18", LAKE_SPLIT, splitIndex);
+
+        DataOutputSerializer output = new DataOutputSerializer(STOPPING_OFFSET);
+        serializerV1.serialize(output, originalSplit);
+
+        SourceSplitBase deserializedSplit =
+                serializerV2.deserialize(
+                        LAKE_SNAPSHOT_SPLIT_KIND,
+                        tableBucket,
+                        "2025-08-18",
+                        new DataInputDeserializer(output.getCopyOfBuffer()));
+
+        assertThat(deserializedSplit instanceof LakeSnapshotSplit).isTrue();
+        LakeSnapshotSplit result = (LakeSnapshotSplit) deserializedSplit;
+
+        assertThat(tableBucket).isEqualTo(result.getTableBucket());
+        assertThat("2025-08-18").isEqualTo(result.getPartitionName());
+        assertThat(LAKE_SPLIT).isEqualTo(result.getLakeSplit());
+        assertThat(splitIndex).isEqualTo(result.getSplitIndex());
     }
 
     @Test
@@ -137,6 +170,8 @@ class LakeSplitSerializerTest {
     private static class TestSimpleVersionedSerializer
             implements SimpleVersionedSerializer<LakeSplit> {
 
+        private static final int V1 = 1;
+
         @Override
         public byte[] serialize(LakeSplit split) throws IOException {
             return TEST_DATA;
@@ -149,7 +184,31 @@ class LakeSplitSerializerTest {
 
         @Override
         public int getVersion() {
-            return SERIALIZER_VERSION;
+            return V1;
+        }
+    }
+
+    private static class TestSimpleVersionedSerializerV2
+            implements SimpleVersionedSerializer<LakeSplit> {
+
+        private static final int V2 = 2;
+
+        @Override
+        public byte[] serialize(LakeSplit split) throws IOException {
+            return TEST_DATA;
+        }
+
+        @Override
+        public LakeSplit deserialize(int version, byte[] serialized) throws IOException {
+            if (version < V2) {
+                return LAKE_SPLIT;
+            }
+            return new TestLakeSplit(0, Collections.singletonList("2025-08-19"));
+        }
+
+        @Override
+        public int getVersion() {
+            return V2;
         }
     }
 
