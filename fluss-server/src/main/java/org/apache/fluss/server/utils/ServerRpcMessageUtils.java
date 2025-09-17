@@ -1428,6 +1428,7 @@ public class ServerRpcMessageUtils {
             long snapshotId = pdLakeTableSnapshotInfo.getSnapshotId();
             Map<TableBucket, Long> bucketLogStartOffset = new HashMap<>();
             Map<TableBucket, Long> bucketLogEndOffset = new HashMap<>();
+            Map<TableBucket, Long> bucketMaxTimestamp = new HashMap<>();
             Map<Long, String> partitionNameByPartitionId = new HashMap<>();
 
             for (PbLakeTableOffsetForBucket lakeTableOffsetForBucket :
@@ -1447,8 +1448,13 @@ public class ServerRpcMessageUtils {
                         lakeTableOffsetForBucket.hasLogEndOffset()
                                 ? lakeTableOffsetForBucket.getLogEndOffset()
                                 : null;
+                Long logMaxTimestamp =
+                        lakeTableOffsetForBucket.hasMaxTimestamp()
+                                ? lakeTableOffsetForBucket.getMaxTimestamp()
+                                : null;
                 bucketLogStartOffset.put(tableBucket, logStartOffset);
                 bucketLogEndOffset.put(tableBucket, logEndOffset);
+                bucketMaxTimestamp.put(tableBucket, logMaxTimestamp);
 
                 if (lakeTableOffsetForBucket.hasPartitionName()) {
                     partitionNameByPartitionId.put(
@@ -1462,6 +1468,7 @@ public class ServerRpcMessageUtils {
                             tableId,
                             bucketLogStartOffset,
                             bucketLogEndOffset,
+                            bucketMaxTimestamp,
                             partitionNameByPartitionId));
         }
         return new CommitLakeTableSnapshotData(lakeTableInfoByTableId);
@@ -1483,6 +1490,8 @@ public class ServerRpcMessageUtils {
 
         lakeTableSnapshot.getLogEndOffset(tableBucket).ifPresent(reqForBucket::setLogEndOffset);
 
+        lakeTableSnapshot.getMaxTimestamp(tableBucket).ifPresent(reqForBucket::setMaxTimestamp);
+
         return reqForBucket;
     }
 
@@ -1502,8 +1511,11 @@ public class ServerRpcMessageUtils {
                     reqForBucket.hasLogStartOffset() ? reqForBucket.getLogStartOffset() : null;
             Long logEndOffset =
                     reqForBucket.hasLogEndOffset() ? reqForBucket.getLogEndOffset() : null;
+            Long maxTimestamp =
+                    reqForBucket.hasMaxTimestamp() ? reqForBucket.getMaxTimestamp() : null;
             lakeBucketOffsetMap.put(
-                    tableBucket, new LakeBucketOffset(snapshotId, logStartOffset, logEndOffset));
+                    tableBucket,
+                    new LakeBucketOffset(snapshotId, logStartOffset, logEndOffset, maxTimestamp));
         }
 
         return new NotifyLakeTableOffsetData(
