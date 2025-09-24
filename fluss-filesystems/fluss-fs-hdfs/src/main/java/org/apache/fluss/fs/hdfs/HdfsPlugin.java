@@ -38,17 +38,17 @@ import static org.apache.fluss.utils.Preconditions.checkNotNull;
  * additional information regarding copyright ownership. */
 
 /**
- * A file system plugin for Hadoop-based file systems.
+ * A file system plugin for HDFS (Hadoop Distributed File System).
  *
  * <p>This plugin calls Hadoop's mechanism to find a file system implementation for a given file
  * system scheme (a {@link org.apache.hadoop.fs.FileSystem}) and wraps it as a Fluss file system (a
  * {@link FileSystem}).
  */
-public class HadoopFsPlugin implements FileSystemPlugin {
+public class HdfsPlugin implements FileSystemPlugin {
 
     public static final String SCHEME = "hdfs";
 
-    private static final Logger LOG = LoggerFactory.getLogger(HadoopFsPlugin.class);
+    private static final Logger LOG = LoggerFactory.getLogger(HdfsPlugin.class);
 
     @Override
     public String getScheme() {
@@ -154,7 +154,7 @@ public class HadoopFsPlugin implements FileSystemPlugin {
                 throw new IOException(message, e);
             }
 
-            return new HadoopFileSystem(hadoopFs);
+            return new HdfsFileSystem(hadoopFs);
         } catch (ReflectiveOperationException | LinkageError e) {
             throw new UnsupportedFileSystemSchemeException(
                     "Cannot support file system for '"

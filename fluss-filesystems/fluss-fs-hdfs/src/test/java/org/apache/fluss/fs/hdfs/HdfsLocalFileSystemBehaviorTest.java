@@ -32,7 +32,7 @@ import java.nio.file.Path;
 import static org.assertj.core.api.Assumptions.assumeThat;
 
 /** Behavior tests for HDFS. */
-class HadoopLocalFileSystemBehaviorTest extends FileSystemBehaviorTestSuite {
+class HdfsLocalFileSystemBehaviorTest extends FileSystemBehaviorTestSuite {
 
     @TempDir private Path tmp;
 
@@ -40,7 +40,7 @@ class HadoopLocalFileSystemBehaviorTest extends FileSystemBehaviorTestSuite {
     protected FileSystem getFileSystem() throws Exception {
         org.apache.hadoop.fs.FileSystem fs = new RawLocalFileSystem();
         fs.initialize(LocalFileSystem.getLocalFsURI(), new Configuration());
-        return new HadoopFileSystem(fs);
+        return new HdfsFileSystem(fs);
     }
 
     @Override
