@@ -20,6 +20,7 @@ package org.apache.fluss.flink.catalog;
 import org.apache.fluss.cluster.ServerNode;
 import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.config.Configuration;
+import org.apache.fluss.exception.InvalidAlterTableException;
 import org.apache.fluss.exception.InvalidTableException;
 import org.apache.fluss.metadata.TablePath;
 import org.apache.fluss.server.testutils.FlussClusterExtension;
@@ -181,6 +182,60 @@ abstract class FlinkCatalogITCase {
         CatalogTable table =
                 (CatalogTable) catalog.getTable(new ObjectPath(DEFAULT_DB, "test_table"));
         assertThat(table.getUnresolvedSchema()).isEqualTo(expectedSchema);
+    }
+
+    @Test
+    void testAlterTable() throws Exception {
+        String ddl =
+                "create table test_alter_table_append_only ("
+                        + "a string, "
+                        + "b int) "
+                        + "with ('bucket.num' = '5')";
+        tEnv.executeSql(ddl);
+        Schema.Builder schemaBuilder = Schema.newBuilder();
+        schemaBuilder.column("a", DataTypes.STRING()).column("b", DataTypes.INT());
+        Schema expectedSchema = schemaBuilder.build();
+        CatalogTable table =
+                (CatalogTable)
+                        catalog.getTable(
+                                new ObjectPath(DEFAULT_DB, "test_alter_table_append_only"));
+        assertThat(table.getUnresolvedSchema()).isEqualTo(expectedSchema);
+        Map<String, String> expectedOptions = new HashMap<>();
+        expectedOptions.put("bucket.num", "5");
+        assertOptionsEqual(table.getOptions(), expectedOptions);
+
+        // alter table
+        String dml =
+                "alter table test_alter_table_append_only set ('client.connect-timeout' = '240s')";
+        tEnv.executeSql(dml);
+        table =
+                (CatalogTable)
+                        catalog.getTable(
+                                new ObjectPath(DEFAULT_DB, "test_alter_table_append_only"));
+        assertThat(table.getUnresolvedSchema()).isEqualTo(expectedSchema);
+        expectedOptions = new HashMap<>();
+
+        // bucket.num is unchanged, but timeout should change
+        expectedOptions.put("bucket.num", "5");
+        expectedOptions.put("client.connect-timeout", "240s"); // updated
+        assertOptionsEqual(table.getOptions(), expectedOptions);
+
+        // alter table set an unsupported modification option should throw exception
+        String unSupportedDml1 =
+                "alter table test_alter_table_append_only set ('table.auto-partition.enabled' = 'true')";
+
+        assertThatThrownBy(() -> tEnv.executeSql(unSupportedDml1))
+                .rootCause()
+                .isInstanceOf(InvalidAlterTableException.class)
+                .hasMessage(
+                        "The option 'table.auto-partition.enabled' is not supported to alter set.");
+
+        String unSupportedDml2 =
+                "alter table test_alter_table_append_only set ('k1' = 'v1', 'table.kv.format' = 'indexed')";
+        assertThatThrownBy(() -> tEnv.executeSql(unSupportedDml2))
+                .rootCause()
+                .isInstanceOf(InvalidAlterTableException.class)
+                .hasMessage("The option 'table.kv.format' is not supported to alter set.");
     }
 
     @Test

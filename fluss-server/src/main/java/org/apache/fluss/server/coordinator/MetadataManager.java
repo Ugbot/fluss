@@ -57,12 +57,14 @@ import javax.annotation.Nullable;
 
 import java.util.Collection;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.Callable;
 
+import static org.apache.fluss.server.utils.TableDescriptorValidation.validateAlterTableProperties;
 import static org.apache.fluss.server.utils.TableDescriptorValidation.validateTableDescriptor;
 
 /** A manager for metadata. */
@@ -300,6 +302,80 @@ public class MetadataManager {
                     return tableId;
                 },
                 "Fail to create table " + tablePath);
+    }
+
+    public void alterTableProperties(
+            TablePath tablePath,
+            TablePropertyChanges tablePropertyChanges,
+            boolean ignoreIfNotExists) {
+        if (!databaseExists(tablePath.getDatabaseName())) {
+            throw new DatabaseNotExistException(
+                    "Database " + tablePath.getDatabaseName() + " does not exist.");
+        }
+        if (!tableExists(tablePath)) {
+            if (ignoreIfNotExists) {
+                return;
+            } else {
+                throw new TableNotExistException("Table " + tablePath + " does not exists.");
+            }
+        }
+
+        try {
+            TableRegistration updatedTableRegistration =
+                    getUpdatedTableRegistration(tablePath, tablePropertyChanges);
+            if (updatedTableRegistration != null) {
+                zookeeperClient.updateTable(tablePath, updatedTableRegistration);
+            } else {
+                LOG.debug(
+                        "No properties changed when alter table {}, skip update table.", tablePath);
+            }
+        } catch (Exception e) {
+            if (e instanceof KeeperException.NoNodeException) {
+                if (ignoreIfNotExists) {
+                    return;
+                }
+                throw new TableNotExistException("Table " + tablePath + " does not exists.");
+            } else {
+                throw new FlussRuntimeException("Failed to alter table: " + tablePath, e);
+            }
+        }
+    }
+
+    /**
+     * Get a new TableRegistration with updated properties.
+     *
+     * @param tablePath the table path.
+     * @param tablePropertyChanges the changes for the table properties
+     * @return the updated TableRegistration, or null if no properties updated.
+     */
+    private @Nullable TableRegistration getUpdatedTableRegistration(
+            TablePath tablePath, TablePropertyChanges tablePropertyChanges) {
+        TableRegistration existTableReg = getTableRegistration(tablePath);
+
+        Map<String, String> newProperties = new HashMap<>(existTableReg.properties);
+        Map<String, String> newCustomProperties = new HashMap<>(existTableReg.customProperties);
+
+        // set properties
+        newProperties.putAll(tablePropertyChanges.tablePropertiesToSet);
+        newCustomProperties.putAll(tablePropertyChanges.customPropertiesToSet);
+
+        // reset properties
+        for (String key : tablePropertyChanges.tablePropertiesToReset) {
+            newProperties.remove(key);
+        }
+
+        for (String key : tablePropertyChanges.customPropertiesToReset) {
+            newCustomProperties.remove(key);
+        }
+
+        // no properties change happen
+        if (newProperties.equals(existTableReg.properties)
+                && newCustomProperties.equals(existTableReg.customProperties)) {
+            return null;
+        }
+
+        validateAlterTableProperties(newProperties);
+        return existTableReg.newProperties(newProperties, newCustomProperties);
     }
 
     public TableInfo getTable(TablePath tablePath) throws TableNotExistException {
@@ -549,6 +625,64 @@ public class MetadataManager {
             runnable.run();
         } catch (Exception e) {
             throw new FlussRuntimeException(errorMsg, e);
+        }
+    }
+
+    /** To describe the changes of the properties of a table. */
+    public static class TablePropertyChanges {
+
+        private final Map<String, String> tablePropertiesToSet;
+        private final Set<String> tablePropertiesToReset;
+
+        private final Map<String, String> customPropertiesToSet;
+        private final Set<String> customPropertiesToReset;
+
+        private TablePropertyChanges(
+                Map<String, String> tablePropertiesToSet,
+                Set<String> tablePropertiesToReset,
+                Map<String, String> customPropertiesToSet,
+                Set<String> customPropertiesToReset) {
+            this.tablePropertiesToSet = tablePropertiesToSet;
+            this.tablePropertiesToReset = tablePropertiesToReset;
+            this.customPropertiesToSet = customPropertiesToSet;
+            this.customPropertiesToReset = customPropertiesToReset;
+        }
+
+        public static Builder builder() {
+            return new Builder();
+        }
+
+        /** The builder for {@link TablePropertyChanges}. */
+        public static class Builder {
+            private final Map<String, String> tablePropertiesToSet = new HashMap<>();
+            private final Set<String> tablePropertiesToReset = new HashSet<>();
+
+            private final Map<String, String> customPropertiesToSet = new HashMap<>();
+            private final Set<String> customPropertiesToReset = new HashSet<>();
+
+            public void setTableProperty(String key, String value) {
+                tablePropertiesToSet.put(key, value);
+            }
+
+            public void resetTableProperty(String key) {
+                tablePropertiesToReset.add(key);
+            }
+
+            public void setCustomProperty(String key, String value) {
+                customPropertiesToSet.put(key, value);
+            }
+
+            public void resetCustomProperty(String key) {
+                customPropertiesToReset.add(key);
+            }
+
+            public TablePropertyChanges build() {
+                return new TablePropertyChanges(
+                        tablePropertiesToSet,
+                        tablePropertiesToReset,
+                        customPropertiesToSet,
+                        customPropertiesToReset);
+            }
         }
     }
 }

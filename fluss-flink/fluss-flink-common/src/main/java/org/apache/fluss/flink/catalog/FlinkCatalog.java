@@ -29,9 +29,11 @@ import org.apache.fluss.flink.procedure.ProcedureManager;
 import org.apache.fluss.flink.utils.CatalogExceptionUtils;
 import org.apache.fluss.flink.utils.DataLakeUtils;
 import org.apache.fluss.flink.utils.FlinkConversions;
+import org.apache.fluss.flink.utils.FlinkTableChangeToFlussTableChange;
 import org.apache.fluss.metadata.DatabaseDescriptor;
 import org.apache.fluss.metadata.PartitionInfo;
 import org.apache.fluss.metadata.PartitionSpec;
+import org.apache.fluss.metadata.TableChange;
 import org.apache.fluss.metadata.TableDescriptor;
 import org.apache.fluss.metadata.TableInfo;
 import org.apache.fluss.metadata.TablePath;
@@ -78,7 +80,9 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
+import java.util.stream.Collectors;
 
 import static org.apache.flink.util.Preconditions.checkArgument;
 import static org.apache.fluss.config.ConfigOptions.BOOTSTRAP_SERVERS;
@@ -398,9 +402,40 @@ public class FlinkCatalog extends AbstractCatalog {
     }
 
     @Override
-    public void alterTable(ObjectPath objectPath, CatalogBaseTable catalogBaseTable, boolean b)
+    public void alterTable(
+            ObjectPath objectPath,
+            CatalogBaseTable newTable,
+            List<org.apache.flink.table.catalog.TableChange> tableChanges,
+            boolean ignoreIfNotExists)
             throws TableNotExistException, CatalogException {
-        throw new UnsupportedOperationException();
+        TablePath tablePath = toTablePath(objectPath);
+
+        List<TableChange> flussTableChanges =
+                tableChanges.stream()
+                        .filter(Objects::nonNull)
+                        .map(FlinkTableChangeToFlussTableChange::toFlussTableChange)
+                        .collect(Collectors.toList());
+        try {
+            admin.alterTable(tablePath, flussTableChanges, ignoreIfNotExists).get();
+        } catch (Exception e) {
+            Throwable t = ExceptionUtils.stripExecutionException(e);
+            if (CatalogExceptionUtils.isTableNotExist(t)) {
+                throw new TableNotExistException(getName(), objectPath);
+            } else if (isTableInvalid(t)) {
+                throw new InvalidTableException(t.getMessage());
+            } else {
+                throw new CatalogException(
+                        String.format("Failed to alter table %s in %s", objectPath, getName()), t);
+            }
+        }
+    }
+
+    @Override
+    public void alterTable(
+            ObjectPath objectPath, CatalogBaseTable newTable, boolean ignoreIfNotExist)
+            throws TableNotExistException, CatalogException {
+        throw new UnsupportedOperationException(
+                "alterTable(objectPath, newTable, ignoreIfNotExist) method is not supported, please upgrade your Flink to 1.18+. ");
     }
 
     @SuppressWarnings("checkstyle:WhitespaceAround")

@@ -23,10 +23,12 @@ import org.apache.fluss.cluster.ServerType;
 import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.fs.FsPath;
 import org.apache.fluss.fs.token.ObtainedSecurityToken;
+import org.apache.fluss.metadata.AlterTableConfigsOpType;
 import org.apache.fluss.metadata.PartitionSpec;
 import org.apache.fluss.metadata.PhysicalTablePath;
 import org.apache.fluss.metadata.ResolvedPartitionSpec;
 import org.apache.fluss.metadata.TableBucket;
+import org.apache.fluss.metadata.TableChange;
 import org.apache.fluss.metadata.TableDescriptor;
 import org.apache.fluss.metadata.TableInfo;
 import org.apache.fluss.metadata.TablePath;
@@ -80,6 +82,7 @@ import org.apache.fluss.rpc.messages.PbAdjustIsrReqForBucket;
 import org.apache.fluss.rpc.messages.PbAdjustIsrReqForTable;
 import org.apache.fluss.rpc.messages.PbAdjustIsrRespForBucket;
 import org.apache.fluss.rpc.messages.PbAdjustIsrRespForTable;
+import org.apache.fluss.rpc.messages.PbAlterConfigsRequestInfo;
 import org.apache.fluss.rpc.messages.PbBucketMetadata;
 import org.apache.fluss.rpc.messages.PbCreateAclRespInfo;
 import org.apache.fluss.rpc.messages.PbDropAclsFilterResult;
@@ -236,6 +239,26 @@ public class ServerRpcMessageUtils {
                 pbServerNode.getPort(),
                 serverType,
                 pbServerNode.hasRack() ? pbServerNode.getRack() : null);
+    }
+
+    public static TableChange toFlussTableChange(
+            PbAlterConfigsRequestInfo pbAlterConfigsRequestInfo) {
+        AlterTableConfigsOpType opType =
+                AlterTableConfigsOpType.from(pbAlterConfigsRequestInfo.getOpType());
+        switch (opType) {
+            case SET: // SET_OPTION
+                return TableChange.set(
+                        pbAlterConfigsRequestInfo.getConfigKey(),
+                        pbAlterConfigsRequestInfo.getConfigValue());
+            case DELETE: // RESET_OPTION
+                return TableChange.reset(pbAlterConfigsRequestInfo.getConfigKey());
+            case APPEND:
+            case SUBTRACT:
+            default:
+                throw new IllegalArgumentException(
+                        "Unsupported alter configs op type "
+                                + pbAlterConfigsRequestInfo.getOpType());
+        }
     }
 
     public static MetadataResponse buildMetadataResponse(

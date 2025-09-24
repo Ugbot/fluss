@@ -29,6 +29,7 @@ import org.apache.fluss.exception.DuplicateSequenceException;
 import org.apache.fluss.exception.FencedLeaderEpochException;
 import org.apache.fluss.exception.FencedTieringEpochException;
 import org.apache.fluss.exception.IneligibleReplicaException;
+import org.apache.fluss.exception.InvalidAlterTableException;
 import org.apache.fluss.exception.InvalidColumnProjectionException;
 import org.apache.fluss.exception.InvalidConfigException;
 import org.apache.fluss.exception.InvalidCoordinatorException;
@@ -222,7 +223,9 @@ public enum Errors {
     INELIGIBLE_REPLICA_EXCEPTION(
             55,
             "The new ISR contains at least one ineligible replica.",
-            IneligibleReplicaException::new);
+            IneligibleReplicaException::new),
+    INVALID_ALTER_TABLE_EXCEPTION(
+            56, "The alter table is invalid.", InvalidAlterTableException::new);
 
     private static final Logger LOG = LoggerFactory.getLogger(Errors.class);
 

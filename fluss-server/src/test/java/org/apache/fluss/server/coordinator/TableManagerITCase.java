@@ -32,6 +32,7 @@ import org.apache.fluss.exception.PartitionNotExistException;
 import org.apache.fluss.exception.SchemaNotExistException;
 import org.apache.fluss.exception.TableAlreadyExistException;
 import org.apache.fluss.exception.TableNotExistException;
+import org.apache.fluss.metadata.AlterTableConfigsOpType;
 import org.apache.fluss.metadata.Schema;
 import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.metadata.TableDescriptor;
@@ -48,6 +49,7 @@ import org.apache.fluss.rpc.messages.GetTableSchemaRequest;
 import org.apache.fluss.rpc.messages.ListDatabasesRequest;
 import org.apache.fluss.rpc.messages.MetadataRequest;
 import org.apache.fluss.rpc.messages.MetadataResponse;
+import org.apache.fluss.rpc.messages.PbAlterConfigsRequestInfo;
 import org.apache.fluss.rpc.messages.PbBucketMetadata;
 import org.apache.fluss.rpc.messages.PbPartitionMetadata;
 import org.apache.fluss.rpc.messages.PbServerNode;
@@ -86,6 +88,7 @@ import java.util.Set;
 import java.util.stream.Collectors;
 
 import static org.apache.fluss.config.ConfigOptions.DEFAULT_LISTENER_NAME;
+import static org.apache.fluss.server.testutils.RpcMessageTestUtils.newAlterTableConfigsRequest;
 import static org.apache.fluss.server.testutils.RpcMessageTestUtils.newCreateDatabaseRequest;
 import static org.apache.fluss.server.testutils.RpcMessageTestUtils.newCreateTableRequest;
 import static org.apache.fluss.server.testutils.RpcMessageTestUtils.newDatabaseExistsRequest;
@@ -283,6 +286,29 @@ class TableManagerITCase {
                 gateway.getTableInfo(newGetTableInfoRequest(tablePath)).get();
         TableDescriptor gottenTable = TableDescriptor.fromJsonBytes(response.getTableJson());
         assertThat(gottenTable).isEqualTo(tableDescriptor.withReplicationFactor(1));
+
+        // alter table
+        Map<String, String> setProperties = new HashMap<>();
+        setProperties.put("client.connect-timeout", "240s");
+
+        List<String> resetProperties = new ArrayList<>();
+
+        adminGateway
+                .alterTableConfigs(
+                        newAlterTableConfigsRequest(
+                                tablePath,
+                                alterTableProperties(setProperties, resetProperties),
+                                false))
+                .get();
+        // get the table and check it
+        GetTableInfoResponse responseAfterAlter =
+                gateway.getTableInfo(newGetTableInfoRequest(tablePath)).get();
+        TableDescriptor gottenTableAfterAlter =
+                TableDescriptor.fromJsonBytes(responseAfterAlter.getTableJson());
+
+        String valueAfterAlter =
+                gottenTableAfterAlter.getCustomProperties().get("client.connect-timeout");
+        assertThat(valueAfterAlter).isEqualTo("240s");
 
         // check assignment, just check replica numbers, don't care about actual assignment
         checkAssignmentWithReplicaFactor(
@@ -731,6 +757,28 @@ class TableManagerITCase {
                 .comment("first table")
                 .distributedBy(3, "a")
                 .build();
+    }
+
+    private static List<PbAlterConfigsRequestInfo> alterTableProperties(
+            Map<String, String> setProperties, List<String> resetProperties) {
+        List<PbAlterConfigsRequestInfo> res = new ArrayList<>();
+
+        for (Map.Entry<String, String> entry : setProperties.entrySet()) {
+            PbAlterConfigsRequestInfo info = new PbAlterConfigsRequestInfo();
+            info.setConfigKey(entry.getKey());
+            info.setConfigValue(entry.getValue());
+            info.setOpType(AlterTableConfigsOpType.SET.value());
+            res.add(info);
+        }
+
+        for (String resetProperty : resetProperties) {
+            PbAlterConfigsRequestInfo info = new PbAlterConfigsRequestInfo();
+            info.setConfigKey(resetProperty);
+            info.setOpType(AlterTableConfigsOpType.DELETE.value());
+            res.add(info);
+        }
+
+        return res;
     }
 
     private static Schema newPkSchema() {
