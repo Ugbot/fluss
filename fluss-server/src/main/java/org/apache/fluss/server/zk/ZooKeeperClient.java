@@ -20,9 +20,6 @@ package org.apache.fluss.server.zk;
 import org.apache.fluss.annotation.Internal;
 import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.config.Configuration;
-import org.apache.fluss.exception.FlussRuntimeException;
-import org.apache.fluss.exception.PartitionNotExistException;
-import org.apache.fluss.exception.TableNotExistException;
 import org.apache.fluss.metadata.PhysicalTablePath;
 import org.apache.fluss.metadata.ResolvedPartitionSpec;
 import org.apache.fluss.metadata.Schema;
@@ -36,14 +33,10 @@ import org.apache.fluss.security.acl.ResourceType;
 import org.apache.fluss.server.authorizer.DefaultAuthorizer.VersionedAcls;
 import org.apache.fluss.server.entity.RegisterTableBucketLeadAndIsrInfo;
 import org.apache.fluss.server.metadata.BucketMetadata;
-import org.apache.fluss.server.metadata.PartitionMetadata;
 import org.apache.fluss.server.zk.ZkAsyncRequest.ZkGetChildrenRequest;
 import org.apache.fluss.server.zk.ZkAsyncRequest.ZkGetDataRequest;
 import org.apache.fluss.server.zk.ZkAsyncResponse.ZkGetChildrenResponse;
 import org.apache.fluss.server.zk.ZkAsyncResponse.ZkGetDataResponse;
-import org.apache.fluss.server.zk.ZooKeeperMetadataUtils.AssignmentInfo;
-import org.apache.fluss.server.zk.ZooKeeperMetadataUtils.PartitionPathInfo;
-import org.apache.fluss.server.zk.data.BucketAssignment;
 import org.apache.fluss.server.zk.data.BucketSnapshot;
 import org.apache.fluss.server.zk.data.CoordinatorAddress;
 import org.apache.fluss.server.zk.data.DatabaseRegistration;
@@ -88,7 +81,6 @@ import org.apache.fluss.shaded.zookeeper3.org.apache.zookeeper.CreateMode;
 import org.apache.fluss.shaded.zookeeper3.org.apache.zookeeper.KeeperException;
 import org.apache.fluss.shaded.zookeeper3.org.apache.zookeeper.data.Stat;
 import org.apache.fluss.utils.ExceptionUtils;
-import org.apache.fluss.utils.concurrent.FutureUtils;
 import org.apache.fluss.utils.types.Tuple2;
 
 import org.slf4j.Logger;
@@ -116,6 +108,7 @@ import java.util.concurrent.Semaphore;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
+import static java.util.stream.Collectors.toMap;
 import static org.apache.fluss.metadata.ResolvedPartitionSpec.fromPartitionName;
 import static org.apache.fluss.utils.Preconditions.checkNotNull;
 
@@ -129,6 +122,7 @@ public class ZooKeeperClient implements AutoCloseable {
     private static final Logger LOG = LoggerFactory.getLogger(ZooKeeperClient.class);
     public static final int UNKNOWN_VERSION = -2;
     private static final int MAX_BATCH_SIZE = 1024;
+    private static final int DEFAULT_SCHEMA_ID = 1;
 
     private final CuratorFrameworkWithUnhandledErrorListener curatorFrameworkWrapper;
 
@@ -159,110 +153,6 @@ public class ZooKeeperClient implements AutoCloseable {
             return Optional.of(zkClient.getData().forPath(path));
         } catch (KeeperException.NoNodeException e) {
             return Optional.empty();
-        }
-    }
-
-    /**
-     * Send a pipelined sequence of requests and return a CompletableFuture for all their responses.
-     *
-     * <p>The watch flag on each outgoing request will be set if we've already registered a handler
-     * for the path associated with the request.
-     *
-     * @param requests a sequence of requests to send
-     * @param respCreator function to create response objects from curator events
-     * @return CompletableFuture containing the responses for the requests
-     */
-    private <Resp extends ZkAsyncResponse, Req extends ZkAsyncRequest>
-            CompletableFuture<List<Resp>> handleRequestInBackgroundAsync(
-                    List<Req> requests, Function<CuratorEvent, Resp> respCreator) {
-        if (requests == null || requests.isEmpty()) {
-            return CompletableFuture.completedFuture(Collections.emptyList());
-        }
-
-        CompletableFuture<List<Resp>> future = new CompletableFuture<>();
-        BackgroundCallback callback = getZkBackgroundCallback(requests, respCreator, future);
-
-        try {
-            for (Req request : requests) {
-                try {
-                    inFlightRequests.acquire();
-                    if (request instanceof ZkGetDataRequest) {
-                        zkClient.getData().inBackground(callback).forPath(request.getPath());
-
-                    } else if (request instanceof ZkGetChildrenRequest) {
-                        zkClient.getChildren().inBackground(callback).forPath(request.getPath());
-
-                    } else {
-                        inFlightRequests.release();
-                        throw new IllegalArgumentException(
-                                "Unsupported request type: " + request.getClass());
-                    }
-                } catch (Exception e) {
-                    inFlightRequests.release();
-                    throw e;
-                }
-            }
-        } catch (Exception e) {
-            future.completeExceptionally(e);
-        }
-
-        return future;
-    }
-
-    @Nonnull
-    private <Resp extends ZkAsyncResponse, Req extends ZkAsyncRequest>
-            BackgroundCallback getZkBackgroundCallback(
-                    List<Req> requests,
-                    Function<CuratorEvent, Resp> respCreator,
-                    CompletableFuture<List<Resp>> future) {
-        ArrayBlockingQueue<Resp> responseQueue = new ArrayBlockingQueue<>(requests.size());
-        CountDownLatch countDownLatch = new CountDownLatch(requests.size());
-
-        // Complete future when all responses received
-        return (client, event) -> {
-            try {
-                Resp response = respCreator.apply(event);
-                responseQueue.add(response);
-                inFlightRequests.release();
-                countDownLatch.countDown();
-
-                // Complete future when all responses received
-                if (countDownLatch.getCount() == 0) {
-                    future.complete(new ArrayList<>(responseQueue));
-                }
-            } catch (Exception e) {
-                inFlightRequests.release();
-                future.completeExceptionally(e);
-            }
-        };
-    }
-
-    /**
-     * Send a pipelined sequence of requests and wait for all of their responses synchronously in
-     * background.
-     *
-     * <p>The watch flag on each outgoing request will be set if we've already registered a handler
-     * for the path associated with the request.
-     *
-     * @param requests a sequence of requests to send and wait on.
-     * @return the responses for the requests. If all requests have the same type, the responses
-     *     will have the respective response type.
-     */
-    private <Resp extends ZkAsyncResponse, Req extends ZkAsyncRequest>
-            List<Resp> handleRequestInBackground(
-                    List<Req> requests, Function<CuratorEvent, Resp> respCreator) throws Exception {
-        try {
-            return handleRequestInBackgroundAsync(requests, respCreator).get();
-        } catch (ExecutionException e) {
-            Throwable cause = ExceptionUtils.stripExecutionException(e);
-            if (cause instanceof Exception) {
-                throw (Exception) cause;
-            } else {
-                throw new Exception("Async request handling failed", cause);
-            }
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new Exception("Request handling was interrupted", e);
         }
     }
 
@@ -318,10 +208,10 @@ public class ZooKeeperClient implements AutoCloseable {
         Map<String, Integer> path2IdMap =
                 Arrays.stream(tabletServerIds)
                         .boxed()
-                        .collect(Collectors.toMap(ServerIdZNode::path, id -> id));
+                        .collect(toMap(ServerIdZNode::path, id -> id));
 
         List<ZkGetDataResponse> responses = getDataInBackground(path2IdMap.keySet());
-        return ZooKeeperMetadataUtils.processMultipleDataResponses(
+        return processGetDataResponses(
                 responses,
                 response -> path2IdMap.get(response.getPath()),
                 ServerIdZNode::decode,
@@ -351,68 +241,43 @@ public class ZooKeeperClient implements AutoCloseable {
 
     /** Get the table assignment in ZK. */
     public Optional<TableAssignment> getTableAssignment(long tableId) throws Exception {
-        return FutureUtils.asyncToSync(() -> getTableAssignmentAsync(tableId), "table assignment");
-    }
-
-    /** Get the table assignment in ZK asynchronously. */
-    public CompletableFuture<TableAssignment> getTableAssignmentAsync(long tableId) {
-        String path = TableIdZNode.path(tableId);
-
-        return getDataInBackgroundAsync(Collections.singleton(path))
-                .thenApply(
-                        responses ->
-                                ZooKeeperMetadataUtils.processSingleDataResponse(
-                                        responses,
-                                        data -> data.length == 0 ? null : TableIdZNode.decode(data),
-                                        path));
+        Optional<byte[]> bytes = getOrEmpty(TableIdZNode.path(tableId));
+        return bytes.map(
+                data ->
+                        // we'll put a laketable node under TableIdZNode,
+                        // so it won't be Optional#empty
+                        // but will with a zero-length array
+                        data.length == 0 ? null : TableIdZNode.decode(data));
     }
 
     /** Get the tables assignments in ZK. */
-    public Map<Long, TableAssignment> getTablesAssignments(List<Long> tableIds) throws Exception {
+    public Map<Long, TableAssignment> getTablesAssignments(Collection<Long> tableIds)
+            throws Exception {
         Map<String, Long> path2TableIdMap =
-                tableIds.stream().collect(Collectors.toMap(TableIdZNode::path, id -> id));
+                tableIds.stream().collect(toMap(TableIdZNode::path, id -> id));
 
         List<ZkGetDataResponse> responses = getDataInBackground(path2TableIdMap.keySet());
-        return ZooKeeperMetadataUtils.processMultipleDataResponsesWithCondition(
+        return processGetDataResponses(
                 responses,
                 response -> path2TableIdMap.get(response.getPath()),
                 TableIdZNode::decode,
-                response -> response.getData().length > 0,
                 "table assignment");
     }
 
     /** Get the partition assignment in ZK. */
     public Optional<PartitionAssignment> getPartitionAssignment(long partitionId) throws Exception {
-        return FutureUtils.asyncToSync(
-                () -> getPartitionAssignmentAsync(partitionId),
-                assignment ->
-                        (PartitionAssignment)
-                                assignment, // PartitionAssignment extends TableAssignment
-                "partition assignment");
-    }
-
-    /** Get the partition assignment in ZK asynchronously. */
-    private CompletableFuture<TableAssignment> getPartitionAssignmentAsync(long partitionId) {
-        String path = PartitionIdZNode.path(partitionId);
-
-        return getDataInBackgroundAsync(Collections.singleton(path))
-                .thenApply(
-                        responses ->
-                                ZooKeeperMetadataUtils.processSingleDataResponse(
-                                        responses,
-                                        PartitionIdZNode::decode, // PartitionAssignment extends
-                                        // TableAssignment
-                                        path));
+        Optional<byte[]> bytes = getOrEmpty(PartitionIdZNode.path(partitionId));
+        return bytes.map(PartitionIdZNode::decode);
     }
 
     /** Get the partitions assignments in ZK. */
-    public Map<Long, PartitionAssignment> getPartitionsAssignments(List<Long> partitionIds)
+    public Map<Long, PartitionAssignment> getPartitionsAssignments(Collection<Long> partitionIds)
             throws Exception {
         Map<String, Long> path2PartitionIdMap =
-                partitionIds.stream().collect(Collectors.toMap(PartitionIdZNode::path, id -> id));
+                partitionIds.stream().collect(toMap(PartitionIdZNode::path, id -> id));
 
         List<ZkGetDataResponse> responses = getDataInBackground(path2PartitionIdMap.keySet());
-        return ZooKeeperMetadataUtils.processMultipleDataResponses(
+        return processGetDataResponses(
                 responses,
                 response -> path2PartitionIdMap.get(response.getPath()),
                 PartitionIdZNode::decode,
@@ -510,36 +375,17 @@ public class ZooKeeperClient implements AutoCloseable {
         return bytes.map(LeaderAndIsrZNode::decode);
     }
 
-    /** Get the buckets LeaderAndIsr in ZK asynchronously. */
-    private CompletableFuture<Map<TableBucket, Optional<LeaderAndIsr>>> getLeaderAndIsrsAsync(
-            Collection<TableBucket> tableBuckets) {
-        if (tableBuckets.isEmpty()) {
-            return CompletableFuture.completedFuture(Collections.emptyMap());
-        }
-
-        Map<String, TableBucket> path2TableBucketMap =
-                tableBuckets.stream()
-                        .collect(Collectors.toMap(LeaderAndIsrZNode::path, bucket -> bucket));
-
-        return getDataInBackgroundAsync(path2TableBucketMap.keySet())
-                .thenApply(
-                        responses ->
-                                ZooKeeperMetadataUtils.processMultipleDataResponsesWithOptional(
-                                        responses,
-                                        response -> path2TableBucketMap.get(response.getPath()),
-                                        LeaderAndIsrZNode::decode,
-                                        "leader and isr"));
-    }
-
-    /** Get the buckets LeaderAndIsr in ZK. */
+    /**
+     * Get the LeaderAndIsr for each buckets in a batch async way. The returned map only contains
+     * buckets those have leader and isr assigned (zk node created).
+     */
     public Map<TableBucket, LeaderAndIsr> getLeaderAndIsrs(Collection<TableBucket> tableBuckets)
             throws Exception {
         Map<String, TableBucket> path2TableBucketMap =
-                tableBuckets.stream()
-                        .collect(Collectors.toMap(LeaderAndIsrZNode::path, bucket -> bucket));
+                tableBuckets.stream().collect(toMap(LeaderAndIsrZNode::path, bucket -> bucket));
 
         List<ZkGetDataResponse> responses = getDataInBackground(path2TableBucketMap.keySet());
-        return ZooKeeperMetadataUtils.processMultipleDataResponses(
+        return processGetDataResponses(
                 responses,
                 response -> path2TableBucketMap.get(response.getPath()),
                 LeaderAndIsrZNode::decode,
@@ -678,23 +524,29 @@ public class ZooKeeperClient implements AutoCloseable {
     /** Get the tables in ZK. */
     public Map<TablePath, TableRegistration> getTables(Collection<TablePath> tablePaths)
             throws Exception {
-        return FutureUtils.asyncToSyncDirect(() -> getTablesAsync(tablePaths), "tables");
-    }
-
-    /** Get the tables in ZK asynchronously. */
-    public CompletableFuture<Map<TablePath, TableRegistration>> getTablesAsync(
-            Collection<TablePath> tablePaths) {
         Map<String, TablePath> path2TablePathMap =
                 tablePaths.stream().collect(Collectors.toMap(TableZNode::path, path -> path));
 
-        return getDataInBackgroundAsync(path2TablePathMap.keySet())
-                .thenApply(
-                        responses ->
-                                ZooKeeperMetadataUtils.processMultipleDataResponses(
-                                        responses,
-                                        response -> path2TablePathMap.get(response.getPath()),
-                                        TableZNode::decode,
-                                        "table registration"));
+        List<ZkGetDataResponse> responses = getDataInBackground(path2TablePathMap.keySet());
+        return processGetDataResponses(
+                responses,
+                response -> path2TablePathMap.get(response.getPath()),
+                TableZNode::decode,
+                "tables registration");
+    }
+
+    /** Get the v1 schema for given tables in ZK. */
+    public Map<TablePath, SchemaInfo> getV1Schemas(Collection<TablePath> tablePaths)
+            throws Exception {
+        Map<String, TablePath> path2TablePathMap =
+                tablePaths.stream()
+                        .collect(toMap(p -> SchemaZNode.path(p, DEFAULT_SCHEMA_ID), path -> path));
+        List<ZkGetDataResponse> responses = getDataInBackground(path2TablePathMap.keySet());
+        return processGetDataResponses(
+                responses,
+                resp -> path2TablePathMap.get(resp.getPath()),
+                b -> new SchemaInfo(SchemaZNode.decode(b), DEFAULT_SCHEMA_ID),
+                "schema");
     }
 
     /** Update the table in ZK. */
@@ -731,13 +583,13 @@ public class ZooKeeperClient implements AutoCloseable {
     }
 
     /** Get the partitions of tables in ZK. */
-    public Map<TablePath, List<String>> getPartitionsForTables(List<TablePath> tablePaths)
+    public Map<TablePath, List<String>> getPartitionsForTables(Collection<TablePath> tablePaths)
             throws Exception {
         Map<String, TablePath> path2TablePathMap =
-                tablePaths.stream().collect(Collectors.toMap(PartitionsZNode::path, path -> path));
+                tablePaths.stream().collect(toMap(PartitionsZNode::path, path -> path));
 
         List<ZkGetChildrenResponse> responses = getChildrenInBackground(path2TablePathMap.keySet());
-        return ZooKeeperMetadataUtils.processMultipleChildrenResponses(
+        return processGetChildrenResponses(
                 responses,
                 response -> path2TablePathMap.get(response.getPath()),
                 "partitions for tables");
@@ -817,33 +669,66 @@ public class ZooKeeperClient implements AutoCloseable {
 
     /** Get the id and name for the partitions of a table in ZK. */
     public Map<Long, String> getPartitionIdAndNames(TablePath tablePath) throws Exception {
-        Map<Long, String> partitionIdAndNames = new HashMap<>();
-        for (String partitionName : getPartitions(tablePath)) {
-            Optional<TablePartition> optPartition = getPartition(tablePath, partitionName);
-            optPartition.ifPresent(
-                    partition ->
-                            partitionIdAndNames.put(partition.getPartitionId(), partitionName));
+        Map<Long, String> result = new HashMap<>();
+        getPartitionIdAndPaths(Collections.singletonList(tablePath))
+                .forEach(
+                        (k, v) -> {
+                            result.put(k, v.getPartitionName());
+                        });
+        return result;
+    }
+
+    /** Get the id and name for the partitions of tables in ZK. */
+    public Map<Long, PhysicalTablePath> getPartitionIdAndPaths(Collection<TablePath> tablePath)
+            throws Exception {
+        // batch get partitions names for tables
+        Map<TablePath, List<String>> partitionsForTables = getPartitionsForTables(tablePath);
+        List<PhysicalTablePath> partitionPaths = new ArrayList<>();
+        for (Map.Entry<TablePath, List<String>> entry : partitionsForTables.entrySet()) {
+            for (String partitionName : entry.getValue()) {
+                partitionPaths.add(PhysicalTablePath.of(entry.getKey(), partitionName));
+            }
         }
-        return partitionIdAndNames;
+
+        // batch get partitions ids
+        Map<PhysicalTablePath, TablePartition> partitionIds = getPartitionIds(partitionPaths);
+        Map<Long, PhysicalTablePath> partitionIdAndPaths = new HashMap<>();
+        partitionIds.forEach(
+                (partitionPath, tablePartition) -> {
+                    if (tablePartition != null) {
+                        partitionIdAndPaths.put(tablePartition.getPartitionId(), partitionPath);
+                    }
+                });
+
+        return partitionIdAndPaths;
     }
 
     /** Get a partition of a table in ZK. */
     public Optional<TablePartition> getPartition(TablePath tablePath, String partitionName)
             throws Exception {
-        return FutureUtils.asyncToSync(
-                () -> getPartitionAsync(tablePath, partitionName), "partition");
+        String path = PartitionZNode.path(tablePath, partitionName);
+        return getOrEmpty(path).map(PartitionZNode::decode);
     }
 
-    /** Get a partition of a table in ZK asynchronously. */
-    public CompletableFuture<TablePartition> getPartitionAsync(
-            TablePath tablePath, String partitionName) {
-        String path = PartitionZNode.path(tablePath, partitionName);
+    /** Get partition id and table id for each partition in a batch async way. */
+    public Map<PhysicalTablePath, TablePartition> getPartitionIds(
+            Collection<PhysicalTablePath> partitionPaths) throws Exception {
+        Map<String, PhysicalTablePath> path2PartitionPathMap =
+                partitionPaths.stream()
+                        .collect(
+                                toMap(
+                                        p ->
+                                                PartitionZNode.path(
+                                                        p.getTablePath(),
+                                                        checkNotNull(p.getPartitionName())),
+                                        path -> path));
 
-        return getDataInBackgroundAsync(Collections.singleton(path))
-                .thenApply(
-                        responses ->
-                                ZooKeeperMetadataUtils.processSingleDataResponse(
-                                        responses, PartitionZNode::decode, path));
+        List<ZkGetDataResponse> responses = getDataInBackground(path2PartitionPathMap.keySet());
+        return processGetDataResponses(
+                responses,
+                response -> path2PartitionPathMap.get(response.getPath()),
+                PartitionZNode::decode,
+                "partition");
     }
 
     /** Get partition num of a table in ZK. */
@@ -1265,59 +1150,6 @@ public class ZooKeeperClient implements AutoCloseable {
         }
     }
 
-    /**
-     * Gets the child nodes at given zk node paths in background asynchronously.
-     *
-     * @param paths the paths to list children
-     * @return CompletableFuture containing list of async responses for each path
-     */
-    public CompletableFuture<List<ZkGetChildrenResponse>> getChildrenInBackgroundAsync(
-            Collection<String> paths) {
-        List<ZkGetChildrenRequest> requests =
-                paths.stream().map(ZkGetChildrenRequest::new).collect(Collectors.toList());
-        return handleRequestInBackgroundAsync(requests, ZkGetChildrenResponse::create);
-    }
-
-    /**
-     * Gets the child nodes at given zk node paths in background.
-     *
-     * @param paths the paths to list children
-     * @return list of async responses for each path
-     * @throws Exception if there is an error during the operation
-     */
-    public List<ZkGetChildrenResponse> getChildrenInBackground(Collection<String> paths)
-            throws Exception {
-        List<ZkGetChildrenRequest> requests =
-                paths.stream().map(ZkGetChildrenRequest::new).collect(Collectors.toList());
-        return handleRequestInBackground(requests, ZkGetChildrenResponse::create);
-    }
-
-    /**
-     * Gets the data of given zk node paths in background asynchronously.
-     *
-     * @param paths the paths to fetch data
-     * @return CompletableFuture containing list of async responses for each path
-     */
-    public CompletableFuture<List<ZkGetDataResponse>> getDataInBackgroundAsync(
-            Collection<String> paths) {
-        List<ZkGetDataRequest> requests =
-                paths.stream().map(ZkGetDataRequest::new).collect(Collectors.toList());
-        return handleRequestInBackgroundAsync(requests, ZkGetDataResponse::create);
-    }
-
-    /**
-     * Gets the data of given zk node paths in background.
-     *
-     * @param paths the paths to fetch data
-     * @return list of async responses for each path
-     * @throws Exception if there is an error during the operation
-     */
-    public List<ZkGetDataResponse> getDataInBackground(Collection<String> paths) throws Exception {
-        List<ZkGetDataRequest> requests =
-                paths.stream().map(ZkGetDataRequest::new).collect(Collectors.toList());
-        return handleRequestInBackground(requests, ZkGetDataResponse::create);
-    }
-
     /** Gets the data and stat of a given zk node path. */
     public Optional<Stat> getStat(String path) throws Exception {
         try {
@@ -1345,426 +1177,87 @@ public class ZooKeeperClient implements AutoCloseable {
     // --------------------------------------------------------------------------------------------
 
     /**
-     * Asynchronously retrieves table metadata from ZooKeeper for the specified table.
-     *
-     * <p>This method fetches the table assignment information from ZooKeeper and converts it into a
-     * list of bucket metadata. The operation is performed asynchronously to avoid blocking the
-     * calling thread.
-     *
-     * @param tablePath the path of the table to retrieve metadata for
-     * @param tableId the unique identifier of the table
-     * @param isPartitioned whether the table is partitioned (affects warning behavior for missing
-     *     assignments)
-     * @return a CompletableFuture containing a list of BucketMetadata objects representing all
-     *     buckets for this table. Returns an empty list if no table assignment is found.
-     * @throws TableNotExistException if the table does not exist in ZooKeeper
-     * @throws FlussRuntimeException if there's an error retrieving or processing the metadata
+     * Get bucket metadata for multiple tables in batch async way. The returned map only contains
+     * tables those have assignments. If a table has no assignment yet (just been created), it will
+     * not be included in the result map.
      */
-    public CompletableFuture<List<BucketMetadata>> getTableMetadataFromZkAsync(
-            TablePath tablePath, long tableId, boolean isPartitioned) {
-
-        PhysicalTablePath physicalTablePath = PhysicalTablePath.of(tablePath);
-
-        return getAssignmentInfoAsync(tableId, physicalTablePath)
-                .thenCompose(
-                        assignmentInfo -> {
-                            if (assignmentInfo.tableAssignment == null) {
-                                if (isPartitioned) {
-                                    LOG.warn(
-                                            "No table assignment node found for table {}", tableId);
-                                }
-                                return CompletableFuture.completedFuture(
-                                        new ArrayList<BucketMetadata>());
-                            }
-
-                            TableAssignment tableAssignment = assignmentInfo.tableAssignment;
-                            if (tableAssignment == null) {
-                                return CompletableFuture.completedFuture(
-                                        new ArrayList<BucketMetadata>());
-                            }
-                            tableAssignment = checkNotNull(tableAssignment);
-
-                            Map<Integer, BucketAssignment> bucketAssignments =
-                                    tableAssignment.getBucketAssignments();
-                            if (bucketAssignments.isEmpty()) {
-                                return CompletableFuture.completedFuture(
-                                        new ArrayList<BucketMetadata>());
-                            }
-
-                            // Create TableBucket collection for batch processing
-                            List<TableBucket> tableBuckets = new ArrayList<>();
-                            Map<TableBucket, Map.Entry<Integer, BucketAssignment>>
-                                    bucketToAssignmentMap = new HashMap<>();
-
-                            for (Map.Entry<Integer, BucketAssignment> assignment :
-                                    bucketAssignments.entrySet()) {
-                                int bucketId = assignment.getKey();
-                                TableBucket tableBucket = new TableBucket(tableId, null, bucketId);
-                                tableBuckets.add(tableBucket);
-                                bucketToAssignmentMap.put(tableBucket, assignment);
-                            }
-
-                            // Use batch async method to get all LeaderAndIsr information in one ZK
-                            // call
-                            return getLeaderAndIsrsAsync(tableBuckets)
-                                    .thenApply(
-                                            leaderAndIsrMap ->
-                                                    ZooKeeperMetadataUtils
-                                                            .assembleBucketMetadataList(
-                                                                    tableBuckets,
-                                                                    bucketToAssignmentMap,
-                                                                    leaderAndIsrMap,
-                                                                    null));
-                        })
-                .exceptionally(
-                        throwable ->
-                                ZooKeeperMetadataUtils.handleTableMetadataException(
-                                        throwable, tablePath, tableId));
-    }
-
-    public static CompletableFuture<List<BucketMetadata>> getTableMetadataFromZkAsync(
-            ZooKeeperClient zkClient, TablePath tablePath, long tableId, boolean isPartitioned) {
-        return zkClient.getTableMetadataFromZkAsync(tablePath, tableId, isPartitioned);
+    public Map<Long, List<BucketMetadata>> getBucketMetadataForTables(Collection<Long> tableIds)
+            throws Exception {
+        // The replica assignments map may not contain all tableIds
+        Map<Long, List<BucketMetadata>> result = new HashMap<>();
+        // initialize result with all table ids.
+        tableIds.forEach(id -> result.put(id, new ArrayList<>()));
+        Map<Long, TableAssignment> tablesAssignments = getTablesAssignments(tableIds);
+        List<TableBucket> buckets = new ArrayList<>();
+        tablesAssignments.forEach(
+                (tableId, assignment) -> {
+                    for (Integer bucketId : assignment.getBuckets()) {
+                        buckets.add(new TableBucket(tableId, null, bucketId));
+                    }
+                });
+        Map<TableBucket, LeaderAndIsr> leaderAndIsrs = getLeaderAndIsrs(buckets);
+        // The LeaderAndIsr map may not contain all buckets, so we iterate on assignment buckets
+        for (TableBucket bucket : buckets) {
+            int bucketId = bucket.getBucket();
+            long tableId = bucket.getTableId();
+            // this might be null if the leader and isr not known yet.
+            BucketMetadata bucketMetadata =
+                    createBucketMetadata(
+                            leaderAndIsrs,
+                            bucket,
+                            bucketId,
+                            checkNotNull(tablesAssignments.get(tableId)));
+            result.get(tableId).add(bucketMetadata);
+        }
+        return result;
     }
 
     /**
-     * Asynchronously retrieves partition metadata from ZooKeeper for the specified partition.
-     *
-     * <p>This method fetches the partition assignment information from ZooKeeper and converts it
-     * into partition metadata including all bucket metadata. The operation is performed
-     * asynchronously to avoid blocking the calling thread.
-     *
-     * @param partitionPath the physical path of the partition to retrieve metadata for
-     * @return a CompletableFuture containing a PartitionMetadata object representing the partition
-     *     and all its buckets. Returns a PartitionMetadata with empty bucket list if no partition
-     *     assignment is found.
-     * @throws PartitionNotExistException if the partition does not exist in ZooKeeper
-     * @throws FlussRuntimeException if there's an error retrieving or processing the metadata
-     * @throws IllegalArgumentException if the partition ID is null (should never happen for valid
-     *     partitions)
+     * Get bucket metadata for multiple partitions in batch async way. The returned map only
+     * contains partitions those have assignments. If a partition has no assignment yet (just been
+     * created), it will not be included in the result map.
      */
-    public CompletableFuture<PartitionMetadata> getPartitionMetadataFromZkAsync(
-            PhysicalTablePath partitionPath) {
-
-        return getAssignmentInfoAsync(null, partitionPath)
-                .thenCompose(
-                        assignmentInfo -> {
-                            checkNotNull(
-                                    assignmentInfo.partitionId,
-                                    "partition id must be not null for " + partitionPath);
-
-                            if (assignmentInfo.tableAssignment == null) {
-                                LOG.warn(
-                                        "No partition assignment node found for partition {}",
-                                        partitionPath);
-
-                                PartitionMetadata emptyMetadata =
-                                        new PartitionMetadata(
-                                                assignmentInfo.tableId,
-                                                partitionPath.getPartitionName(),
-                                                assignmentInfo.partitionId != null
-                                                        ? assignmentInfo.partitionId
-                                                        : -1L,
-                                                new ArrayList<>());
-
-                                return CompletableFuture.completedFuture(emptyMetadata);
-                            }
-
-                            TableAssignment tableAssignment =
-                                    checkNotNull(assignmentInfo.tableAssignment);
-                            Map<Integer, BucketAssignment> bucketAssignments =
-                                    tableAssignment.getBucketAssignments();
-                            if (bucketAssignments.isEmpty()) {
-                                return CompletableFuture.completedFuture(
-                                        new PartitionMetadata(
-                                                assignmentInfo.tableId,
-                                                partitionPath.getPartitionName(),
-                                                assignmentInfo.partitionId != null
-                                                        ? assignmentInfo.partitionId
-                                                        : -1L,
-                                                new ArrayList<>()));
-                            }
-
-                            // Create TableBucket collection for batch processing
-                            List<TableBucket> tableBuckets = new ArrayList<>();
-                            Map<TableBucket, Map.Entry<Integer, BucketAssignment>>
-                                    bucketToAssignmentMap = new HashMap<>();
-
-                            for (Map.Entry<Integer, BucketAssignment> assignment :
-                                    bucketAssignments.entrySet()) {
-                                int bucketId = assignment.getKey();
-                                TableBucket tableBucket =
-                                        new TableBucket(
-                                                assignmentInfo.tableId,
-                                                assignmentInfo.partitionId,
-                                                bucketId);
-                                tableBuckets.add(tableBucket);
-                                bucketToAssignmentMap.put(tableBucket, assignment);
-                            }
-
-                            // Use batch async method to get all LeaderAndIsr information in one ZK
-                            // call
-                            return getLeaderAndIsrsAsync(tableBuckets)
-                                    .thenApply(
-                                            leaderAndIsrMap -> {
-                                                List<BucketMetadata> bucketMetadataList =
-                                                        ZooKeeperMetadataUtils
-                                                                .assembleBucketMetadataList(
-                                                                        tableBuckets,
-                                                                        bucketToAssignmentMap,
-                                                                        leaderAndIsrMap,
-                                                                        null);
-                                                return new PartitionMetadata(
-                                                        assignmentInfo.tableId,
-                                                        partitionPath.getPartitionName(),
-                                                        assignmentInfo.partitionId != null
-                                                                ? assignmentInfo.partitionId
-                                                                : -1L,
-                                                        bucketMetadataList);
-                                            });
-                        })
-                .exceptionally(
-                        throwable ->
-                                ZooKeeperMetadataUtils.handlePartitionException(
-                                        throwable,
-                                        "Failed to get metadata for partition {}",
-                                        partitionPath,
-                                        String.format(
-                                                "Failed to get metadata for partition %s",
-                                                partitionPath)));
-    }
-
-    public static CompletableFuture<PartitionMetadata> getPartitionMetadataFromZkAsync(
-            PhysicalTablePath partitionPath, ZooKeeperClient zkClient) {
-        return zkClient.getPartitionMetadataFromZkAsync(partitionPath);
-    }
-
-    /**
-     * Asynchronously retrieves partition metadata from ZooKeeper for multiple partitions in batch.
-     *
-     * <p>This method efficiently fetches partition metadata for multiple partitions across multiple
-     * tables in a single batched operation. It performs the following steps:
-     *
-     * <ul>
-     *   <li>Maps table paths to their partition information (name and ID mappings)
-     *   <li>Validates that all requested partition IDs exist
-     *   <li>Builds partition path information with resolved table IDs
-     *   <li>Batch retrieves partition assignments and bucket metadata
-     * </ul>
-     *
-     * <p>The batch operation is optimized to minimize ZooKeeper calls by grouping related
-     * operations together, making it much more efficient than calling {@link
-     * #getPartitionMetadataFromZkAsync(PhysicalTablePath)} individually for each partition.
-     *
-     * @param tablePaths the collection of table paths that may contain the requested partitions.
-     *     This is used to scope the search and improve efficiency. Cannot be empty if
-     *     partitionIdSet is not empty.
-     * @param partitionIdSet the set of partition IDs to retrieve metadata for. Cannot be empty if
-     *     tablePaths is not empty.
-     * @return a CompletableFuture containing a list of PartitionMetadata objects for all found
-     *     partitions. The list may be smaller than the input partition ID set if some partitions
-     *     have no assignment data. Returns an empty list if either input parameter is empty.
-     * @throws PartitionNotExistException if any of the requested partition IDs do not exist in any
-     *     of the provided tables
-     * @throws FlussRuntimeException if there's an error during ZooKeeper operations or metadata
-     *     processing
-     */
-    public CompletableFuture<List<PartitionMetadata>> batchGetPartitionMetadataFromZkAsync(
-            Collection<TablePath> tablePaths, Set<Long> partitionIdSet) {
-        if (tablePaths.isEmpty() || partitionIdSet.isEmpty()) {
-            return CompletableFuture.completedFuture(Collections.<PartitionMetadata>emptyList());
+    public Map<Long, List<BucketMetadata>> getBucketMetadataForPartitions(
+            Collection<Long> partitionIds) throws Exception {
+        // The replica assignments map may not contain all partitionIds
+        Map<Long, PartitionAssignment> partitionsAssignments =
+                getPartitionsAssignments(partitionIds);
+        List<TableBucket> buckets = new ArrayList<>();
+        partitionsAssignments.forEach(
+                (partitionId, assignment) -> {
+                    for (Integer bucketId : assignment.getBuckets()) {
+                        buckets.add(
+                                new TableBucket(assignment.getTableId(), partitionId, bucketId));
+                    }
+                });
+        // The LeaderAndIsr map may not contain all buckets
+        Map<TableBucket, LeaderAndIsr> leaderAndIsrs = getLeaderAndIsrs(buckets);
+        Map<Long, List<BucketMetadata>> result = new HashMap<>();
+        for (TableBucket bucket : buckets) {
+            int bucketId = bucket.getBucket();
+            long partitionId = checkNotNull(bucket.getPartitionId());
+            BucketMetadata bucketMetadata =
+                    createBucketMetadata(
+                            leaderAndIsrs,
+                            bucket,
+                            bucketId,
+                            checkNotNull(partitionsAssignments.get(partitionId)));
+            result.computeIfAbsent(partitionId, k -> new ArrayList<>()).add(bucketMetadata);
         }
-
-        return CompletableFuture.supplyAsync(
-                        () -> {
-                            try {
-                                return getPartitionNameAndIdsForTables(new ArrayList<>(tablePaths));
-                            } catch (Exception e) {
-                                throw new RuntimeException(
-                                        "Failed to get partition name and ids for tables", e);
-                            }
-                        })
-                .thenCompose(
-                        tableToPartitionInfo -> {
-                            // Inline collectValidPartitionsAndTables logic
-                            Set<Long> remainingPartitionIds = new HashSet<>(partitionIdSet);
-                            Set<TablePath> tablesNeedingIds = new HashSet<>();
-                            Map<TablePath, List<Tuple2<String, Long>>> tablePartitionMapping =
-                                    new HashMap<>();
-
-                            for (Map.Entry<TablePath, Map<String, Long>> entry :
-                                    tableToPartitionInfo.entrySet()) {
-                                TablePath tablePath = entry.getKey();
-                                Map<String, Long> partitionInfo = entry.getValue();
-
-                                List<Tuple2<String, Long>> validPartitions =
-                                        ZooKeeperMetadataUtils.findValidPartitionsForTable(
-                                                partitionInfo,
-                                                partitionIdSet,
-                                                remainingPartitionIds);
-
-                                if (!validPartitions.isEmpty()) {
-                                    tablesNeedingIds.add(tablePath);
-                                    tablePartitionMapping.put(tablePath, validPartitions);
-                                }
-                            }
-
-                            if (!remainingPartitionIds.isEmpty()) {
-                                throw new PartitionNotExistException(
-                                        "Partition not exist for partition ids: "
-                                                + remainingPartitionIds);
-                            }
-
-                            if (tablePartitionMapping.isEmpty()) {
-                                return CompletableFuture.completedFuture(
-                                        Collections.<PartitionPathInfo>emptyList());
-                            }
-
-                            return getTablesAsync(tablesNeedingIds)
-                                    .thenApply(
-                                            tableRegistrations ->
-                                                    ZooKeeperMetadataUtils
-                                                            .buildPartitionPathInfoList(
-                                                                    tablePartitionMapping,
-                                                                    tableRegistrations));
-                        })
-                .thenCompose(
-                        partitionPathInfos -> {
-                            if (partitionPathInfos.isEmpty()) {
-                                return CompletableFuture.completedFuture(
-                                        Collections.<PartitionMetadata>emptyList());
-                            }
-
-                            List<Long> partitionIds =
-                                    partitionPathInfos.stream()
-                                            .map(info -> info.partitionId)
-                                            .collect(Collectors.toList());
-
-                            CompletableFuture<Map<Long, PartitionAssignment>>
-                                    partitionAssignmentsFuture;
-                            if (partitionIds.isEmpty()) {
-                                partitionAssignmentsFuture =
-                                        CompletableFuture.completedFuture(Collections.emptyMap());
-                            } else {
-                                Map<String, Long> path2PartitionIdMap =
-                                        partitionIds.stream()
-                                                .collect(
-                                                        Collectors.toMap(
-                                                                PartitionIdZNode::path, id -> id));
-
-                                partitionAssignmentsFuture =
-                                        getDataInBackgroundAsync(path2PartitionIdMap.keySet())
-                                                .thenApply(
-                                                        responses ->
-                                                                ZooKeeperMetadataUtils
-                                                                        .processMultipleDataResponses(
-                                                                                responses,
-                                                                                response ->
-                                                                                        path2PartitionIdMap
-                                                                                                .get(
-                                                                                                        response
-                                                                                                                .getPath()),
-                                                                                PartitionIdZNode
-                                                                                        ::decode,
-                                                                                "partition assignment"));
-                            }
-
-                            return partitionAssignmentsFuture.thenCompose(
-                                    partitionAssignments -> {
-                                        List<AssignmentInfo> assignmentInfos = new ArrayList<>();
-                                        for (PartitionPathInfo pathInfo : partitionPathInfos) {
-                                            PartitionAssignment partitionAssignment =
-                                                    partitionAssignments.get(pathInfo.partitionId);
-                                            AssignmentInfo assignmentInfo =
-                                                    new AssignmentInfo(
-                                                            pathInfo.tableId,
-                                                            partitionAssignment,
-                                                            pathInfo.partitionId);
-                                            assignmentInfos.add(assignmentInfo);
-                                        }
-
-                                        List<TableBucket> allTableBuckets = new ArrayList<>();
-                                        Map<TableBucket, Integer> bucketToIndexMap =
-                                                new HashMap<>();
-
-                                        for (int i = 0; i < assignmentInfos.size(); i++) {
-                                            AssignmentInfo assignmentInfo = assignmentInfos.get(i);
-                                            PartitionPathInfo pathInfo = partitionPathInfos.get(i);
-
-                                            if (assignmentInfo.tableAssignment != null) {
-                                                for (Integer bucketId :
-                                                        assignmentInfo.tableAssignment
-                                                                .getBuckets()) {
-                                                    TableBucket tableBucket =
-                                                            new TableBucket(
-                                                                    pathInfo.tableId,
-                                                                    pathInfo.partitionId,
-                                                                    bucketId);
-                                                    allTableBuckets.add(tableBucket);
-                                                    bucketToIndexMap.put(tableBucket, i);
-                                                }
-                                            }
-                                        }
-
-                                        return getLeaderAndIsrsAsync(allTableBuckets)
-                                                .thenApply(
-                                                        leaderAndIsrMap ->
-                                                                ZooKeeperMetadataUtils
-                                                                        .assemblePartitionMetadata(
-                                                                                partitionPathInfos,
-                                                                                assignmentInfos,
-                                                                                bucketToIndexMap,
-                                                                                leaderAndIsrMap));
-                                    });
-                        })
-                .exceptionally(
-                        throwable ->
-                                ZooKeeperMetadataUtils.handlePartitionException(
-                                        throwable,
-                                        "Failed to batch get partition metadata for partition ids: {}",
-                                        partitionIdSet,
-                                        "Failed to batch get partition metadata for partition ids: "
-                                                + partitionIdSet));
+        return result;
     }
 
-    private CompletableFuture<AssignmentInfo> getAssignmentInfoAsync(
-            @Nullable Long tableId, PhysicalTablePath physicalTablePath) {
-
-        if (physicalTablePath.getPartitionName() != null) {
-            return getPartitionAsync(
-                            physicalTablePath.getTablePath(), physicalTablePath.getPartitionName())
-                    .thenApply(
-                            tablePartition -> {
-                                if (tablePartition == null) {
-                                    throw new PartitionNotExistException(
-                                            "Table partition '"
-                                                    + physicalTablePath
-                                                    + "' does not exist.");
-                                }
-                                return tablePartition;
-                            })
-                    .thenCompose(
-                            tablePartition -> {
-                                long partitionId = tablePartition.getPartitionId();
-                                long partitionTableId = tablePartition.getTableId();
-
-                                return getPartitionAssignmentAsync(partitionId)
-                                        .thenApply(
-                                                tableAssignment ->
-                                                        new AssignmentInfo(
-                                                                partitionTableId,
-                                                                tableAssignment,
-                                                                partitionId));
-                            });
-        } else {
-            checkNotNull(tableId, "tableId must be not null");
-            long realTableId = tableId != null ? tableId : -1L;
-
-            return getTableAssignmentAsync(realTableId)
-                    .thenApply(
-                            tableAssignment ->
-                                    new AssignmentInfo(realTableId, tableAssignment, null));
-        }
+    private BucketMetadata createBucketMetadata(
+            Map<TableBucket, LeaderAndIsr> leaderAndIsrs,
+            TableBucket bucket,
+            int bucketId,
+            TableAssignment assignment) {
+        // this might be null if the leader and isr not known yet.
+        LeaderAndIsr leaderAndIsr = leaderAndIsrs.get(bucket);
+        Integer leader = leaderAndIsr != null ? leaderAndIsr.leader() : null;
+        Integer leaderEpoch = leaderAndIsr != null ? leaderAndIsr.leaderEpoch() : null;
+        List<Integer> replicas = assignment.getBucketAssignments().get(bucketId).getReplicas();
+        return new BucketMetadata(bucketId, leader, leaderEpoch, replicas);
     }
 
     /** Close the underlying ZooKeeperClient. */
@@ -1774,5 +1267,206 @@ public class ZooKeeperClient implements AutoCloseable {
         if (curatorFrameworkWrapper != null) {
             curatorFrameworkWrapper.close();
         }
+    }
+
+    // -------------------------------------------------------------------------------------------
+    // ZK batch async utils
+    // -------------------------------------------------------------------------------------------
+
+    /**
+     * Send a pipelined sequence of requests and return a CompletableFuture for all their responses.
+     *
+     * <p>The watch flag on each outgoing request will be set if we've already registered a handler
+     * for the path associated with the request.
+     *
+     * @param requests a sequence of requests to send
+     * @param respCreator function to create response objects from curator events
+     * @return CompletableFuture containing the responses for the requests
+     */
+    private <Resp extends ZkAsyncResponse, Req extends ZkAsyncRequest>
+            CompletableFuture<List<Resp>> handleRequestInBackgroundAsync(
+                    List<Req> requests, Function<CuratorEvent, Resp> respCreator) {
+        if (requests == null || requests.isEmpty()) {
+            return CompletableFuture.completedFuture(Collections.emptyList());
+        }
+
+        CompletableFuture<List<Resp>> future = new CompletableFuture<>();
+        BackgroundCallback callback = createBackgroundCallback(requests, respCreator, future);
+
+        try {
+            for (Req request : requests) {
+                try {
+                    inFlightRequests.acquire();
+                    if (request instanceof ZkGetDataRequest) {
+                        zkClient.getData().inBackground(callback).forPath(request.getPath());
+
+                    } else if (request instanceof ZkGetChildrenRequest) {
+                        zkClient.getChildren().inBackground(callback).forPath(request.getPath());
+
+                    } else {
+                        throw new IllegalArgumentException(
+                                "Unsupported request type: " + request.getClass());
+                    }
+                } catch (Exception e) {
+                    inFlightRequests.release();
+                    throw e;
+                }
+            }
+        } catch (Exception e) {
+            future.completeExceptionally(e);
+        }
+
+        return future;
+    }
+
+    @Nonnull
+    private <Resp extends ZkAsyncResponse, Req extends ZkAsyncRequest>
+            BackgroundCallback createBackgroundCallback(
+                    List<Req> requests,
+                    Function<CuratorEvent, Resp> respCreator,
+                    CompletableFuture<List<Resp>> future) {
+        ArrayBlockingQueue<Resp> responseQueue = new ArrayBlockingQueue<>(requests.size());
+        CountDownLatch countDownLatch = new CountDownLatch(requests.size());
+
+        // Complete future when all responses received
+        return (client, event) -> {
+            try {
+                Resp response = respCreator.apply(event);
+                responseQueue.add(response);
+                countDownLatch.countDown();
+
+                // Complete future when all responses received
+                if (countDownLatch.getCount() == 0) {
+                    future.complete(new ArrayList<>(responseQueue));
+                }
+            } catch (Exception e) {
+                future.completeExceptionally(e);
+            } finally {
+                inFlightRequests.release();
+            }
+        };
+    }
+
+    /**
+     * Gets the child nodes at given zk node paths in background.
+     *
+     * @param paths the paths to list children
+     * @return list of async responses for each path
+     * @throws Exception if there is an error during the operation
+     */
+    private List<ZkGetChildrenResponse> getChildrenInBackground(Collection<String> paths)
+            throws Exception {
+        List<ZkGetChildrenRequest> requests =
+                paths.stream().map(ZkGetChildrenRequest::new).collect(Collectors.toList());
+        return handleRequestInBackground(requests, ZkGetChildrenResponse::create);
+    }
+
+    /**
+     * Gets the data of given zk node paths in background.
+     *
+     * @param paths the paths to fetch data
+     * @return list of async responses for each path
+     * @throws Exception if there is an error during the operation
+     */
+    private List<ZkGetDataResponse> getDataInBackground(Collection<String> paths) throws Exception {
+        List<ZkGetDataRequest> requests =
+                paths.stream().map(ZkGetDataRequest::new).collect(Collectors.toList());
+        return handleRequestInBackground(requests, ZkGetDataResponse::create);
+    }
+
+    /**
+     * Send a pipelined sequence of requests and wait for all of their responses synchronously in
+     * background.
+     *
+     * <p>The watch flag on each outgoing request will be set if we've already registered a handler
+     * for the path associated with the request.
+     *
+     * @param requests a sequence of requests to send and wait on.
+     * @return the responses for the requests. If all requests have the same type, the responses
+     *     will have the respective response type.
+     */
+    private <Resp extends ZkAsyncResponse, Req extends ZkAsyncRequest>
+            List<Resp> handleRequestInBackground(
+                    List<Req> requests, Function<CuratorEvent, Resp> respCreator) throws Exception {
+        try {
+            return handleRequestInBackgroundAsync(requests, respCreator).get();
+        } catch (ExecutionException e) {
+            Throwable cause = ExceptionUtils.stripExecutionException(e);
+            if (cause instanceof Exception) {
+                throw (Exception) cause;
+            } else {
+                throw new Exception("Async request handling failed", cause);
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new Exception("Request handling was interrupted", e);
+        }
+    }
+
+    /**
+     * Template method to process multiple ZooKeeper data responses with decoder.
+     *
+     * @param responses list of ZkGetDataResponse from ZooKeeper
+     * @param keyExtractor function to extract key from response
+     * @param decoder function to decode byte array to target type
+     * @param operationName name of the operation for error messages
+     * @param <K> the type of the result map key
+     * @param <V> the type of the result map value
+     * @return Map containing decoded results for successful responses
+     */
+    public static <K, V> Map<K, V> processGetDataResponses(
+            List<ZkGetDataResponse> responses,
+            Function<ZkGetDataResponse, K> keyExtractor,
+            Function<byte[], V> decoder,
+            String operationName) {
+        Map<K, V> result = new HashMap<>();
+        for (ZkGetDataResponse response : responses) {
+            if (response.getResultCode() == KeeperException.Code.OK) {
+                byte[] data = response.getData();
+                if (data != null && data.length > 0) {
+                    K key = keyExtractor.apply(response);
+                    V value = decoder.apply(response.getData());
+                    result.put(key, value);
+                } else {
+                    LOG.warn("Data is empty for path {}", response.getPath());
+                }
+            } else {
+                LOG.warn(
+                        "Failed to get {} for path {}: {}",
+                        operationName,
+                        response.getPath(),
+                        response.getResultCode());
+            }
+        }
+        return result;
+    }
+
+    /**
+     * Template method to process multiple ZooKeeper children responses with decoder.
+     *
+     * @param responses list of ZkGetChildrenResponse from ZooKeeper
+     * @param keyExtractor function to extract key from response
+     * @param operationName name of the operation for error messages
+     * @param <K> the type of the result map key
+     * @return Map containing children lists for successful responses
+     */
+    public static <K> Map<K, List<String>> processGetChildrenResponses(
+            List<ZkGetChildrenResponse> responses,
+            Function<ZkGetChildrenResponse, K> keyExtractor,
+            String operationName) {
+        Map<K, List<String>> result = new HashMap<>();
+        for (ZkGetChildrenResponse response : responses) {
+            if (response.getResultCode() == KeeperException.Code.OK) {
+                K key = keyExtractor.apply(response);
+                result.put(key, response.getChildren());
+            } else {
+                LOG.warn(
+                        "Failed to get {} for path {}: {}",
+                        operationName,
+                        response.getPath(),
+                        response.getResultCode());
+            }
+        }
+        return result;
     }
 }

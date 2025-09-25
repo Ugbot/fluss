@@ -412,7 +412,7 @@ public class ReplicaFetcherThreadTest {
                         null,
                         zkClient,
                         serverId,
-                        new TabletServerMetadataCache(new MetadataManager(null, conf), null),
+                        new TabletServerMetadataCache(new MetadataManager(null, conf)),
                         RpcClient.create(conf, TestingClientMetricGroup.newInstance(), false),
                         TestingMetricGroups.TABLET_SERVER_METRICS,
                         manualClock);

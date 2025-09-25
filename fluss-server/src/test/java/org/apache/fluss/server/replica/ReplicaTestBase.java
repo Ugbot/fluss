@@ -194,8 +194,7 @@ public class ReplicaTestBase {
                         conf, zkClient, logManager, TestingMetricGroups.TABLET_SERVER_METRICS);
         kvManager.startup();
 
-        serverMetadataCache =
-                new TabletServerMetadataCache(new MetadataManager(zkClient, conf), zkClient);
+        serverMetadataCache = new TabletServerMetadataCache(new MetadataManager(zkClient, conf));
         initMetadataCache(serverMetadataCache);
 
         rpcClient = RpcClient.create(conf, TestingClientMetricGroup.newInstance(), false);

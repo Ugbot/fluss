@@ -34,8 +34,6 @@ import org.apache.fluss.metadata.DataLakeFormat;
 import org.apache.fluss.metadata.DatabaseDescriptor;
 import org.apache.fluss.metadata.PartitionSpec;
 import org.apache.fluss.metadata.ResolvedPartitionSpec;
-import org.apache.fluss.metadata.TableChange;
-import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.metadata.TableDescriptor;
 import org.apache.fluss.metadata.TablePath;
 import org.apache.fluss.rpc.gateway.CoordinatorGateway;
@@ -101,7 +99,6 @@ import org.apache.fluss.server.zk.data.BucketAssignment;
 import org.apache.fluss.server.zk.data.PartitionAssignment;
 import org.apache.fluss.server.zk.data.TableAssignment;
 import org.apache.fluss.server.zk.data.TableRegistration;
-import org.apache.fluss.utils.ExceptionUtils;
 import org.apache.fluss.utils.IOUtils;
 import org.apache.fluss.utils.concurrent.FutureUtils;
 
@@ -111,10 +108,7 @@ import java.io.UncheckedIOException;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
-import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ExecutionException;
 import java.util.function.Supplier;
 
 import static org.apache.fluss.rpc.util.CommonRpcMessageUtils.toAclBindingFilters;
@@ -453,26 +447,14 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
         AccessContextEvent<MetadataResponse> metadataResponseAccessContextEvent =
                 new AccessContextEvent<>(
                         ctx -> {
-                            CompletableFuture<MetadataResponse> response =
-                                    new CompletableFuture<>();
-                            processMetadataRequest(
+                            return processMetadataRequest(
                                     request,
                                     listenerName,
                                     session,
                                     authorizer,
                                     metadataCache,
-                                    new CoordinatorMetadataProvider(zkClient, ctx, metadataManager),
-                                    response);
-                            try {
-                                return response.get();
-                            } catch (Exception e) {
-                                Throwable strippedException =
-                                        ExceptionUtils.stripException(e, ExecutionException.class);
-                                if (strippedException instanceof RuntimeException) {
-                                    throw (RuntimeException) strippedException;
-                                }
-                                throw new RuntimeException(strippedException);
-                            }
+                                    new CoordinatorMetadataProvider(
+                                            zkClient, metadataManager, ctx));
                         });
         eventManagerSupplier.get().put(metadataResponseAccessContextEvent);
         return metadataResponseAccessContextEvent.getResultFuture();

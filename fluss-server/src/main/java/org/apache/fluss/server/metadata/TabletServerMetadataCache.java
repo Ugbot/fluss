@@ -26,7 +26,6 @@ import org.apache.fluss.metadata.TableInfo;
 import org.apache.fluss.metadata.TablePath;
 import org.apache.fluss.server.coordinator.MetadataManager;
 import org.apache.fluss.server.tablet.TabletServer;
-import org.apache.fluss.server.zk.ZooKeeperClient;
 
 import javax.annotation.Nullable;
 import javax.annotation.concurrent.GuardedBy;
@@ -65,12 +64,10 @@ public class TabletServerMetadataCache implements ServerMetadataCache {
     private volatile ServerMetadataSnapshot serverMetadataSnapshot;
 
     private final MetadataManager metadataManager;
-    private final ZooKeeperClient zkClient;
 
-    public TabletServerMetadataCache(MetadataManager metadataManager, ZooKeeperClient zkClient) {
+    public TabletServerMetadataCache(MetadataManager metadataManager) {
         this.serverMetadataSnapshot = ServerMetadataSnapshot.empty();
         this.metadataManager = metadataManager;
-        this.zkClient = zkClient;
     }
 
     @Override

@@ -88,8 +88,7 @@ public class TabletServerMetadataCacheTest {
         serverMetadataCache =
                 new TabletServerMetadataCache(
                         new TestingMetadataManager(
-                                Arrays.asList(DATA1_TABLE_INFO, partitionTableInfo)),
-                        null);
+                                Arrays.asList(DATA1_TABLE_INFO, partitionTableInfo)));
         coordinatorServer =
                 new ServerInfo(
                         0,

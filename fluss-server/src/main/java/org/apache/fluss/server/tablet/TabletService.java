@@ -138,7 +138,7 @@ public final class TabletService extends RpcServiceBase implements TabletServerG
         this.replicaManager = replicaManager;
         this.metadataCache = metadataCache;
         this.metadataFunctionProvider =
-                new TabletServerMetadataProvider(zkClient, metadataCache, metadataManager);
+                new TabletServerMetadataProvider(zkClient, metadataManager, metadataCache);
     }
 
     @Override
@@ -286,16 +286,15 @@ public final class TabletService extends RpcServiceBase implements TabletServerG
 
     @Override
     public CompletableFuture<MetadataResponse> metadata(MetadataRequest request) {
-        CompletableFuture<MetadataResponse> response = new CompletableFuture<>();
-        processMetadataRequest(
-                request,
-                currentListenerName(),
-                currentSession(),
-                authorizer,
-                metadataCache,
-                metadataFunctionProvider,
-                response);
-        return response;
+        MetadataResponse metadataResponse =
+                processMetadataRequest(
+                        request,
+                        currentListenerName(),
+                        currentSession(),
+                        authorizer,
+                        metadataCache,
+                        metadataFunctionProvider);
+        return CompletableFuture.completedFuture(metadataResponse);
     }
 
     @Override

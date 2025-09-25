@@ -18,7 +18,6 @@
 package org.apache.fluss.server.tablet;
 
 import org.apache.fluss.config.ConfigOptions;
-import org.apache.fluss.exception.CacheMissException;
 import org.apache.fluss.exception.FlussRuntimeException;
 import org.apache.fluss.exception.InvalidRequiredAcksException;
 import org.apache.fluss.metadata.LogFormat;
@@ -31,14 +30,11 @@ import org.apache.fluss.record.DefaultKvRecordBatch;
 import org.apache.fluss.record.DefaultValueRecordBatch;
 import org.apache.fluss.row.encode.CompactedKeyEncoder;
 import org.apache.fluss.row.encode.ValueEncoder;
-import org.apache.fluss.rpc.gateway.AdminReadOnlyGateway;
 import org.apache.fluss.rpc.gateway.TabletServerGateway;
 import org.apache.fluss.rpc.messages.FetchLogResponse;
 import org.apache.fluss.rpc.messages.InitWriterRequest;
 import org.apache.fluss.rpc.messages.InitWriterResponse;
 import org.apache.fluss.rpc.messages.ListOffsetsResponse;
-import org.apache.fluss.rpc.messages.MetadataRequest;
-import org.apache.fluss.rpc.messages.MetadataResponse;
 import org.apache.fluss.rpc.messages.NotifyLeaderAndIsrRequest;
 import org.apache.fluss.rpc.messages.NotifyLeaderAndIsrResponse;
 import org.apache.fluss.rpc.messages.PbFetchLogRespForBucket;
@@ -82,7 +78,6 @@ import java.util.Random;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentLinkedQueue;
-import java.util.concurrent.ExecutionException;
 
 import static org.apache.fluss.record.LogRecordBatchFormat.LOG_MAGIC_VALUE_V0;
 import static org.apache.fluss.record.LogRecordBatchFormat.LOG_MAGIC_VALUE_V1;
@@ -107,7 +102,6 @@ import static org.apache.fluss.server.testutils.RpcMessageTestUtils.newFetchLogR
 import static org.apache.fluss.server.testutils.RpcMessageTestUtils.newLimitScanRequest;
 import static org.apache.fluss.server.testutils.RpcMessageTestUtils.newListOffsetsRequest;
 import static org.apache.fluss.server.testutils.RpcMessageTestUtils.newLookupRequest;
-import static org.apache.fluss.server.testutils.RpcMessageTestUtils.newMetadataRequest;
 import static org.apache.fluss.server.testutils.RpcMessageTestUtils.newPrefixLookupRequest;
 import static org.apache.fluss.server.testutils.RpcMessageTestUtils.newProduceLogRequest;
 import static org.apache.fluss.server.testutils.RpcMessageTestUtils.newPutKvRequest;
@@ -971,138 +965,5 @@ public class TabletServiceITCase {
                                 physicalTablePath, tableBucket, leaderAndIsr.isr(), leaderAndIsr));
         return ServerRpcMessageUtils.makeNotifyLeaderAndIsrRequest(
                 0, Collections.singletonList(reqForBucket));
-    }
-
-    @Test
-    void testCacheOnlyTrue_NonExistentTable_ShouldThrowTableNotExistException() {
-        AdminReadOnlyGateway gateway = FLUSS_CLUSTER_EXTENSION.newCoordinatorClient();
-
-        // Create request for a non-existent table with cache_only = true
-        // Note: For non-existent tables, system throws TableNotExistException
-        // rather than CacheMissException since table validation happens first
-        TablePath nonExistentTable = TablePath.of("non_existent_db", "non_existent_table");
-        MetadataRequest request =
-                newMetadataRequest(Collections.singletonList(nonExistentTable)).setCacheOnly(true);
-
-        // Execute request and verify TableNotExistException is thrown
-        // This demonstrates that cache_only doesn't bypass table existence validation
-        assertThatThrownBy(() -> gateway.metadata(request).get())
-                .isInstanceOf(ExecutionException.class)
-                .hasMessageContaining("does not exist");
-    }
-
-    @Test
-    void testCacheOnlyFalse_NonExistentTable_ShouldNotThrowCacheMissException() {
-        AdminReadOnlyGateway gateway = FLUSS_CLUSTER_EXTENSION.newCoordinatorClient();
-
-        // Create request for a non-existent table with cache_only = false (default)
-        TablePath nonExistentTable = TablePath.of("non_existent_db", "non_existent_table");
-        MetadataRequest request = newMetadataRequest(Collections.singletonList(nonExistentTable));
-
-        // Execute request - should not throw CacheMissException but may throw other exceptions
-        // for non-existent table (which is expected behavior)
-        assertThatThrownBy(() -> gateway.metadata(request).get())
-                .isInstanceOf(ExecutionException.class);
-
-        // Verify that the exception is NOT CacheMissException
-        try {
-            gateway.metadata(request).get();
-        } catch (ExecutionException | InterruptedException e) {
-            assertThat(e.getCause()).isNotInstanceOf(CacheMissException.class);
-        }
-    }
-
-    @Test
-    void testCacheOnlyTrue_ExistingTable_ShouldReturnFromCache() throws Exception {
-        // First create a table to populate cache
-        long tableId =
-                createTable(FLUSS_CLUSTER_EXTENSION, DATA1_TABLE_PATH, DATA1_TABLE_DESCRIPTOR);
-        TableBucket tb = new TableBucket(tableId, 0);
-        FLUSS_CLUSTER_EXTENSION.waitUntilAllReplicaReady(tb);
-
-        // Wait for metadata to be available in all gateways
-        FLUSS_CLUSTER_EXTENSION.waitUntilAllGatewayHasSameMetadata();
-
-        AdminReadOnlyGateway gateway = FLUSS_CLUSTER_EXTENSION.newCoordinatorClient();
-
-        // Create request for existing table with cache_only = true
-        MetadataRequest request =
-                newMetadataRequest(Collections.singletonList(DATA1_TABLE_PATH)).setCacheOnly(true);
-
-        // Execute request - should succeed and return metadata from cache
-        MetadataResponse response = gateway.metadata(request).get();
-        assertThat(response).isNotNull();
-        assertThat(response.hasCoordinatorServer()).isTrue();
-        assertThat(response.getTabletServersCount()).isGreaterThan(0);
-    }
-
-    @Test
-    void testCacheOnlyTrue_EmptyRequest_ShouldSucceed() throws Exception {
-        FLUSS_CLUSTER_EXTENSION.waitUntilAllGatewayHasSameMetadata();
-
-        AdminReadOnlyGateway gateway = FLUSS_CLUSTER_EXTENSION.newCoordinatorClient();
-
-        // Create empty request with cache_only = true
-        MetadataRequest request = new MetadataRequest().setCacheOnly(true);
-
-        // Execute request - should succeed without any cache misses
-        MetadataResponse response = gateway.metadata(request).get();
-        assertThat(response).isNotNull();
-        // Empty request should return coordinator and tablet servers info
-        assertThat(response.hasCoordinatorServer()).isTrue();
-        assertThat(response.getTabletServersCount()).isGreaterThan(0);
-    }
-
-    @Test
-    void testCacheOnlyTrue_MultipleTables_MixedCacheStatus_ShouldThrowCacheMissException()
-            throws Exception {
-        // Create one table to ensure it's in cache
-        long tableId =
-                createTable(FLUSS_CLUSTER_EXTENSION, DATA1_TABLE_PATH, DATA1_TABLE_DESCRIPTOR);
-        TableBucket tb = new TableBucket(tableId, 0);
-        FLUSS_CLUSTER_EXTENSION.waitUntilAllReplicaReady(tb);
-        FLUSS_CLUSTER_EXTENSION.waitUntilAllGatewayHasSameMetadata();
-
-        AdminReadOnlyGateway gateway = FLUSS_CLUSTER_EXTENSION.newCoordinatorClient();
-
-        // Create request with both existing table (in cache) and non-existent table (not in cache)
-        List<TablePath> tablePaths =
-                Arrays.asList(
-                        DATA1_TABLE_PATH, // exists in cache
-                        TablePath.of("non_existent_db", "non_existent_table") // not in cache
-                        );
-        MetadataRequest request = newMetadataRequest(tablePaths).setCacheOnly(true);
-
-        // Execute request and verify that an exception is thrown
-        // Note: With existing + non-existent tables, TableNotExistException is thrown first
-        // for the non-existent table, rather than CacheMissException
-        assertThatThrownBy(() -> gateway.metadata(request).get())
-                .isInstanceOf(ExecutionException.class)
-                .hasMessageContaining("does not exist");
-    }
-
-    @Test
-    void testCacheOnlyTrue_RequestPartitionIds_CacheMiss_ShouldThrowCacheMissException()
-            throws Exception {
-        // First create a table
-        long tableId =
-                createTable(FLUSS_CLUSTER_EXTENSION, DATA1_TABLE_PATH, DATA1_TABLE_DESCRIPTOR);
-        TableBucket tb = new TableBucket(tableId, 0);
-        FLUSS_CLUSTER_EXTENSION.waitUntilAllReplicaReady(tb);
-        FLUSS_CLUSTER_EXTENSION.waitUntilAllGatewayHasSameMetadata();
-
-        AdminReadOnlyGateway gateway = FLUSS_CLUSTER_EXTENSION.newCoordinatorClient();
-
-        // Create request with cache_only = true, but requesting non-existent partition ID
-        // This should trigger CacheMissException since the partition ID doesn't exist in cache
-        MetadataRequest request =
-                newMetadataRequest(Collections.singletonList(DATA1_TABLE_PATH)).setCacheOnly(true);
-        request.addPartitionsId(99999L); // Non-existent partition ID
-
-        // Execute request and verify CacheMissException is thrown
-        assertThatThrownBy(() -> gateway.metadata(request).get())
-                .isInstanceOf(ExecutionException.class)
-                .hasCauseInstanceOf(CacheMissException.class)
-                .hasMessageContaining("is not available in local cache");
     }
 }

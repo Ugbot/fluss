@@ -20,8 +20,9 @@ package org.apache.fluss.server.metadata;
 import org.apache.fluss.metadata.PhysicalTablePath;
 import org.apache.fluss.metadata.TablePath;
 
+import java.util.Collection;
+import java.util.List;
 import java.util.Optional;
-import java.util.concurrent.CompletableFuture;
 
 /**
  * Interface for providing metadata information about tables and partitions from various sources.
@@ -39,12 +40,12 @@ public interface MetadataProvider {
     Optional<TableMetadata> getTableMetadataFromCache(TablePath tablePath);
 
     /**
-     * Retrieves table metadata from ZooKeeper asynchronously.
+     * Retrieves partition metadata from local cache.
      *
-     * @param tablePath the path identifying the table
-     * @return a CompletableFuture containing the table metadata from ZooKeeper
+     * @param physicalTablePath the physical path identifying the table partition
+     * @return an Optional containing the partition metadata if found in cache, empty otherwise
      */
-    CompletableFuture<TableMetadata> getTableMetadataFromZk(TablePath tablePath);
+    Optional<PartitionMetadata> getPartitionMetadataFromCache(PhysicalTablePath physicalTablePath);
 
     /**
      * Retrieves the physical table path from local cache using partition ID.
@@ -55,19 +56,19 @@ public interface MetadataProvider {
     Optional<PhysicalTablePath> getPhysicalTablePathFromCache(long partitionId);
 
     /**
-     * Retrieves partition metadata from local cache.
+     * Retrieves a batch of table metadata from ZooKeeper.
      *
-     * @param physicalTablePath the physical path identifying the table partition
-     * @return an Optional containing the partition metadata if found in cache, empty otherwise
+     * @param tablePaths the path identifying the table
+     * @return a CompletableFuture containing the table metadata from ZooKeeper
      */
-    Optional<PartitionMetadata> getPartitionMetadataFromCache(PhysicalTablePath physicalTablePath);
+    List<TableMetadata> getTablesMetadataFromZK(Collection<TablePath> tablePaths);
 
     /**
-     * Retrieves partition metadata from ZooKeeper asynchronously.
+     * Retrieves a batch of partition metadata from ZooKeeper.
      *
-     * @param physicalTablePath the physical path identifying the table partition
-     * @return a CompletableFuture containing the partition metadata from ZooKeeper
+     * @param partitionPaths the physical path identifying the table partition
+     * @return an Optional containing the partition metadata if found in cache, empty otherwise
      */
-    CompletableFuture<PartitionMetadata> getPartitionMetadataFromZk(
-            PhysicalTablePath physicalTablePath);
+    List<PartitionMetadata> getPartitionsMetadataFromZK(
+            Collection<PhysicalTablePath> partitionPaths);
 }

@@ -17,8 +17,8 @@
 
 package org.apache.fluss.server;
 
+import org.apache.fluss.cluster.ServerNode;
 import org.apache.fluss.cluster.ServerType;
-import org.apache.fluss.exception.CacheMissException;
 import org.apache.fluss.exception.FlussRuntimeException;
 import org.apache.fluss.exception.KvSnapshotNotExistException;
 import org.apache.fluss.exception.LakeTableSnapshotNotExistException;
@@ -105,7 +105,6 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.stream.Collectors;
 
 import static org.apache.fluss.rpc.util.CommonRpcMessageUtils.toAclFilter;
@@ -463,171 +462,104 @@ public abstract class RpcServiceBase extends RpcGatewayService implements AdminR
         }
     }
 
-    protected void processMetadataRequest(
+    protected MetadataResponse processMetadataRequest(
             MetadataRequest request,
             String listenerName,
             Session session,
             Authorizer authorizer,
             ServerMetadataCache metadataCache,
-            MetadataProvider functionProvider,
-            CompletableFuture<MetadataResponse> responseFuture) {
-        List<PbTablePath> pbTablePaths = request.getTablePathsList();
-        List<CompletableFuture<TableMetadata>> pendingTableMetadata = new ArrayList<>();
-        List<TablePath> tablePaths = new ArrayList<>(pbTablePaths.size());
-        // result collections - using ConcurrentLinkedQueue for thread safety
-        ConcurrentLinkedQueue<TableMetadata> tableMetadata = new ConcurrentLinkedQueue<>();
-        ConcurrentLinkedQueue<PartitionMetadata> partitionMetadata = new ConcurrentLinkedQueue<>();
-        boolean cacheOnly = request.hasCacheOnly() && request.isCacheOnly();
-        List<String> cacheMissMessages = new ArrayList<>();
-
-        try {
-            for (PbTablePath pbTablePath : pbTablePaths) {
-                if (authorizer == null
-                        || authorizer.isAuthorized(
-                                session,
-                                OperationType.DESCRIBE,
-                                Resource.table(
-                                        pbTablePath.getDatabaseName(),
-                                        pbTablePath.getTableName()))) {
-                    TablePath tablePath = toTablePath(pbTablePath);
-                    Optional<TableMetadata> tableMetadataFromCacheOpt =
-                            functionProvider.getTableMetadataFromCache(tablePath);
-                    if (!tableMetadataFromCacheOpt.isPresent()) {
-                        if (cacheOnly) {
-                            cacheMissMessages.add(
-                                    String.format(
-                                            "Table metadata for table %s is not available in local cache",
-                                            tablePath));
-                        }
-                        // Always add ZK query to fill cache, even for cache_only requests
-                        pendingTableMetadata.add(
-                                functionProvider
-                                        .getTableMetadataFromZk(tablePath)
-                                        .thenApply(
-                                                meta -> {
-                                                    tableMetadata.add(meta);
-                                                    return meta;
-                                                }));
-                    } else {
-                        tableMetadata.add(tableMetadataFromCacheOpt.get());
-                    }
-                    tablePaths.add(tablePath);
-                }
+            MetadataProvider metadataProvider) {
+        List<TablePath> authorizedTables = new ArrayList<>();
+        for (PbTablePath pbTablePath : request.getTablePathsList()) {
+            if (authorizer == null
+                    || authorizer.isAuthorized(
+                            session,
+                            OperationType.DESCRIBE,
+                            Resource.table(
+                                    pbTablePath.getDatabaseName(), pbTablePath.getTableName()))) {
+                authorizedTables.add(ServerRpcMessageUtils.toTablePath(pbTablePath));
             }
-
-            List<CompletableFuture<PartitionMetadata>> pendingPartitionMetadata = new ArrayList<>();
-            CompletableFuture<List<PartitionMetadata>> pendingPartitionMetadataMissingIdsPartition =
-                    CompletableFuture.completedFuture(new ArrayList<>());
-
-            List<PhysicalTablePath> partitions =
-                    request.getPartitionsPathsList().stream()
-                            .map(ServerRpcMessageUtils::toPhysicalTablePath)
-                            .collect(Collectors.toList());
-            long[] partitionIds = request.getPartitionsIds();
-            Set<Long> partitionIdsNotExistsInCache = new HashSet<>();
-            for (long partitionId : partitionIds) {
-                Optional<PhysicalTablePath> physicalTablePath =
-                        functionProvider.getPhysicalTablePathFromCache(partitionId);
-                if (physicalTablePath.isPresent()) {
-                    partitions.add(physicalTablePath.get());
-                } else {
-                    partitionIdsNotExistsInCache.add(partitionId);
-                }
-            }
-
-            if (!partitionIdsNotExistsInCache.isEmpty()) {
-                if (cacheOnly) {
-                    cacheMissMessages.add(
-                            String.format(
-                                    "Partition metadata for partition IDs %s is not available in local cache",
-                                    partitionIdsNotExistsInCache));
-                }
-                // Always execute ZK query to fill cache, even for cache_only requests
-                pendingPartitionMetadataMissingIdsPartition =
-                        zkClient.batchGetPartitionMetadataFromZkAsync(
-                                        tablePaths, partitionIdsNotExistsInCache)
-                                .thenApply(
-                                        batchMetadata -> {
-                                            partitionMetadata.addAll(batchMetadata);
-                                            return batchMetadata;
-                                        });
-            }
-
-            for (PhysicalTablePath partitionPath : partitions) {
-                if (authorizer == null
-                        || authorizer.isAuthorized(
-                                session,
-                                OperationType.DESCRIBE,
-                                Resource.table(
-                                        partitionPath.getDatabaseName(),
-                                        partitionPath.getTableName()))) {
-                    Optional<PartitionMetadata> partitionMetadataOpt =
-                            functionProvider.getPartitionMetadataFromCache(partitionPath);
-                    if (!partitionMetadataOpt.isPresent()) {
-                        if (cacheOnly) {
-                            cacheMissMessages.add(
-                                    String.format(
-                                            "Partition metadata for partition %s is not available in local cache",
-                                            partitionPath));
-                        }
-                        // Always execute ZK query to fill cache, even for cache_only requests
-                        pendingPartitionMetadata.add(
-                                functionProvider
-                                        .getPartitionMetadataFromZk(partitionPath)
-                                        .thenApply(
-                                                meta -> {
-                                                    partitionMetadata.add(meta);
-                                                    return meta;
-                                                }));
-                    } else {
-                        partitionMetadata.add(partitionMetadataOpt.get());
-                    }
-                }
-            }
-
-            // Check for cache misses and return error immediately for cache_only requests
-            if (cacheOnly && !cacheMissMessages.isEmpty()) {
-                String combinedMessage = String.join("; ", cacheMissMessages);
-                responseFuture.completeExceptionally(new CacheMissException(combinedMessage));
-                // Continue with ZK queries to fill cache asynchronously, but don't wait for them
-                return;
-            }
-
-            CompletableFuture<Void> allPendingTableMeta =
-                    CompletableFuture.allOf(pendingTableMetadata.toArray(new CompletableFuture[0]));
-            CompletableFuture<Void> allPendingPartitionMeta =
-                    CompletableFuture.allOf(
-                            pendingPartitionMetadata.toArray(new CompletableFuture[0]));
-
-            CompletableFuture<Void> allPendingRequest =
-                    CompletableFuture.allOf(
-                            allPendingTableMeta,
-                            allPendingPartitionMeta,
-                            pendingPartitionMetadataMissingIdsPartition);
-
-            allPendingRequest.handle(
-                    (v, throwable) -> {
-                        if (throwable != null) {
-                            responseFuture.completeExceptionally(throwable);
-                            return null;
-                        }
-                        try {
-                            responseFuture.complete(
-                                    buildMetadataResponse(
-                                            metadataCache.getCoordinatorServer(listenerName),
-                                            new HashSet<>(
-                                                    metadataCache
-                                                            .getAllAliveTabletServers(listenerName)
-                                                            .values()),
-                                            new ArrayList<>(tableMetadata),
-                                            new ArrayList<>(partitionMetadata)));
-                        } catch (Exception e) {
-                            responseFuture.completeExceptionally(e);
-                        }
-                        return null;
-                    });
-        } catch (Exception e) {
-            responseFuture.completeExceptionally(e);
         }
+        List<TableMetadata> tablesMetadata = new ArrayList<>();
+        List<TablePath> unknownTables = new ArrayList<>();
+        for (TablePath tablePath : authorizedTables) {
+            Optional<TableMetadata> metadataFromCache =
+                    metadataProvider.getTableMetadataFromCache(tablePath);
+            if (metadataFromCache.isPresent()) {
+                tablesMetadata.add(metadataFromCache.get());
+            } else {
+                unknownTables.add(tablePath);
+            }
+        }
+        // fetch unknown table metadata from ZK
+        tablesMetadata.addAll(metadataProvider.getTablesMetadataFromZK(unknownTables));
+
+        // handle partition ids request
+        Set<PhysicalTablePath> partitionPaths =
+                request.getPartitionsPathsList().stream()
+                        .map(ServerRpcMessageUtils::toPhysicalTablePath)
+                        .collect(Collectors.toSet());
+        long[] partitionIds = request.getPartitionsIds();
+        List<Long> partitionIdsNotExistsInCache = new ArrayList<>();
+        for (long partitionId : partitionIds) {
+            Optional<PhysicalTablePath> physicalTablePath =
+                    metadataProvider.getPhysicalTablePathFromCache(partitionId);
+            if (physicalTablePath.isPresent()) {
+                partitionPaths.add(physicalTablePath.get());
+            } else {
+                partitionIdsNotExistsInCache.add(partitionId);
+            }
+        }
+
+        if (!partitionIdsNotExistsInCache.isEmpty()) {
+            Map<Long, PhysicalTablePath> partitionIdAndPaths;
+            try {
+                partitionIdAndPaths = zkClient.getPartitionIdAndPaths(authorizedTables);
+            } catch (Exception e) {
+                throw new FlussRuntimeException("Failed to get partition paths from ZK.", e);
+            }
+            for (long partitionId : partitionIdsNotExistsInCache) {
+                if (partitionIdAndPaths.containsKey(partitionId)) {
+                    partitionPaths.add(partitionIdAndPaths.get(partitionId));
+                } else {
+                    throw new PartitionNotExistException(
+                            String.format(
+                                    "The partition id '%d' does not exist or you don't have permission to access it.",
+                                    partitionId));
+                }
+            }
+        }
+
+        // collect partition metadata
+        List<PhysicalTablePath> authorizedPartitions = new ArrayList<>();
+        for (PhysicalTablePath path : partitionPaths) {
+            if (authorizer == null
+                    || authorizer.isAuthorized(
+                            session,
+                            OperationType.DESCRIBE,
+                            Resource.table(path.getDatabaseName(), path.getTableName()))) {
+                authorizedPartitions.add(path);
+            }
+        }
+        List<PartitionMetadata> partitionsMetadata = new ArrayList<>();
+        List<PhysicalTablePath> unknownPartitions = new ArrayList<>();
+        for (PhysicalTablePath partitionPath : authorizedPartitions) {
+            Optional<PartitionMetadata> metadataFromCache =
+                    metadataProvider.getPartitionMetadataFromCache(partitionPath);
+            if (metadataFromCache.isPresent()) {
+                partitionsMetadata.add(metadataFromCache.get());
+            } else {
+                unknownPartitions.add(partitionPath);
+            }
+        }
+        // fetch unknown partition metadata from ZK
+        partitionsMetadata.addAll(metadataProvider.getPartitionsMetadataFromZK(unknownPartitions));
+
+        // build response
+        ServerNode coordinatorServer = metadataCache.getCoordinatorServer(listenerName);
+        Set<ServerNode> aliveTabletServers =
+                new HashSet<>(metadataCache.getAllAliveTabletServers(listenerName).values());
+        return buildMetadataResponse(
+                coordinatorServer, aliveTabletServers, tablesMetadata, partitionsMetadata);
     }
 }

@@ -409,12 +409,20 @@ public class MetadataManager {
         try {
             Map<TablePath, TableRegistration> tablePath2TableRegistrations =
                     zookeeperClient.getTables(tablePaths);
+            // currently, we don't support schema evolution, so all schemas are version 1
+            Map<TablePath, SchemaInfo> tablePath2SchemaInfos =
+                    zookeeperClient.getV1Schemas(tablePaths);
             for (TablePath tablePath : tablePaths) {
                 if (!tablePath2TableRegistrations.containsKey(tablePath)) {
                     throw new TableNotExistException("Table '" + tablePath + "' does not exist.");
                 }
+                if (!tablePath2SchemaInfos.containsKey(tablePath)) {
+                    throw new SchemaNotExistException(
+                            "Schema for '" + tablePath + "' with schema_id=1 does not exist.");
+                }
                 TableRegistration tableReg = tablePath2TableRegistrations.get(tablePath);
-                SchemaInfo schemaInfo = getLatestSchema(tablePath);
+                SchemaInfo schemaInfo = tablePath2SchemaInfos.get(tablePath);
+
                 result.put(
                         tablePath,
                         tableReg.toTableInfo(tablePath, schemaInfo, defaultTableLakeOptions));

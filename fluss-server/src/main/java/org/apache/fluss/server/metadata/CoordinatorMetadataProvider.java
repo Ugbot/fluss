@@ -33,7 +33,6 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.concurrent.CompletableFuture;
 
 /**
  * Coordinator-side implementation of the MetadataProvider interface.
@@ -53,26 +52,21 @@ import java.util.concurrent.CompletableFuture;
  * <p>This implementation is optimized for coordinator usage patterns where table and partition
  * metadata is frequently accessed for making assignment decisions and handling client requests.
  */
-public class CoordinatorMetadataProvider implements MetadataProvider {
-
-    private final ZooKeeperClient zkClient;
+public class CoordinatorMetadataProvider extends ZkBasedMetadataProvider {
 
     private final CoordinatorContext ctx;
-
-    private final MetadataManager metadataManager;
 
     /**
      * Creates a new CoordinatorMetadataProvider.
      *
      * @param zkClient the ZooKeeper client for accessing distributed metadata
-     * @param ctx the coordinator context providing cached metadata and assignments
      * @param metadataManager the metadata manager for table information
+     * @param ctx the coordinator context providing cached metadata and assignments
      */
     public CoordinatorMetadataProvider(
-            ZooKeeperClient zkClient, CoordinatorContext ctx, MetadataManager metadataManager) {
-        this.zkClient = zkClient;
+            ZooKeeperClient zkClient, MetadataManager metadataManager, CoordinatorContext ctx) {
+        super(zkClient, metadataManager);
         this.ctx = ctx;
-        this.metadataManager = metadataManager;
     }
 
     @Override
@@ -86,19 +80,6 @@ public class CoordinatorMetadataProvider implements MetadataProvider {
         List<BucketMetadata> bucketMetadataList =
                 getBucketMetadataFromContext(ctx, tableId, null, ctx.getTableAssignment(tableId));
         return Optional.of(new TableMetadata(tableInfo, bucketMetadataList));
-    }
-
-    @Override
-    public CompletableFuture<TableMetadata> getTableMetadataFromZk(TablePath tablePath) {
-        TableInfo tableInfo = metadataManager.getTable(tablePath);
-        return ZooKeeperClient.getTableMetadataFromZkAsync(
-                        zkClient, tablePath, tableInfo.getTableId(), tableInfo.isPartitioned())
-                .thenApply(bucketMetadata -> new TableMetadata(tableInfo, bucketMetadata));
-    }
-
-    @Override
-    public Optional<PhysicalTablePath> getPhysicalTablePathFromCache(long partitionId) {
-        return ctx.getPhysicalTablePath(partitionId);
     }
 
     @Override
@@ -126,9 +107,8 @@ public class CoordinatorMetadataProvider implements MetadataProvider {
     }
 
     @Override
-    public CompletableFuture<PartitionMetadata> getPartitionMetadataFromZk(
-            PhysicalTablePath partitionPath) {
-        return ZooKeeperClient.getPartitionMetadataFromZkAsync(partitionPath, zkClient);
+    public Optional<PhysicalTablePath> getPhysicalTablePathFromCache(long partitionId) {
+        return ctx.getPhysicalTablePath(partitionId);
     }
 
     /**

@@ -18,13 +18,13 @@
 package org.apache.fluss.server.metadata;
 
 import org.apache.fluss.metadata.PhysicalTablePath;
-import org.apache.fluss.metadata.TableInfo;
 import org.apache.fluss.metadata.TablePath;
 import org.apache.fluss.server.coordinator.MetadataManager;
 import org.apache.fluss.server.zk.ZooKeeperClient;
 
+import java.util.Collection;
+import java.util.List;
 import java.util.Optional;
-import java.util.concurrent.CompletableFuture;
 
 /**
  * Tablet server-side implementation of the MetadataProvider interface.
@@ -46,53 +46,28 @@ import java.util.concurrent.CompletableFuture;
  * metadata for partition management, leader election participation, and client request handling,
  * while maintaining consistency with the coordinator's view of metadata.
  */
-public class TabletServerMetadataProvider implements MetadataProvider {
-
-    private final ZooKeeperClient zkClient;
+public class TabletServerMetadataProvider extends ZkBasedMetadataProvider {
 
     private final TabletServerMetadataCache metadataCache;
-
-    private final MetadataManager metadataManager;
 
     /**
      * Creates a new TabletServerMetadataProvider.
      *
      * @param zkClient the ZooKeeper client for accessing distributed metadata
-     * @param metadataCache the local metadata cache for efficient metadata access
      * @param metadataManager the metadata manager for table information
+     * @param metadataCache the local metadata cache for efficient metadata access
      */
     public TabletServerMetadataProvider(
             ZooKeeperClient zkClient,
-            TabletServerMetadataCache metadataCache,
-            MetadataManager metadataManager) {
-        this.zkClient = zkClient;
+            MetadataManager metadataManager,
+            TabletServerMetadataCache metadataCache) {
+        super(zkClient, metadataManager);
         this.metadataCache = metadataCache;
-        this.metadataManager = metadataManager;
     }
 
     @Override
     public Optional<TableMetadata> getTableMetadataFromCache(TablePath tablePath) {
         return metadataCache.getTableMetadata(tablePath);
-    }
-
-    @Override
-    public CompletableFuture<TableMetadata> getTableMetadataFromZk(TablePath tablePath) {
-        TableInfo tableInfo = metadataManager.getTable(tablePath);
-        return ZooKeeperClient.getTableMetadataFromZkAsync(
-                        zkClient, tablePath, tableInfo.getTableId(), tableInfo.isPartitioned())
-                .thenApply(
-                        bucketMetadataList -> {
-                            TableMetadata tableMetadata =
-                                    new TableMetadata(tableInfo, bucketMetadataList);
-                            // Update local cache after successfully fetching from ZooKeeper
-                            metadataCache.updateTableMetadata(tableMetadata);
-                            return tableMetadata;
-                        });
-    }
-
-    @Override
-    public Optional<PhysicalTablePath> getPhysicalTablePathFromCache(long partitionId) {
-        return metadataCache.getPhysicalTablePath(partitionId);
     }
 
     @Override
@@ -102,14 +77,24 @@ public class TabletServerMetadataProvider implements MetadataProvider {
     }
 
     @Override
-    public CompletableFuture<PartitionMetadata> getPartitionMetadataFromZk(
-            PhysicalTablePath physicalTablePath) {
-        return ZooKeeperClient.getPartitionMetadataFromZkAsync(physicalTablePath, zkClient)
-                .thenApply(
-                        partitionMetadata -> {
-                            // Update local cache after successfully fetching from ZooKeeper
-                            metadataCache.updatePartitionMetadata(partitionMetadata);
-                            return partitionMetadata;
-                        });
+    public Optional<PhysicalTablePath> getPhysicalTablePathFromCache(long partitionId) {
+        return metadataCache.getPhysicalTablePath(partitionId);
+    }
+
+    @Override
+    public List<TableMetadata> getTablesMetadataFromZK(Collection<TablePath> tablePaths) {
+        List<TableMetadata> result = super.getTablesMetadataFromZK(tablePaths);
+        // Update local cache after successfully fetching from ZooKeeper
+        result.forEach(metadataCache::updateTableMetadata);
+        return result;
+    }
+
+    @Override
+    public List<PartitionMetadata> getPartitionsMetadataFromZK(
+            Collection<PhysicalTablePath> partitionPaths) {
+        List<PartitionMetadata> result = super.getPartitionsMetadataFromZK(partitionPaths);
+        // Update local cache after successfully fetching from ZooKeeper
+        result.forEach(metadataCache::updatePartitionMetadata);
+        return result;
     }
 }

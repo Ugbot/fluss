@@ -176,10 +176,6 @@ message MetadataRequest {
   // metadata request
   // todo: we won't need the assumption after we introduce metadata cache in server
   repeated int64 partitions_id = 3 [packed = true];
-  
-  // if cache_only is true, return immediately if metadata is not in local cache
-  // instead of waiting for ZooKeeper access to complete
-  optional bool cache_only = 4;
 }
 
 message MetadataResponse {
