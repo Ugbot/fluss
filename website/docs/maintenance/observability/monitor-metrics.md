@@ -763,6 +763,17 @@ Some metrics might not be exposed when using other JVM implementations (e.g. IBM
       <td>The end offset in local storage for this table bucket.</td>
       <td>Gauge</td>
     </tr>
+     <tr>
+      <td rowspan="2">table_bucket_lakeTiering</td>
+      <td>pendingRecords</td>
+      <td>The number of records lag between local log and remote log for this table bucket.</td>
+      <td>Gauge</td>
+    </tr>
+     <tr>
+      <td>timestampLag</td>
+      <td>The timestamp lag between local log and remote log for this table bucket in milliseconds.</td>
+      <td>Gauge</td>
+    </tr>
     <tr>
       <td rowspan="3">table_bucket_remoteLog</td>
       <td>numSegments</td>
