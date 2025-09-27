@@ -86,7 +86,7 @@ abstract class FlinkCatalogITCase {
 
     static final String CATALOG_NAME = "testcatalog";
     static final String DEFAULT_DB = FlinkCatalogOptions.DEFAULT_DATABASE.defaultValue();
-    static Catalog catalog;
+    static FlinkCatalog catalog;
 
     protected TableEnvironment tEnv;
 
@@ -181,6 +181,7 @@ abstract class FlinkCatalogITCase {
                 .column("r", DataTypes.TIMESTAMP_LTZ())
                 .column("s", DataTypes.ROW(DataTypes.FIELD("a", DataTypes.INT())))
                 .primaryKey("a");
+        addDefaultIndexKey(schemaBuilder);
         Schema expectedSchema = schemaBuilder.build();
         CatalogTable table =
                 (CatalogTable) catalog.getTable(new ObjectPath(DEFAULT_DB, "test_table"));
@@ -291,6 +292,7 @@ abstract class FlinkCatalogITCase {
         tEnv.executeSql("create table append_only_table(a int, b int) with ('bucket.num' = '10')");
         Schema.Builder schemaBuilder = Schema.newBuilder();
         schemaBuilder.column("a", DataTypes.INT()).column("b", DataTypes.INT());
+        addDefaultIndexKey(schemaBuilder);
         Schema expectedSchema = schemaBuilder.build();
         CatalogTable table =
                 (CatalogTable) catalog.getTable(new ObjectPath(DEFAULT_DB, "append_only_table"));
@@ -313,6 +315,7 @@ abstract class FlinkCatalogITCase {
                 .column("a", DataTypes.INT())
                 .column("b", DataTypes.STRING())
                 .column("dt", DataTypes.STRING());
+        addDefaultIndexKey(schemaBuilder);
         Schema expectedSchema = schemaBuilder.build();
         CatalogTable table = (CatalogTable) catalog.getTable(objectPath);
         assertThat(table.getUnresolvedSchema()).isEqualTo(expectedSchema);
@@ -366,6 +369,7 @@ abstract class FlinkCatalogITCase {
                         + " 'table.auto-partition.time-unit' = 'year')");
         Schema.Builder schemaBuilder = Schema.newBuilder();
         schemaBuilder.column("a", DataTypes.INT()).column("b", DataTypes.STRING());
+        addDefaultIndexKey(schemaBuilder);
         Schema expectedSchema = schemaBuilder.build();
         CatalogTable table = (CatalogTable) catalog.getTable(objectPath);
         assertThat(table.getUnresolvedSchema()).isEqualTo(expectedSchema);
@@ -475,6 +479,7 @@ abstract class FlinkCatalogITCase {
                 .column("b", DataTypes.STRING())
                 .column("c", DataTypes.STRING())
                 .column("hh", DataTypes.STRING());
+        addDefaultIndexKey(schemaBuilder);
         Schema expectedSchema = schemaBuilder.build();
         CatalogTable table = (CatalogTable) catalog.getTable(objectPath);
         assertThat(table.getUnresolvedSchema()).isEqualTo(expectedSchema);
@@ -559,6 +564,7 @@ abstract class FlinkCatalogITCase {
                 .column("order_time", DataTypes.TIMESTAMP(3))
                 .watermark("order_time", "`order_time` - INTERVAL '5' SECOND")
                 .primaryKey("user");
+        addDefaultIndexKey(schemaBuilder);
         Schema expectedSchema = schemaBuilder.build();
         assertThat(table.getUnresolvedSchema()).isEqualTo(expectedSchema);
         Map<String, String> expectedOptions = new HashMap<>();
@@ -775,7 +781,14 @@ abstract class FlinkCatalogITCase {
                         "The configured default-database 'non-exist' does not exist in the Fluss cluster.");
     }
 
-    private static void assertOptionsEqual(
+    /**
+     * Before Flink 2.1, the {@link Schema} did not include an index field. Starting from Flink 2.1,
+     * Flink introduced the concept of an index, and in Fluss, the primary key is considered as an
+     * index.
+     */
+    protected void addDefaultIndexKey(Schema.Builder schemaBuilder) {}
+
+    protected static void assertOptionsEqual(
             Map<String, String> actualOptions, Map<String, String> expectedOptions) {
         actualOptions.remove(ConfigOptions.BOOTSTRAP_SERVERS.key());
         actualOptions.remove(ConfigOptions.TABLE_REPLICATION_FACTOR.key());
