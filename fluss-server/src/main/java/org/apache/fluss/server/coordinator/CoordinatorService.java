@@ -90,6 +90,7 @@ import org.apache.fluss.server.coordinator.event.ControlledShutdownEvent;
 import org.apache.fluss.server.coordinator.event.EventManager;
 import org.apache.fluss.server.entity.CommitKvSnapshotData;
 import org.apache.fluss.server.entity.LakeTieringTableInfo;
+import org.apache.fluss.server.entity.TablePropertyChanges;
 import org.apache.fluss.server.kv.snapshot.CompletedSnapshot;
 import org.apache.fluss.server.kv.snapshot.CompletedSnapshotJsonSerde;
 import org.apache.fluss.server.metadata.CoordinatorMetadataCache;
@@ -297,10 +298,16 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
             authorizer.authorize(currentSession(), OperationType.ALTER, Resource.table(tablePath));
         }
 
+        TablePropertyChanges tablePropertyChanges =
+                toTablePropertyChanges(request.getConfigChangesList());
+
         metadataManager.alterTableProperties(
                 tablePath,
-                toTablePropertyChanges(request.getConfigChangesList()),
-                request.isIgnoreIfNotExists());
+                tablePropertyChanges,
+                request.isIgnoreIfNotExists(),
+                lakeCatalog,
+                dataLakeFormat,
+                lakeTableTieringManager);
 
         return CompletableFuture.completedFuture(new AlterTablePropertiesResponse());
     }

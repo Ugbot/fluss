@@ -23,7 +23,9 @@ import org.apache.fluss.exception.DatabaseAlreadyExistException;
 import org.apache.fluss.exception.DatabaseNotEmptyException;
 import org.apache.fluss.exception.DatabaseNotExistException;
 import org.apache.fluss.exception.FlussRuntimeException;
+import org.apache.fluss.exception.InvalidAlterTableException;
 import org.apache.fluss.exception.InvalidPartitionException;
+import org.apache.fluss.exception.LakeTableAlreadyExistException;
 import org.apache.fluss.exception.PartitionAlreadyExistsException;
 import org.apache.fluss.exception.PartitionNotExistException;
 import org.apache.fluss.exception.SchemaNotExistException;
@@ -32,6 +34,8 @@ import org.apache.fluss.exception.TableNotExistException;
 import org.apache.fluss.exception.TableNotPartitionedException;
 import org.apache.fluss.exception.TooManyBucketsException;
 import org.apache.fluss.exception.TooManyPartitionsException;
+import org.apache.fluss.lake.lakestorage.LakeCatalog;
+import org.apache.fluss.metadata.DataLakeFormat;
 import org.apache.fluss.metadata.DatabaseDescriptor;
 import org.apache.fluss.metadata.DatabaseInfo;
 import org.apache.fluss.metadata.ResolvedPartitionSpec;
@@ -307,7 +311,10 @@ public class MetadataManager {
     public void alterTableProperties(
             TablePath tablePath,
             TablePropertyChanges tablePropertyChanges,
-            boolean ignoreIfNotExists) {
+            boolean ignoreIfNotExists,
+            @Nullable LakeCatalog lakeCatalog,
+            @Nullable DataLakeFormat dataLakeFormat,
+            LakeTableTieringManager lakeTableTieringManager) {
         try {
             // it throws TableNotExistException if the table or database not exists
             TableRegistration tableReg = getTableRegistration(tablePath);
@@ -328,12 +335,26 @@ public class MetadataManager {
 
             if (newDescriptor != null) {
                 // reuse the same validate logic with the createTable() method
-                validateTableDescriptor(tableDescriptor, maxBucketNum);
+                validateTableDescriptor(newDescriptor, maxBucketNum);
+
+                // pre alter table properties, e.g. create lake table in lake storage if it's to
+                // enable datalake for the table
+                preAlterTableProperties(
+                        tablePath, tableDescriptor, newDescriptor, lakeCatalog, dataLakeFormat);
                 // update the table to zk
                 TableRegistration updatedTableRegistration =
                         tableReg.newProperties(
                                 newDescriptor.getProperties(), newDescriptor.getCustomProperties());
                 zookeeperClient.updateTable(tablePath, updatedTableRegistration);
+
+                // post alter table properties, e.g. add the table to lake table tiering manager if
+                // it's to enable datalake for the table
+                postAlterTableProperties(
+                        tablePath,
+                        schemaInfo,
+                        tableDescriptor,
+                        updatedTableRegistration,
+                        lakeTableTieringManager);
             } else {
                 LOG.info(
                         "No properties changed when alter table {}, skip update table.", tablePath);
@@ -350,6 +371,66 @@ public class MetadataManager {
                 throw new FlussRuntimeException("Failed to alter table: " + tablePath, e);
             }
         }
+    }
+
+    private void preAlterTableProperties(
+            TablePath tablePath,
+            TableDescriptor tableDescriptor,
+            TableDescriptor newDescriptor,
+            LakeCatalog lakeCatalog,
+            DataLakeFormat dataLakeFormat) {
+
+        boolean toEnableDataLake =
+                !isDataLakeEnabled(tableDescriptor) && isDataLakeEnabled(newDescriptor);
+
+        // enable lake table
+        if (toEnableDataLake) {
+            // TODO: should tolerate if the lake exist but matches our schema. This ensures
+            // eventually
+            //  consistent by idempotently creating the table multiple times. See #846
+            // before create table in fluss, we may create in lake
+            if (lakeCatalog == null) {
+                throw new InvalidAlterTableException(
+                        "Cannot alter table "
+                                + tablePath
+                                + " to enable data lake, because the Fluss cluster doesn't enable datalake tables.");
+            } else {
+                try {
+                    lakeCatalog.createTable(tablePath, newDescriptor);
+                } catch (TableAlreadyExistException e) {
+                    throw new LakeTableAlreadyExistException(
+                            String.format(
+                                    "The table %s already exists in %s catalog, please "
+                                            + "first drop the table in %s catalog or use a new table name.",
+                                    tablePath, dataLakeFormat, dataLakeFormat));
+                }
+            }
+        }
+        // more pre-alter actions can be added here
+    }
+
+    private void postAlterTableProperties(
+            TablePath tablePath,
+            SchemaInfo schemaInfo,
+            TableDescriptor oldTableDescriptor,
+            TableRegistration newTableRegistration,
+            LakeTableTieringManager lakeTableTieringManager) {
+
+        boolean toEnableDataLake =
+                !isDataLakeEnabled(oldTableDescriptor)
+                        && isDataLakeEnabled(newTableRegistration.properties);
+        boolean toDisableDataLake =
+                isDataLakeEnabled(oldTableDescriptor)
+                        && !isDataLakeEnabled(newTableRegistration.properties);
+
+        if (toEnableDataLake) {
+            TableInfo newTableInfo = newTableRegistration.toTableInfo(tablePath, schemaInfo);
+            // if the table is lake table, we need to add it to lake table tiering manager
+            lakeTableTieringManager.addNewLakeTable(newTableInfo);
+        } else if (toDisableDataLake) {
+            lakeTableTieringManager.removeLakeTable(newTableRegistration.tableId);
+        }
+        // more post-alter actions can be added here
     }
 
     /**
@@ -385,6 +466,17 @@ public class MetadataManager {
         } else {
             return tableDescriptor.withProperties(newProperties, newCustomProperties);
         }
+    }
+
+    private boolean isDataLakeEnabled(TableDescriptor tableDescriptor) {
+        String dataLakeEnabledValue =
+                tableDescriptor.getProperties().get(ConfigOptions.TABLE_DATALAKE_ENABLED.key());
+        return Boolean.parseBoolean(dataLakeEnabledValue);
+    }
+
+    private boolean isDataLakeEnabled(Map<String, String> properties) {
+        String dataLakeEnabledValue = properties.get(ConfigOptions.TABLE_DATALAKE_ENABLED.key());
+        return Boolean.parseBoolean(dataLakeEnabledValue);
     }
 
     public TableInfo getTable(TablePath tablePath) throws TableNotExistException {

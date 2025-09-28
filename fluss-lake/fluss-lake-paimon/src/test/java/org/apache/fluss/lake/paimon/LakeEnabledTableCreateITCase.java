@@ -25,6 +25,7 @@ import org.apache.fluss.config.Configuration;
 import org.apache.fluss.exception.FlussRuntimeException;
 import org.apache.fluss.exception.InvalidTableException;
 import org.apache.fluss.metadata.Schema;
+import org.apache.fluss.metadata.TableChange;
 import org.apache.fluss.metadata.TableDescriptor;
 import org.apache.fluss.metadata.TablePath;
 import org.apache.fluss.server.testutils.FlussClusterExtension;
@@ -48,7 +49,9 @@ import javax.annotation.Nullable;
 
 import java.nio.file.Files;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.stream.Stream;
 
@@ -361,6 +364,70 @@ class LakeEnabledTableCreateITCase {
                             TIMESTAMP_COLUMN_NAME
                         }),
                 null,
+                BUCKET_NUM);
+    }
+
+    @Test
+    void testAlterLakeEnabledLogTable() throws Exception {
+        Map<String, String> customProperties = new HashMap<>();
+        customProperties.put("k1", "v1");
+        customProperties.put("paimon.file.format", "parquet");
+
+        // log table with lake disabled
+        TableDescriptor logTable =
+                TableDescriptor.builder()
+                        .schema(
+                                Schema.newBuilder()
+                                        .column("log_c1", DataTypes.INT())
+                                        .column("log_c2", DataTypes.STRING())
+                                        .build())
+                        .property(ConfigOptions.TABLE_DATALAKE_ENABLED, false)
+                        .customProperties(customProperties)
+                        .distributedBy(BUCKET_NUM, "log_c1", "log_c2")
+                        .build();
+        TablePath logTablePath = TablePath.of(DATABASE, "log_table_alter");
+        admin.createTable(logTablePath, logTable, false).get();
+
+        assertThatThrownBy(
+                        () ->
+                                paimonCatalog.getTable(
+                                        Identifier.create(DATABASE, logTablePath.getTableName())))
+                .isInstanceOf(Catalog.TableNotExistException.class);
+
+        // enable lake
+        TableChange.SetOption enableLake =
+                TableChange.set(ConfigOptions.TABLE_DATALAKE_ENABLED.key(), "true");
+        List<TableChange> changes = Collections.singletonList(enableLake);
+
+        admin.alterTable(logTablePath, changes, false).get();
+
+        Table enabledPaimonLogTable =
+                paimonCatalog.getTable(Identifier.create(DATABASE, logTablePath.getTableName()));
+
+        Map<String, String> updatedProperties = new HashMap<>();
+        updatedProperties.put(ConfigOptions.TABLE_DATALAKE_ENABLED.key(), "true");
+        TableDescriptor updatedLogTable = logTable.withProperties(updatedProperties);
+        // check the gotten log table
+        verifyPaimonTable(
+                enabledPaimonLogTable,
+                updatedLogTable,
+                RowType.of(
+                        new DataType[] {
+                            org.apache.paimon.types.DataTypes.INT(),
+                            org.apache.paimon.types.DataTypes.STRING(),
+                            // for __bucket, __offset, __timestamp
+                            org.apache.paimon.types.DataTypes.INT(),
+                            org.apache.paimon.types.DataTypes.BIGINT(),
+                            org.apache.paimon.types.DataTypes.TIMESTAMP_WITH_LOCAL_TIME_ZONE()
+                        },
+                        new String[] {
+                            "log_c1",
+                            "log_c2",
+                            BUCKET_COLUMN_NAME,
+                            OFFSET_COLUMN_NAME,
+                            TIMESTAMP_COLUMN_NAME
+                        }),
+                "log_c1,log_c2",
                 BUCKET_NUM);
     }
 
