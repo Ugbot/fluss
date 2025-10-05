@@ -88,7 +88,7 @@ import java.util.Set;
 import java.util.stream.Collectors;
 
 import static org.apache.fluss.config.ConfigOptions.DEFAULT_LISTENER_NAME;
-import static org.apache.fluss.server.testutils.RpcMessageTestUtils.newAlterTablePropertiesRequest;
+import static org.apache.fluss.server.testutils.RpcMessageTestUtils.newAlterTableRequest;
 import static org.apache.fluss.server.testutils.RpcMessageTestUtils.newCreateDatabaseRequest;
 import static org.apache.fluss.server.testutils.RpcMessageTestUtils.newCreateTableRequest;
 import static org.apache.fluss.server.testutils.RpcMessageTestUtils.newDatabaseExistsRequest;
@@ -294,8 +294,8 @@ class TableManagerITCase {
         List<String> resetProperties = new ArrayList<>();
 
         adminGateway
-                .alterTableProperties(
-                        newAlterTablePropertiesRequest(
+                .alterTable(
+                        newAlterTableRequest(
                                 tablePath,
                                 alterTableProperties(setProperties, resetProperties),
                                 false))
