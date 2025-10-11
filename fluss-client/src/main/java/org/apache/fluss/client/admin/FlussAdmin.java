@@ -24,6 +24,8 @@ import org.apache.fluss.client.metadata.MetadataUpdater;
 import org.apache.fluss.client.utils.ClientRpcMessageUtils;
 import org.apache.fluss.cluster.Cluster;
 import org.apache.fluss.cluster.ServerNode;
+import org.apache.fluss.config.cluster.AlterConfig;
+import org.apache.fluss.config.cluster.ConfigEntry;
 import org.apache.fluss.exception.LeaderNotAvailableException;
 import org.apache.fluss.metadata.DatabaseDescriptor;
 import org.apache.fluss.metadata.DatabaseInfo;
@@ -42,12 +44,14 @@ import org.apache.fluss.rpc.RpcClient;
 import org.apache.fluss.rpc.gateway.AdminGateway;
 import org.apache.fluss.rpc.gateway.AdminReadOnlyGateway;
 import org.apache.fluss.rpc.gateway.TabletServerGateway;
+import org.apache.fluss.rpc.messages.AlterClusterConfigsRequest;
 import org.apache.fluss.rpc.messages.AlterTableRequest;
 import org.apache.fluss.rpc.messages.CreateAclsRequest;
 import org.apache.fluss.rpc.messages.CreateDatabaseRequest;
 import org.apache.fluss.rpc.messages.CreateTableRequest;
 import org.apache.fluss.rpc.messages.DatabaseExistsRequest;
 import org.apache.fluss.rpc.messages.DatabaseExistsResponse;
+import org.apache.fluss.rpc.messages.DescribeClusterConfigsRequest;
 import org.apache.fluss.rpc.messages.DropAclsRequest;
 import org.apache.fluss.rpc.messages.DropDatabaseRequest;
 import org.apache.fluss.rpc.messages.DropTableRequest;
@@ -90,6 +94,7 @@ import static org.apache.fluss.client.utils.ClientRpcMessageUtils.makeCreatePart
 import static org.apache.fluss.client.utils.ClientRpcMessageUtils.makeDropPartitionRequest;
 import static org.apache.fluss.client.utils.ClientRpcMessageUtils.makeListOffsetsRequest;
 import static org.apache.fluss.client.utils.ClientRpcMessageUtils.makePbPartitionSpec;
+import static org.apache.fluss.client.utils.ClientRpcMessageUtils.toConfigEntries;
 import static org.apache.fluss.client.utils.MetadataUtils.sendMetadataRequestAndRebuildCluster;
 import static org.apache.fluss.rpc.util.CommonRpcMessageUtils.toAclBindings;
 import static org.apache.fluss.rpc.util.CommonRpcMessageUtils.toPbAclBindingFilters;
@@ -485,6 +490,49 @@ public class FlussAdmin implements Admin {
                             }
                         });
         return result;
+    }
+
+    @Override
+    public CompletableFuture<Collection<ConfigEntry>> describeClusterConfigs() {
+        CompletableFuture<Collection<ConfigEntry>> future = new CompletableFuture<>();
+        DescribeClusterConfigsRequest request = new DescribeClusterConfigsRequest();
+        gateway.describeClusterConfigs(request)
+                .whenComplete(
+                        (r, t) -> {
+                            if (t != null) {
+                                future.completeExceptionally(t);
+                            } else {
+                                future.complete(toConfigEntries(r.getConfigsList()));
+                            }
+                        });
+        return future;
+    }
+
+    @Override
+    public CompletableFuture<Void> alterClusterConfigs(Collection<AlterConfig> configs) {
+        CompletableFuture<Void> future = new CompletableFuture<>();
+
+        AlterClusterConfigsRequest request = new AlterClusterConfigsRequest();
+        for (AlterConfig alterConfig : configs) {
+            PbAlterConfig pBAlterConfig =
+                    request.addAlterConfig()
+                            .setConfigKey(alterConfig.key())
+                            .setOpType(alterConfig.opType().value);
+            if (alterConfig.value() != null) {
+                pBAlterConfig.setConfigValue(alterConfig.value());
+            }
+        }
+        gateway.alterClusterConfigs(request)
+                .whenComplete(
+                        (r, t) -> {
+                            if (t != null) {
+                                future.completeExceptionally(t);
+                            } else {
+                                future.complete(null);
+                            }
+                        });
+
+        return future;
     }
 
     @Override

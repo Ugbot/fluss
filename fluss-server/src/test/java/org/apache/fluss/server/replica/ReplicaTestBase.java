@@ -32,6 +32,7 @@ import org.apache.fluss.record.MemoryLogRecords;
 import org.apache.fluss.rpc.RpcClient;
 import org.apache.fluss.rpc.gateway.CoordinatorGateway;
 import org.apache.fluss.rpc.metrics.TestingClientMetricGroup;
+import org.apache.fluss.server.coordinator.LakeCatalogDynamicLoader;
 import org.apache.fluss.server.coordinator.MetadataManager;
 import org.apache.fluss.server.coordinator.TestCoordinatorGateway;
 import org.apache.fluss.server.entity.NotifyLeaderAndIsrData;
@@ -194,7 +195,12 @@ public class ReplicaTestBase {
                         conf, zkClient, logManager, TestingMetricGroups.TABLET_SERVER_METRICS);
         kvManager.startup();
 
-        serverMetadataCache = new TabletServerMetadataCache(new MetadataManager(zkClient, conf));
+        serverMetadataCache =
+                new TabletServerMetadataCache(
+                        new MetadataManager(
+                                zkClient,
+                                conf,
+                                new LakeCatalogDynamicLoader(new Configuration(), null, true)));
         initMetadataCache(serverMetadataCache);
 
         rpcClient = RpcClient.create(conf, TestingClientMetricGroup.newInstance(), false);

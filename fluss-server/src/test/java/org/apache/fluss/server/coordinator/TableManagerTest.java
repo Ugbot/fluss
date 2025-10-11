@@ -125,7 +125,11 @@ class TableManagerTest {
         TableBucketStateMachine tableBucketStateMachine =
                 new TableBucketStateMachine(
                         coordinatorContext, coordinatorRequestBatch, zookeeperClient);
-        MetadataManager metadataManager = new MetadataManager(zookeeperClient, new Configuration());
+        MetadataManager metadataManager =
+                new MetadataManager(
+                        zookeeperClient,
+                        new Configuration(),
+                        new LakeCatalogDynamicLoader(new Configuration(), null, true));
         tableManager =
                 new TableManager(
                         metadataManager,

@@ -21,9 +21,10 @@ import org.apache.fluss.cluster.Endpoint;
 import org.apache.fluss.cluster.ServerNode;
 import org.apache.fluss.cluster.ServerType;
 import org.apache.fluss.config.ConfigOptions;
+import org.apache.fluss.config.cluster.AlterConfigOpType;
+import org.apache.fluss.config.cluster.ConfigEntry;
 import org.apache.fluss.fs.FsPath;
 import org.apache.fluss.fs.token.ObtainedSecurityToken;
-import org.apache.fluss.metadata.AlterConfigOpType;
 import org.apache.fluss.metadata.PartitionSpec;
 import org.apache.fluss.metadata.PhysicalTablePath;
 import org.apache.fluss.metadata.ResolvedPartitionSpec;
@@ -85,6 +86,7 @@ import org.apache.fluss.rpc.messages.PbAdjustIsrRespForTable;
 import org.apache.fluss.rpc.messages.PbAlterConfig;
 import org.apache.fluss.rpc.messages.PbBucketMetadata;
 import org.apache.fluss.rpc.messages.PbCreateAclRespInfo;
+import org.apache.fluss.rpc.messages.PbDescribeConfig;
 import org.apache.fluss.rpc.messages.PbDropAclsFilterResult;
 import org.apache.fluss.rpc.messages.PbDropAclsMatchingAcl;
 import org.apache.fluss.rpc.messages.PbFetchLogReqForBucket;
@@ -1672,6 +1674,22 @@ public class ServerRpcMessageUtils {
     public static LakeTieringHeartbeatResponse makeLakeTieringHeartbeatResponse(
             int coordinatorEpoch) {
         return new LakeTieringHeartbeatResponse().setCoordinatorEpoch(coordinatorEpoch);
+    }
+
+    public static List<PbDescribeConfig> toPbConfigEntries(List<ConfigEntry> describeConfigs) {
+        return describeConfigs.stream()
+                .map(
+                        configEntry -> {
+                            PbDescribeConfig pbDescribeConfig =
+                                    new PbDescribeConfig()
+                                            .setConfigKey(configEntry.key())
+                                            .setConfigSource(configEntry.source().name());
+                            if (configEntry.value() != null) {
+                                pbDescribeConfig.setConfigValue(configEntry.value());
+                            }
+                            return pbDescribeConfig;
+                        })
+                .collect(Collectors.toList());
     }
 
     private static <T> Map<TableBucket, T> mergeResponse(
