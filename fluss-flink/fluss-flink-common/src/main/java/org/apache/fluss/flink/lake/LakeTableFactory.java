@@ -20,37 +20,101 @@ package org.apache.fluss.flink.lake;
 import org.apache.flink.table.catalog.ObjectIdentifier;
 import org.apache.flink.table.connector.source.DynamicTableSource;
 import org.apache.flink.table.factories.DynamicTableFactory;
+import org.apache.flink.table.factories.DynamicTableSourceFactory;
 import org.apache.flink.table.factories.FactoryUtil;
-import org.apache.paimon.flink.FlinkTableFactory;
+
+import java.util.Map;
 
 /** A factory to create {@link DynamicTableSource} for lake table. */
 public class LakeTableFactory {
+    private final LakeCatalog lakeCatalog;
 
-    // now, always assume is paimon, todo need to describe lake storage from
-    // to know which lake storage used
-    private final org.apache.paimon.flink.FlinkTableFactory paimonFlinkTableFactory;
-
-    public LakeTableFactory() {
-        paimonFlinkTableFactory = new FlinkTableFactory();
+    public LakeTableFactory(LakeCatalog lakeCatalog) {
+        this.lakeCatalog = lakeCatalog;
     }
 
     public DynamicTableSource createDynamicTableSource(
             DynamicTableFactory.Context context, String tableName) {
         ObjectIdentifier originIdentifier = context.getObjectIdentifier();
-        ObjectIdentifier paimonIdentifier =
+        ObjectIdentifier lakeIdentifier =
                 ObjectIdentifier.of(
                         originIdentifier.getCatalogName(),
                         originIdentifier.getDatabaseName(),
                         tableName);
+
+        // Determine the lake format from the table options
+        Map<String, String> tableOptions = context.getCatalogTable().getOptions();
+
+        // If not present, fallback to 'fluss.table.datalake.format' (set by Fluss)
+        String connector = tableOptions.get("connector");
+        if (connector == null) {
+            connector = tableOptions.get("fluss.table.datalake.format");
+        }
+
+        if (connector == null) {
+            // For Paimon system tables (like table_name$options), the table options are empty
+            // Default to Paimon for backward compatibility
+            connector = "paimon";
+        }
+
+        // For Iceberg and Paimon, pass the table name as-is to their factory.
+        // Metadata tables will be handled internally by their respective factories.
         DynamicTableFactory.Context newContext =
                 new FactoryUtil.DefaultDynamicTableContext(
-                        paimonIdentifier,
+                        lakeIdentifier,
                         context.getCatalogTable(),
                         context.getEnrichmentOptions(),
                         context.getConfiguration(),
                         context.getClassLoader(),
                         context.isTemporary());
 
-        return paimonFlinkTableFactory.createDynamicTableSource(newContext);
+        // Get the appropriate factory based on connector type
+        DynamicTableSourceFactory factory = getLakeTableFactory(connector, tableOptions);
+        return factory.createDynamicTableSource(newContext);
+    }
+
+    private DynamicTableSourceFactory getLakeTableFactory(
+            String connector, Map<String, String> tableOptions) {
+        if ("paimon".equalsIgnoreCase(connector)) {
+            return getPaimonFactory();
+        } else if ("iceberg".equalsIgnoreCase(connector)) {
+            return getIcebergFactory(tableOptions);
+        } else {
+            throw new UnsupportedOperationException(
+                    "Unsupported lake connector: "
+                            + connector
+                            + ". Only 'paimon' and 'iceberg' are supported.");
+        }
+    }
+
+    private DynamicTableSourceFactory getPaimonFactory() {
+        return new org.apache.paimon.flink.FlinkTableFactory();
+    }
+
+    private DynamicTableSourceFactory getIcebergFactory(Map<String, String> tableOptions) {
+        try {
+            // Get the Iceberg FlinkCatalog instance from LakeCatalog
+            org.apache.fluss.config.Configuration flussConfig =
+                    org.apache.fluss.config.Configuration.fromMap(tableOptions);
+
+            // Get catalog with explicit ICEBERG format
+            org.apache.flink.table.catalog.Catalog catalog =
+                    lakeCatalog.getLakeCatalog(
+                            flussConfig, org.apache.fluss.metadata.DataLakeFormat.ICEBERG);
+
+            // Create FlinkDynamicTableFactory with the catalog
+            Class<?> icebergFactoryClass =
+                    Class.forName("org.apache.iceberg.flink.FlinkDynamicTableFactory");
+            Class<?> flinkCatalogClass = Class.forName("org.apache.iceberg.flink.FlinkCatalog");
+
+            return (DynamicTableSourceFactory)
+                    icebergFactoryClass
+                            .getDeclaredConstructor(flinkCatalogClass)
+                            .newInstance(catalog);
+        } catch (Exception e) {
+            throw new RuntimeException(
+                    "Failed to create Iceberg table factory. Please ensure iceberg-flink-runtime is on the classpath.",
+                    e);
+        }
     }
 }
