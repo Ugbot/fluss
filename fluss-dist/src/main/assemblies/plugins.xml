@@ -39,7 +39,6 @@
                 <include>org.apache.flink:flink-shaded-hadoop-2-uber</include>
             </includes>
         </dependencySet>
-
     </dependencySets>
 
     <files>
