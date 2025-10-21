@@ -63,7 +63,6 @@ services:
 
   coordinator-server:
     image: fluss/fluss:$FLUSS_DOCKER_VERSION$
-    command: coordinatorServer
     depends_on:
       - zookeeper
     environment:
@@ -401,8 +400,7 @@ CREATE TABLE datalake_enriched_orders (
     `cust_phone` STRING,
     `cust_acctbal` DECIMAL(15, 2),
     `cust_mktsegment` STRING,
-    `nation_name` STRING,
-    PRIMARY KEY (`order_key`) NOT ENFORCED
+    `nation_name` STRING
 ) WITH (
     'table.datalake.enabled' = 'true',
     'table.datalake.freshness' = '30s'
@@ -429,11 +427,14 @@ SELECT o.order_key,
        c.acctbal,
        c.mktsegment,
        n.name
-FROM fluss_order o
-       LEFT JOIN fluss_customer FOR SYSTEM_TIME AS OF `o`.`ptime` AS `c`
-                 ON o.cust_key = c.cust_key
-       LEFT JOIN fluss_nation FOR SYSTEM_TIME AS OF `o`.`ptime` AS `n`
-                 ON c.nation_key = n.nation_key;
+FROM (
+    SELECT *, PROCTIME() as ptime
+    FROM `default_catalog`.`default_database`.source_order
+) o
+LEFT JOIN fluss_customer FOR SYSTEM_TIME AS OF o.ptime AS c
+    ON o.cust_key = c.cust_key
+LEFT JOIN fluss_nation FOR SYSTEM_TIME AS OF o.ptime AS n
+    ON c.nation_key = n.nation_key;
 ```
 
 ### Real-Time Analytics on Fluss datalake-enabled Tables
@@ -459,11 +460,12 @@ SELECT snapshot_id, operation FROM datalake_enriched_orders$lake$snapshots;
 
 **Sample Output:**
 ```shell
-+-------------+--------------------+
-| snapshot_id |          operation |
-+-------------+--------------------+
-|           1 |             append |
-+-------------+--------------------+
++---------------------+-----------+
+|         snapshot_id | operation |
++---------------------+-----------+
+| 7792523713868625335 |    append |
+| 7960217942125627573 |    append |
++---------------------+-----------+
 ```
 **Note:** Make sure to wait for the configured `datalake.freshness` (~30s) to complete before querying the snapshots, otherwise the result will be empty.
 
@@ -474,11 +476,11 @@ SELECT sum(total_price) as sum_price FROM datalake_enriched_orders$lake;
 ```
 **Sample Output:**
 ```shell
-+------------+
-|  sum_price |
-+------------+
-| 1669519.92 |
-+------------+
++-----------+
+| sum_price |
++-----------+
+| 432880.93 |
++-----------+
 ```
 
 To achieve results with sub-second data freshness, you can query the table directly, which seamlessly unifies data from both Fluss and Iceberg:
@@ -490,23 +492,23 @@ SELECT sum(total_price) as sum_price FROM datalake_enriched_orders;
 
 **Sample Output:**
 ```shell
-+------------+
-|  sum_price |
-+------------+
-| 1777908.36 |
-+------------+
++-----------+
+| sum_price |
++-----------+
+| 558660.03 |
++-----------+
 ```
 
 You can execute the real-time analytics query multiple times, and the results will vary with each run as new data is continuously written to Fluss in real-time.
 
 Finally, you can use the following command to view the files stored in Iceberg:
 ```shell
-docker compose exec taskmanager tree /tmp/iceberg/fluss.db
+docker compose exec taskmanager tree /tmp/iceberg/fluss
 ```
 
 **Sample Output:**
 ```shell
-/tmp/iceberg/fluss.db
+/tmp/iceberg/fluss
 └── datalake_enriched_orders
     ├── data
     │   └── 00000-0-abc123.parquet
