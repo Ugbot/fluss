@@ -36,6 +36,7 @@ import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.table.api.EnvironmentSettings;
 import org.apache.flink.table.api.ExplainDetail;
 import org.apache.flink.table.api.TableEnvironment;
+import org.apache.flink.table.api.TableResult;
 import org.apache.flink.table.api.ValidationException;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
 import org.apache.flink.table.api.config.ExecutionConfigOptions;
@@ -1093,6 +1094,133 @@ abstract class FlinkTableSinkITCase extends AbstractTestBase {
         public InsertAndExpectValues(List<String> insertValues, List<String> expectedRows) {
             this.insertValues = insertValues;
             this.expectedRows = expectedRows;
+        }
+    }
+
+    @Test
+    void testDeleteBehaviorDisabledForDeleteStmt() {
+        String tableName = "delete_behavior_disable_table";
+        tBatchEnv.executeSql(
+                String.format(
+                        "create table %s ("
+                                + " a int not null,"
+                                + " b bigint null, "
+                                + " c string null, "
+                                + " primary key (a) not enforced"
+                                + ") with ('table.delete.behavior' = 'disable')",
+                        tableName));
+
+        TablePath tablePath = TablePath.of(DEFAULT_DB, tableName);
+        assertThatThrownBy(
+                        () ->
+                                tBatchEnv
+                                        .executeSql("DELETE FROM " + tableName + " WHERE a = 1")
+                                        .await())
+                .isInstanceOf(UnsupportedOperationException.class)
+                .hasMessage(
+                        String.format(
+                                "Table %s has delete behavior set to 'disable' which does not support DELETE statements.",
+                                tablePath));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"ignore", "disable", "allow"})
+    void testDeleteBehaviorForInsertStmt(String deleteBehavior) throws Exception {
+        String tableName = "delete_behavior_ignore_table";
+        tEnv.executeSql(
+                String.format(
+                        "create table %s ("
+                                + " a int not null primary key not enforced,"
+                                + " b string"
+                                + ") with ('table.delete.behavior' = '%s')",
+                        tableName, deleteBehavior));
+
+        // 1. Verify the changelog mode of the table
+        String changelogModePlan =
+                tEnv.explainSql("SELECT * FROM " + tableName, ExplainDetail.CHANGELOG_MODE);
+        if (deleteBehavior.equals("allow")) {
+            assertThat(changelogModePlan)
+                    .contains(
+                            "TableSourceScan(table=[[testcatalog, defaultdb, delete_behavior_ignore_table]], fields=[a, b], "
+                                    + "changelogMode=[I,UB,UA,D])");
+        } else {
+            // For 'ignore' and 'disable', delete operations are not emitted in the changelog
+            assertThat(changelogModePlan)
+                    .contains(
+                            "TableSourceScan(table=[[testcatalog, defaultdb, delete_behavior_ignore_table]], fields=[a, b], "
+                                    + "changelogMode=[I,UB,UA])");
+        }
+
+        // 2. Write data including delete operations and verify the final table state
+
+        // Insert some data
+        tEnv.executeSql(
+                        String.format(
+                                "INSERT INTO %s VALUES (1, 'test1'), (2, 'test2'), (3, 'test3')",
+                                tableName))
+                .await();
+
+        // Create a changelog stream with deletes that should be ignored
+        org.apache.flink.table.api.Table changelogData =
+                tEnv.fromChangelogStream(
+                        env.fromCollection(
+                                Arrays.asList(
+                                        Row.ofKind(RowKind.INSERT, 4, "test4"),
+                                        Row.ofKind(RowKind.DELETE, 1, "test1"), // Should be ignored
+                                        Row.ofKind(RowKind.UPDATE_AFTER, 2, "updated_test2"))));
+        tEnv.createTemporaryView("changelog_source", changelogData);
+
+        // Disable upsert materialization to avoid generate SinkMaterializer operator,
+        // because we want to see the original delete messages in sink
+        tEnv.getConfig().set("table.exec.sink.upsert-materialize", "NONE");
+        String plan =
+                tEnv.explainSql(
+                        String.format("INSERT INTO %s SELECT * FROM changelog_source", tableName));
+        assertThat(plan).doesNotContain("upsertMaterialize=[true]");
+
+        // Insert changelog data
+        TableResult tableResult =
+                tEnv.executeSql(
+                        String.format("INSERT INTO %s SELECT * FROM changelog_source", tableName));
+
+        // 3. Verify the final table state based on delete behavior
+        if (deleteBehavior.equals("disable")) {
+            // For 'disable', the delete operation is not supported, so we expect an exception
+            assertThatThrownBy(tableResult::await)
+                    .hasStackTraceContaining(
+                            "DeletionDisabledException: Delete operations are disabled for this table."
+                                    + " The table.delete.behavior is set to 'disable'.");
+        } else {
+            // For 'ignore', the delete operation is ignored, so we just wait for the insert and
+            // update to be applied
+            tableResult.await();
+            CloseableIterator<Row> rowIter =
+                    tEnv.executeSql(String.format("select * from %s", tableName)).collect();
+
+            final List<String> expectedRows;
+            if (deleteBehavior.equals("ignore")) {
+                // Row with a=1 should still exist (delete was ignored)
+                expectedRows =
+                        Arrays.asList(
+                                "+I[1, test1]", // Delete was ignored
+                                "+I[2, test2]",
+                                "-U[2, test2]",
+                                "+U[2, updated_test2]",
+                                "+I[3, test3]",
+                                "+I[4, test4]");
+            } else {
+                // For 'allow', the delete operation should be reflected in the final state
+                expectedRows =
+                        Arrays.asList(
+                                "+I[1, test1]",
+                                "-D[1, test1]", // a=1 was deleted
+                                "+I[2, test2]",
+                                "-U[2, test2]",
+                                "+U[2, updated_test2]",
+                                "+I[3, test3]",
+                                "+I[4, test4]");
+            }
+            assertResultsIgnoreOrder(rowIter, expectedRows, true);
         }
     }
 }
