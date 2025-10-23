@@ -21,7 +21,6 @@
 ##
 ## Variables with defaults (if not overwritten by environment)
 ##
-SKIP_GPG=${SKIP_GPG:-false}
 MVN=${MVN:-mvn}
 
 if [ -z "${RELEASE_VERSION:-}" ]; then
@@ -49,38 +48,33 @@ if [ "$(uname)" == "Darwin" ]; then
     export COPYFILE_DISABLE=1
 else
     SHASUM="sha512sum"
+    TAR_OPTIONS=""
 fi
+
+###########################
 
 cd ..
 
 FLUSS_DIR=`pwd`
-RELEASE_DIR=${FLUSS_DIR}/tools/release
-mkdir -p ${RELEASE_DIR}
+HELM_RELEASE_DIR=${FLUSS_DIR}/tools/release/helm-chart/${RELEASE_VERSION}-rc${RELEASE_CANDIDATE}
 
-###########################
+echo "Creating helm chart package"
 
-# build maven package, create Fluss distribution, generate signature
-make_binary_release() {
-  echo "Creating binary release"
-  dir_name="fluss-$RELEASE_VERSION-bin"
+mkdir -p ${HELM_RELEASE_DIR}
 
-  # enable release profile here (to check for the maven version)
-  $MVN clean package -Prelease -am -Dgpg.skip -Dcheckstyle.skip=true -DskipTests
+cd ${HELM_RELEASE_DIR}
 
-  cd fluss-dist/target/fluss-${RELEASE_VERSION}-bin
-  ${FLUSS_DIR}/tools/releasing/collect_license_files.sh ./fluss-${RELEASE_VERSION} ./fluss-${RELEASE_VERSION}
-  tar $TAR_OPTIONS -czf "${dir_name}.tgz" fluss-*
+# create helm package tgz for fluss
+helm package ${FLUSS_DIR}/docker/helm
+# create prov file for helm package
+helm gpg sign fluss-${RELEASE_VERSION}.tgz
 
-  cp fluss-*.tgz ${RELEASE_DIR}
-  cd ${RELEASE_DIR}
+# create sha512 and asc files
+$SHASUM fluss-${RELEASE_VERSION}.tgz > fluss-${RELEASE_VERSION}.tgz.sha512
+$SHASUM fluss-${RELEASE_VERSION}.tgz.prov > fluss-${RELEASE_VERSION}.tgz.prov.sha512
+gpg --armor --detach-sig ${HELM_RELEASE_DIR}/fluss-$RELEASE_VERSION.tgz
+gpg --armor --detach-sig ${HELM_RELEASE_DIR}/fluss-$RELEASE_VERSION.tgz.prov
 
-  # Sign sha the tgz
-  if [ "$SKIP_GPG" == "false" ] ; then
-    gpg --armor --detach-sig "${dir_name}.tgz"
-  fi
-  $SHASUM "${dir_name}.tgz" > "${dir_name}.tgz.sha512"
-
-  cd ${FLUSS_DIR}
-}
-
-make_binary_release
+# create index.yaml
+cd ..
+helm repo index .

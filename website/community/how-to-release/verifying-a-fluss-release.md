@@ -1,9 +1,9 @@
 ---
-title: Verifying a Fluss Shaded Release
-sidebar_position: 5
+title: Verifying a Fluss Release
+sidebar_position: 3
 ---
 
-# Verifying a Fluss Shaded Release
+# Verifying a Fluss Release
 
 ## Validating distributions
 
@@ -33,7 +33,7 @@ for i in *.tgz; do echo $i; gpg --verify $i.asc $i; done
 If the verification is successful, you will see a message like this:
 
 ```
-fluss-shaded-1.0-incubating-src.tgz
+fluss-0.8.0-incubating-src.tgz
 gpg: Signature made Mon 01 Jan 2024 12:00:00 PM UTC
 gpg:                using RSA key E2C45417BED5C104154F341085BACB5AEFAE3202
 gpg: Good signature from "Jark Wu (CODE SIGNING KEY) <jark@apache.org>"
@@ -50,13 +50,13 @@ for i in *.tgz; do echo $i; sha512sum --check  $i.sha512*; done
 If the verification is successful, you will see a message like this:
 
 ```
-fluss-shaded-1.0-incubating-src.tgz
-fluss-shaded-1.0-incubating-src.tgz: OK
+fluss-0.8.0-incubating-src.tgz
+fluss-0.8.0-incubating-src.tgz: OK
 ```
 
 ## Verifying build
 
-Unzip the source release archive (`fluss-shaded-1.0-incubating-src.tgz`), and verify that the source release builds correctly (may with different Java version and Maven version), you can run the following commands:
+Unzip the source release archive (`fluss-0.8.0-incubating-src.tgz`), and verify that the source release builds correctly (may with different Java version and Maven version), you can run the following commands:
 
 ```bash
 mvn clean package -DskipTests
@@ -80,7 +80,7 @@ Update the root `pom.xml` of the maven project (like the apache/fluss project) t
 ```xml
 <repositories>
     <repository>
-        <id>fluss-shaded-staging</id>
+        <id>fluss-staging</id>
         <name>Temporary Staging Repo</name>
         <url>https://repository.apache.org/content/repositories/orgapachefluss-${STAGED_REPO_ID}/</url>
     </repository>
@@ -88,6 +88,23 @@ Update the root `pom.xml` of the maven project (like the apache/fluss project) t
 ```
 
 And then you can use the staged maven artifacts as dependencies in the project and verify the new dependencies work.
+
+
+## Testing Features
+
+For any user-facing feature included in a release, we aim to ensure it is functional, usable, and well-documented for the Fluss community.
+
+To support this, release managers can create and assign cross-team testing issues that outline key scenarios to validate. These issues are open to—and encouraged for—all community members to pick up and help verify.
+
+A great way to get started is by walking through the official Quickstart Guide: https://fluss.apache.org/docs/quickstart/flink/ (please switch to the documentation version currently under release).
+
+
+## Incubator Release Checklist
+
+The ASF Incubator has also prepared a release checklist, which you can refer to when verifying the release:
+
+https://cwiki.apache.org/confluence/display/INCUBATOR/Incubator+Release+Checklist
+
 
 ## Voting
 
