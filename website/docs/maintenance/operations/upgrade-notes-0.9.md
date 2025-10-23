@@ -1,6 +1,6 @@
 ---
 title: Upgrade Notes
-sidebar_class_name: hidden
+sidebar_position: 3
 ---
 
 # Upgrade Notes from v0.8 to v0.9

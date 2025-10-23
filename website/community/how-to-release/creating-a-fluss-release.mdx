@@ -113,8 +113,8 @@ Create a release branch from the `main` branch in the cloned Fluss repository. T
 
 ```bash
 $ git checkout main
-$ git checkout -b release-${RELEASE_VERSION_SHORT}
-$ git push origin release-${RELEASE_VERSION_SHORT}
+$ git checkout -b release-${SHORT_RELEASE_VERSION}
+$ git push origin release-${SHORT_RELEASE_VERSION}
 ```
 
 Update the version in the Helm Chart in: 
@@ -128,8 +128,8 @@ For example, if you are releaseing a major version `0.8.0`, you should replace a
 And commit/push the version bump:
 
 ```bash
-$ git commit -m "Bump version to x.y.z" docker/helm/Chart.yaml docker/helm/values.yaml docker/helm/README.md
-$ git push origin release-${RELEASE_VERSION_SHORT}
+$ git commit -m "[helm] Bump version to ${RELEASE_VERSION}" docker/helm/Chart.yaml docker/helm/values.yaml docker/helm/README.md
+$ git push origin release-${SHORT_RELEASE_VERSION}
 ```
 
   </TabItem>
@@ -153,7 +153,7 @@ And commit/push the version bump:
 
 ```bash
 $ git commit -m "Bump version to x.y.z" docker/helm/Chart.yaml docker/helm/values.yaml docker/helm/README.md
-$ git push origin release-${RELEASE_VERSION_SHORT}
+$ git push origin release-${SHORT_RELEASE_VERSION}
 ```
 
   </TabItem>
@@ -171,7 +171,7 @@ After creating the release branch, you should bump the version of the main branc
 ```bash
 $ cd tools
 tools $ git checkout main
-tools $ OLD_VERSION=$CURRENT_SNAPSHOT_VERSION NEW_VERSION=$NEXT_VERSION releasing/update_branch_version.sh
+tools $ OLD_VERSION=$CURRENT_SNAPSHOT_VERSION NEW_VERSION=$NEXT_SNAPSHOT_VERSION releasing/update_branch_version.sh
 tools $ git push origin main
 ```
 
@@ -191,7 +191,7 @@ Additionally, for the upgrade notes page of the version currently being released
 Commit the documentation changes, and push to the official repository.
 
 ```bash
-$ git commit -m "[docs] Create upgrade notes for $NEXT_VERSION"
+$ git commit -m "[docs] Create upgrade notes for $NEXT_SHORT_VERSION" .
 $ git push origin main
 ```
   </TabItem>
@@ -254,7 +254,7 @@ TAG="v${RELEASE_VERSION}-rc${RC_NUM}"
 Now, checkout from the release branch, and create a release candidate local branch:
 
 ```bash
-$ git checkout release-${RELEASE_VERSION_SHORT}
+$ git checkout release-${SHORT_RELEASE_VERSION}
 $ cd tools
 tools $ RELEASE_CANDIDATE=$RC_NUM  RELEASE_VERSION=$RELEASE_VERSION releasing/create_release_branch.sh
 ```
