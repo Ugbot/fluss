@@ -162,10 +162,12 @@ $ git push origin release-${SHORT_RELEASE_VERSION}
 
 
 
-### 8. Bump version for the main branch
+### 8. Updates for the main branch
 
 <Tabs groupId="release-tabs">
   <TabItem value="major" label="Major release" default>
+**(1) Bump version for the main branch**
+
 After creating the release branch, you should bump the version of the main branch to the next version. This is important to ensure that the next development cycle starts with the correct version.
 
 ```bash
@@ -174,6 +176,8 @@ tools $ git checkout main
 tools $ OLD_VERSION=$CURRENT_SNAPSHOT_VERSION NEW_VERSION=$NEXT_SNAPSHOT_VERSION releasing/update_branch_version.sh
 tools $ git push origin main
 ```
+
+**(2) Create Upgrade Notes for the next version**
 
 Besides, in the `main` branch, create a new "Upgrade Notes" markdown file for the next version. The file name should be `upgrade-notes-x.y.md` (replace the `x.y` to the next version number, e.g., `0.9`) under path `website/docs/maintenance/operations/` with following initial content.
 
@@ -194,6 +198,29 @@ Commit the documentation changes, and push to the official repository.
 $ git commit -m "[docs] Create upgrade notes for $NEXT_SHORT_VERSION" .
 $ git push origin main
 ```
+
+**(3) Add version item in fluss-versions.json**
+
+Next, add a new version item for the current release version in the `website/fluss-versions.json` file on the `main` branch. The new version item should have the following fields and values (releasing `0.8.0` as an example):
+
+```json
+{
+  "versionName": "version-0.8",
+  "fullVersion": "0.8.0-incubating",
+  "shortVersion": "0.8",
+  "dockerVersion": "0.8.0-incubating-rc1",
+  "released": false
+}
+```
+
+Additionally, update the `fullVersion`, `shortVersion`, and `dockerVersion` fields for the `next` version entry to reflect the next release version.
+
+Commit the documentation changes, and push to the official repository.
+
+```bash
+$ git commit -m "[docs] Add version item for $RELEASE_VERSION in fluss-versions.json
+$ git push origin main
+```
   </TabItem>
 
   <TabItem value="bugfix" label="Bugfix release">
@@ -208,7 +235,26 @@ If you're creating a new bugfix release, you can skip this step.
 
 Create a pull request for the release announcement blog for this version, see the [previous release blogs](https://fluss.apache.org/blog/tags/releases/).
 
+We usually include the commit number and the names of all contributors in the announcement blog post. Use the following command to get the commit number and the list of contributors:
+
+
+```bash
+# first line is required to make sort first with uppercase and then lower
+export LC_ALL=C
+export FLUSS_PREVIOUS_RELEASE_BRANCH={previousReleaseBranch}
+export FLUSS_CURRENT_RELEASE_BRANCH={currentReleaseBranch}
+# e.g.
+# export FLUSS_PREVIOUS_RELEASE_BRANCH=release-0.7
+# export FLUSS_CURRENT_RELEASE_BRANCH=release-0.8
+
+# get contributor list
+git log $FLUSS_PREVIOUS_RELEASE_BRANCH..$FLUSS_CURRENT_RELEASE_BRANCH --pretty=format:"%an" | sort -u | paste -sd "," - | sed 's/,/, /g'
+# get total number of commits
+git log $FLUSS_PREVIOUS_RELEASE_BRANCH...$FLUSS_CURRENT_RELEASE_BRANCH --pretty=oneline | wc -l
+```
+
 Besides, Create a pull request to add download links for the release on the Download page `website/src/pages/downloads.md`.
+
 
   </TabItem>
 
@@ -295,21 +341,31 @@ Then, we create the Helm Chart packages:
 tools $ RELEASE_VERSION=$RELEASE_VERSION RELEASE_CANDIDATE=$RC_NUM releasing/create_helm_packages.sh
 ```
 
-This command creates a helm tgz and prov files under `tools/releasing/release/helm-chart` directory like following:
+Now, we should already created the source distribution, binary distribution, and Helm Chart packages for the release candidate.
+Run the `tree releasing/release/` command under the `tools` directory to verify the created files.
+
+Example output for release version `0.8.0-incubating` and RC number `1`:
 
 ```bash
-tools $ tree releasing/release/helm-chart
-releasing/release/helm-chart
-├── 0.8.0-incubating-rc1
-│     ├── fluss-0.8.0-incubating.tgz
-│     ├── fluss-0.8.0-incubating.tgz.asc
-│     ├── fluss-0.8.0-incubating.tgz.prov
-│     ├── fluss-0.8.0-incubating.tgz.prov.asc
-│     ├── fluss-0.8.0-incubating.tgz.prov.sha512
-│     └── fluss-0.8.0-incubating.tgz.sha512
-└── index.yaml
+tools $ tree releasing/release
+releasing/release
+├── fluss-0.8.0-incubating-bin.tgz
+├── fluss-0.8.0-incubating-bin.tgz.asc
+├── fluss-0.8.0-incubating-bin.tgz.sha512
+├── fluss-0.8.0-incubating-src.tgz
+├── fluss-0.8.0-incubating-src.tgz.asc
+├── fluss-0.8.0-incubating-src.tgz.sha512
+└── helm-chart
+    ├── 0.8.0-incubating-rc1
+    │     ├── fluss-0.8.0-incubating.tgz
+    │     ├── fluss-0.8.0-incubating.tgz.asc
+    │     ├── fluss-0.8.0-incubating.tgz.prov
+    │     ├── fluss-0.8.0-incubating.tgz.prov.asc
+    │     ├── fluss-0.8.0-incubating.tgz.prov.sha512
+    │     └── fluss-0.8.0-incubating.tgz.sha512
+    └── index.yaml
 
-2 directories, 7 files
+3 directories, 13 files
 ```
 
 
@@ -335,7 +391,7 @@ tools/target $ mkdir fluss/fluss-${RELEASE_VERSION}-rc${RC_NUM}
 (3) Copy fluss source and binary distributions, hashes, and GPG signature:
 
 ```bash
-tools/target $ mv ../release/fluss-* fluss/fluss-${RELEASE_VERSION}-rc${RC_NUM}
+tools/target $ mv ../releasing/release/fluss-* fluss/fluss-${RELEASE_VERSION}-rc${RC_NUM}
 ```
 
 (4) Make a directory for the new helm packages:
@@ -347,7 +403,7 @@ tools/target $ mkdir -p fluss/helm-chart
 (5) Copy fluss helm packages, hashes, and GPG signature:
 
 ```bash
-tools/target $ mv ../release/helm-chart/* fluss/helm-chart
+tools/target $ mv ../releasing/release/helm-chart/* fluss/helm-chart
 ```
 
 (6) Add and commit all the files.
@@ -355,42 +411,14 @@ tools/target $ mv ../release/helm-chart/* fluss/helm-chart
 ```bash
 tools/target $ cd fluss
 tools/target/fluss $ svn add fluss-${RELEASE_VERSION}-rc${RC_NUM}
+tools/target/fluss $ svn add helm-chart
 tools/target/fluss $ svn commit -m "Add fluss-${RELEASE_VERSION}-rc${RC_NUM}"
 ```
 
 (7) Verify the files are present: https://dist.apache.org/repos/dist/dev/incubator/fluss/
 
 
-### 6. Stage Docker images
-
-:::note
-Make sure that you are authenticated with your Docker ID, and that your Docker ID has access to `apache/fluss`: `docker login -u <username>`. If you do not have access, you should seek help via the dev mailing list.
-:::
-
-Next, we need to build and push Docker images for the release candidates. This will enable users to easily test the new functionality using the Quickstart guide in the [Fluss documentation](https://fluss.apache.org/docs/quickstart/flink/) improving accessibility and feedback during the release validation phase.
-
-From the root directory of the source code, run the following commands to build and push the fluss Docker image.
-
-```bash
-$ rm -rf docker/fluss/build-target/
-$ mkdir docker/fluss/build-target/ 
-$ cp -r build-target/* docker/fluss/build-target
-
-$ cd docker/fluss
-docker/fluss $ docker buildx build --push --platform linux/arm64/v8,linux/amd64 --tag apache/fluss:${RELEASE_VERSION}-rc${RC_NUM} .
-```
-
-Then, run the following commands to build and push the flink — a customized Apache Flink image that includes all necessary libraries and JARs for the Fluss Quickstart guide:
-
-```bash
-docker/fluss $ cd ../quickstart-flink
-docker/quickstart-flink $ ./prepare_build.sh
-docker/quickstart-flink $ docker buildx build --push --platform linux/arm64/v8,linux/amd64 --tag apache/fluss-quickstart-flink:1.20-${RELEASE_VERSION}-rc${RC_NUM} .
-```
-
-Verify the RC images are present: https://hub.docker.com/r/apache/fluss/tags
-
-### 7. Stage maven artifacts
+### 6. Stage maven artifacts
 
 
 Next, we stage the maven artifacts:
@@ -405,10 +433,47 @@ Close the staging repository on Apache Nexus. When prompted for a description, e
 
 ![](../assets/nexus-staging.png)
 
+### 7. Stage Docker images
+
+:::note
+Make sure that you are authenticated with your Docker ID, and that your Docker ID has access to `apache/fluss`: `docker login -u <username>`. If you do not have access, you should seek help via the dev mailing list.
+
+If you can't login Docker ID in your region because of network issues, you can find a cloud machine that can access Docker Hub, and perform the following steps there.
+:::
+
+Next, we need to build and push Docker images for the release candidates. This will enable users to easily test the new functionality using the Quickstart guide in the [Fluss documentation](https://fluss.apache.org/docs/quickstart/flink/) improving accessibility and feedback during the release validation phase.
+
+From the root directory of the source code, run the following commands to build and push the fluss Docker image.
+
+```bash
+$ rm -rf docker/fluss/build-target/
+$ mkdir docker/fluss/build-target/
+$ cp -r build-target/* docker/fluss/build-target
+
+$ cd docker/fluss
+docker/fluss $ docker buildx build --push --platform linux/arm64/v8,linux/amd64 --tag apache/fluss:${RELEASE_VERSION}-rc${RC_NUM} .
+```
+
+Then, run the following commands to build and push the flink — a customized Apache Flink image that includes all necessary libraries and JARs for the Fluss Quickstart guide:
+
+```bash
+docker/fluss $ cd ../quickstart-flink
+docker/quickstart-flink $ ./prepare_build.sh
+docker/quickstart-flink $ docker buildx build --push --platform linux/arm64/v8,linux/amd64 --tag apache/fluss-quickstart-flink:1.20-${RELEASE_VERSION}-rc${RC_NUM} .
+```
+
+Verify the RC images are present:
+- https://hub.docker.com/r/apache/fluss/tags
+- https://hub.docker.com/r/apache/fluss-quickstart-flink/tags
+
+Then, update the `dockerVersion` field for the current release RC version in the `website/fluss-versions.json` file on the `main` branch to the value of `${RELEASE_VERSION}_RC${RC_NUM}` (which includes the RC suffix, e.g., `0.8.0-incubating-rc1`). This update should be committed and pushed to the `main` branch.
+
+This ensures that the **Quickstart guide** in the documentation references the correct Docker image for the release candidate. This will help developers to easily test the new release candidate using the Quickstart guide.
+
 ### 8. Push the RC tag
 
 ```bash
-git push origin refs/tags/{$TAG}
+git push origin $TAG
 ```
 
 -------------
@@ -419,7 +484,7 @@ git push origin refs/tags/{$TAG}
 - Maven artifacts deployed to the staging repository of [repository.apache.org](https://repository.apache.org/content/repositories/)
 - RC Docker images pushed to [DockerHub](https://hub.docker.com/r/apache/fluss/tags)
 - RC tag pushed to the [official repository](https://github.com/apache/fluss/tags)
-- TODO: update version.txt in release branch for the RC docker image
+- Updated `dockerVersion` in `fluss-versions.json` on `main` branch
 
 
 ## Vote on the release candidate
@@ -617,6 +682,16 @@ Code changes should be proposed as standard pull requests to the `main` branch a
 
 Once all issues have been resolved, you should go back and build a new release candidate with these changes.
 
+Before build a new release candidate, remove the old release candidates from https://dist.apache.org/repos/dist/dev/incubator/fluss using Subversion.
+
+```bash
+svn checkout https://dist.apache.org/repos/dist/dev/incubator/fluss --depth=immediates
+cd fluss
+svn remove fluss-${RELEASE_VERSION}-rc*
+svn remove helm-chart
+svn commit -m "Remove old release candidates for Apache Fluss ${RELEASE_VERSION}"
+```
+
 **Checklist to proceed to the next step**
 - Issues identified during vote have been resolved, with fixes committed to the release branch.
 
@@ -680,7 +755,22 @@ docker tag apache/fluss:${RELEASE_VERSION}_RC${RC_NUM} apache/fluss:${RELEASE_VE
 docker push apache/fluss:${RELEASE_VERSION}
 ```
 
-### 6. Mark the Milestone as released in GitHub
+### 6. Update `fluss-versions.json`
+
+Update the `released` field to `true` and `dockerVersion` to `$RELEASE_VERSION` (without the RC number) for the current release version in the `website/fluss-versions.json` file on the `main` branch. This update should be committed and pushed to the `main` branch.
+This will refresh the documentation website to reflect that the new version has been officially released.
+
+```json
+{
+  "versionName": "version-0.8",
+  "fullVersion": "0.8.0-incubating",
+  "shortVersion": "0.8",
+  "dockerVersion": "0.8.0-incubating-rc1", // ==> "0.8.0-incubating"
+  "released": false // ==> true
+}
+```
+
+### 7. Mark the Milestone as released in GitHub
 
 In [GitHub Milestones](https://github.com/apache/fluss/milestones), mark the current release milestone as close.
 
