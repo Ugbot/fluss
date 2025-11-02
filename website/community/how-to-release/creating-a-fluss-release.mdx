@@ -118,9 +118,9 @@ $ git push origin release-${SHORT_RELEASE_VERSION}
 ```
 
 Update the version in the Helm Chart in:
-- `docker/helm/Chart.yaml`
-- `docker/helm/values.yaml`
-- `docker/helm/README.md`
+- `helm/Chart.yaml`
+- `helm/values.yaml`
+- `helm/README.md`
 
 For example, if you are releasing a major version `0.8.0-incubating`, you should replace all the previous version `0.7.0-incubating` to the release version `0.8.0-incubating`.
 
@@ -128,7 +128,7 @@ For example, if you are releasing a major version `0.8.0-incubating`, you should
 And commit/push the version bump:
 
 ```bash
-$ git commit -m "[helm] Bump helm version to x.y.z" docker/helm/Chart.yaml docker/helm/values.yaml docker/helm/README.md
+$ git commit -m "[helm] Bump helm version to x.y.z" helm/Chart.yaml helm/values.yaml helm/README.md
 $ git push origin release-${SHORT_RELEASE_VERSION}
 ```
 
@@ -142,9 +142,9 @@ $ git checkout release-$SHORT_RELEASE_VERSION
 ```
 
 Update the version in the Helm Chart in:
-- `docker/helm/Chart.yaml`
-- `docker/helm/values.yaml`
-- `docker/helm/README.md`
+- `helm/Chart.yaml`
+- `helm/values.yaml`
+- `helm/README.md`
 
 For example, if you are releasing a bugfix version `0.8.1-incubating`, you should replace all the previous version `0.8.0-incubating` to the new version `0.8.1-incubating`.
 
@@ -152,7 +152,7 @@ For example, if you are releasing a bugfix version `0.8.1-incubating`, you shoul
 And commit/push the version bump:
 
 ```bash
-$ git commit -m "[helm] Bump helm version to x.y.z" docker/helm/Chart.yaml docker/helm/values.yaml docker/helm/README.md
+$ git commit -m "[helm] Bump helm version to x.y.z" helm/Chart.yaml helm/values.yaml helm/README.md
 $ git push origin release-${SHORT_RELEASE_VERSION}
 ```
 
@@ -225,16 +225,16 @@ $ git push origin main
 **(4) Upgrade Helm Charts version on main branch**
 
 Update the version in the Helm Chart in:
-- `docker/helm/Chart.yaml`
-- `docker/helm/values.yaml`
-- `docker/helm/README.md`
+- `helm/Chart.yaml`
+- `helm/values.yaml`
+- `helm/README.md`
 
 For example, if the next major version is `0.9.0-incubating`, you should replace all the previous version `0.8.0-incubating` to the next release version `0.9.0-incubating`.
 
 And commit/push the version bump:
 
 ```bash
-$ git commit -m "[helm] Bump helm version to x.y.z" docker/helm/Chart.yaml docker/helm/values.yaml docker/helm/README.md
+$ git commit -m "[helm] Bump helm version to x.y.z" helm/Chart.yaml helm/values.yaml helm/README.md
 $ git push origin main
 ```
 
