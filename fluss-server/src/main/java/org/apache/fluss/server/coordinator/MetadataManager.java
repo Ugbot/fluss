@@ -62,6 +62,8 @@ import javax.annotation.Nullable;
 
 import java.util.Collection;
 import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -80,6 +82,14 @@ public class MetadataManager {
     private final int maxPartitionNum;
     private final int maxBucketNum;
     private final LakeCatalogDynamicLoader lakeCatalogDynamicLoader;
+
+    public static final Set<String> SENSITIVE_TABLE_OPTIOINS = new HashSet<>();
+
+    static {
+        SENSITIVE_TABLE_OPTIOINS.add("password");
+        SENSITIVE_TABLE_OPTIOINS.add("secret");
+        SENSITIVE_TABLE_OPTIOINS.add("key");
+    }
 
     /**
      * Creates a new metadata manager.
@@ -507,6 +517,20 @@ public class MetadataManager {
         return Boolean.parseBoolean(dataLakeEnabledValue);
     }
 
+    public void removeSensitiveTableOptions(Map<String, String> tableLakeOptions) {
+        if (tableLakeOptions == null || tableLakeOptions.isEmpty()) {
+            return;
+        }
+
+        Iterator<Map.Entry<String, String>> iterator = tableLakeOptions.entrySet().iterator();
+        while (iterator.hasNext()) {
+            String key = iterator.next().getKey().toLowerCase();
+            if (SENSITIVE_TABLE_OPTIOINS.stream().anyMatch(key::contains)) {
+                iterator.remove();
+            }
+        }
+    }
+
     public TableInfo getTable(TablePath tablePath) throws TableNotExistException {
         Optional<TableRegistration> optionalTable;
         try {
@@ -520,10 +544,10 @@ public class MetadataManager {
         }
         TableRegistration tableReg = optionalTable.get();
         SchemaInfo schemaInfo = getLatestSchema(tablePath);
-        return tableReg.toTableInfo(
-                tablePath,
-                schemaInfo,
-                lakeCatalogDynamicLoader.getLakeCatalogContainer().getDefaultTableLakeOptions());
+        Map<String, String> tableLakeOptions =
+                lakeCatalogDynamicLoader.getLakeCatalogContainer().getDefaultTableLakeOptions();
+        removeSensitiveTableOptions(tableLakeOptions);
+        return tableReg.toTableInfo(tablePath, schemaInfo, tableLakeOptions);
     }
 
     public Map<TablePath, TableInfo> getTables(Collection<TablePath> tablePaths)

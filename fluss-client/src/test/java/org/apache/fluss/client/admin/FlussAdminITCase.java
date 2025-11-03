@@ -208,6 +208,23 @@ class FlussAdminITCase extends ClientToServerITCaseBase {
         // assert created time
         assertThat(tableInfo.getCreatedTime())
                 .isBetween(timestampBeforeCreate, timestampAfterCreate);
+
+        // test sensitive lake catalog properties have been removed
+        tablePath = TablePath.of("test_db", "lake_table");
+        admin.createTable(
+                        tablePath,
+                        DEFAULT_TABLE_DESCRIPTOR.withProperties(
+                                new HashMap<String, String>() {
+                                    {
+                                        put("table.datalake.enabled", "true");
+                                    }
+                                }),
+                        false)
+                .get();
+        Map<String, String> properties =
+                admin.getTableInfo(tablePath).get().getProperties().toMap();
+        assertThat(properties.containsKey("table.datalake.paimon.jdbc.user")).isTrue();
+        assertThat(properties.containsKey("table.datalake.paimon.jdbc.password")).isFalse();
     }
 
     @Test
