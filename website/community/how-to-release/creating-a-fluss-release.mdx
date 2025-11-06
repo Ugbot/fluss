@@ -768,8 +768,9 @@ Make sure that you are authenticated with your Docker ID, and that your Docker I
 :::
 
 ```bash
-docker tag apache/fluss:${RELEASE_VERSION}_RC${RC_NUM} apache/fluss:${RELEASE_VERSION}
-docker push apache/fluss:${RELEASE_VERSION}
+docker buildx imagetools create apache/fluss:${RELEASE_VERSION}-rc${RC_NUM} --tag apache/fluss:${RELEASE_VERSION}
+
+docker buildx imagetools create apache/fluss-quickstart-flink:1.20-${RELEASE_VERSION}-rc${RC_NUM} --tag apache/fluss-quickstart-flink:1.20-${RELEASE_VERSION}
 ```
 
 ### 6. Update `fluss-versions.json`
