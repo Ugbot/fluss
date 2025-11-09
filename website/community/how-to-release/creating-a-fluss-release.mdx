@@ -825,6 +825,10 @@ Announce on the release on the user@ mailing list, listing major improvements an
 
 Announce the release on the announce@apache.org mailing list.
 
+:::note
+Make sure use the `apache.org` email address associated with your Apache account to send the announcement emails, and use plain text format for the email body. Otherwise, the apache mailing list server may reject the email.
+:::
+
 ```
 From: Release Manager
 To: dev@fluss.apache.org, user@fluss.apache.org, announce@apache.org
@@ -839,7 +843,7 @@ https://downloads.apache.org/incubator/fluss/fluss-0.8.0-incubating/
 
 Maven artifacts for Fluss can be found at:
 
-https://central.sonatype.com/search?q=g%3Aorg.apache.fluss&smo=true
+https://search.maven.org/search?q=g:org.apache.fluss%20AND%20v:0.8.0-incubating
 
 Please check out the release blog post for an overview of this release:
 https://fluss.apache.org/blog/releases/0.8/
@@ -852,17 +856,10 @@ Regards,
 Release Manager
 ```
 
-### Recordkeeping
-
-Use [reporter.apache.org](https://reporter.apache.org/addrelease.html?fluss) to seed the information about the release into future project reports.
-
-(Note: Only PMC members have access report releases. If you do not have access, ask on the mailing list for assistance.)
-
 -------------------------
 
 ***Checklist to declare the process completed***
 - Release announced on the dev@ and user@ mailing list.
-- Release recorded in reporter.apache.org.
 - Completion declared on the dev@ mailing list.
 - Release blog post published.
 - Download page updated.
