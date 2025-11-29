@@ -200,7 +200,12 @@ class KvWriteBatchTest {
 
     protected WriteRecord createWriteRecord() {
         return WriteRecord.forUpsert(
-                PhysicalTablePath.of(DATA1_TABLE_PATH_PK), row, key, key, null);
+                DATA1_TABLE_INFO_PK,
+                PhysicalTablePath.of(DATA1_TABLE_PATH_PK),
+                row,
+                key,
+                key,
+                null);
     }
 
     private KvWriteBatch createKvWriteBatch(TableBucket tb) throws Exception {

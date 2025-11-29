@@ -288,7 +288,7 @@ public class ArrowLogWriteBatchTest {
     }
 
     private WriteRecord createWriteRecord(GenericRow row) {
-        return WriteRecord.forArrowAppend(DATA1_PHYSICAL_TABLE_PATH, row, null);
+        return WriteRecord.forArrowAppend(DATA1_TABLE_INFO, DATA1_PHYSICAL_TABLE_PATH, row, null);
     }
 
     private ArrowLogWriteBatch createArrowLogWriteBatch(TableBucket tb, int maxSizeInBytes) {

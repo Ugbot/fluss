@@ -126,8 +126,7 @@ public class WriterClient {
                             "Failed to construct writer. Max request size: %d bytes, Idempotence enabled: %b",
                             maxRequestSizeLocal,
                             idempotenceManagerLocal != null
-                                    ? idempotenceManagerLocal.idempotenceEnabled()
-                                    : false),
+                                    && idempotenceManagerLocal.idempotenceEnabled()),
                     t);
         }
     }
@@ -174,15 +173,17 @@ public class WriterClient {
         try {
             throwIfWriterClosed();
 
+            TableInfo tableInfo = record.getTableInfo();
             PhysicalTablePath physicalTablePath = record.getPhysicalTablePath();
-            dynamicPartitionCreator.checkAndCreatePartitionAsync(physicalTablePath);
+            dynamicPartitionCreator.checkAndCreatePartitionAsync(
+                    physicalTablePath, tableInfo.getPartitionKeys());
 
             // maybe create bucket assigner.
             Cluster cluster = metadataUpdater.getCluster();
             BucketAssigner bucketAssigner =
                     bucketAssignerMap.computeIfAbsent(
                             physicalTablePath,
-                            k -> createBucketAssigner(physicalTablePath, conf, cluster));
+                            k -> createBucketAssigner(tableInfo, physicalTablePath, conf));
 
             // Append the record to the accumulator.
             int bucketId = bucketAssigner.assignBucket(record.getBucketKey(), cluster);
@@ -332,6 +333,7 @@ public class WriterClient {
         if (sender != null) {
             sender.forceClose();
         }
+
         LOG.info("Writer closed.");
     }
 
@@ -340,8 +342,7 @@ public class WriterClient {
     }
 
     private BucketAssigner createBucketAssigner(
-            PhysicalTablePath physicalTablePath, Configuration conf, Cluster cluster) {
-        TableInfo tableInfo = cluster.getTableOrElseThrow(physicalTablePath.getTablePath());
+            TableInfo tableInfo, PhysicalTablePath physicalTablePath, Configuration conf) {
         int bucketNumber = tableInfo.getNumBuckets();
         List<String> bucketKeys = tableInfo.getBucketKeys();
         if (!bucketKeys.isEmpty()) {

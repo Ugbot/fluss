@@ -68,6 +68,11 @@ public class KvWriteBatch extends WriteBatch {
     }
 
     @Override
+    public boolean isLogBatch() {
+        return false;
+    }
+
+    @Override
     public boolean tryAppend(WriteRecord writeRecord, WriteCallback callback) throws Exception {
         // currently, we throw exception directly when the target columns of the write record is
         // not the same as the current target columns in the batch.
