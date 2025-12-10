@@ -607,8 +607,10 @@ public final class Schema implements Serializable {
                         "The data type of auto increment column must be INT or BIGINT.");
             }
 
-            // primary key should not nullable
-            if (pkSet.contains(column.getName()) && column.getDataType().isNullable()) {
+            // primary key and auto increment column should not nullable
+            if ((pkSet.contains(column.getName())
+                            || autoIncrementColumnNames.contains(column.getName()))
+                    && column.getDataType().isNullable()) {
                 newColumns.add(
                         new Column(
                                 column.getName(),
