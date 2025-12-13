@@ -19,6 +19,7 @@ package org.apache.fluss.server.coordinator;
 
 import org.apache.fluss.exception.FencedLeaderEpochException;
 import org.apache.fluss.exception.IneligibleReplicaException;
+import org.apache.fluss.exception.NetworkException;
 import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.rpc.gateway.CoordinatorGateway;
 import org.apache.fluss.rpc.messages.AdjustIsrRequest;
@@ -91,6 +92,7 @@ import org.apache.fluss.server.entity.CommitRemoteLogManifestData;
 import org.apache.fluss.server.zk.ZooKeeperClient;
 import org.apache.fluss.server.zk.data.LeaderAndIsr;
 import org.apache.fluss.server.zk.data.RemoteLogManifestHandle;
+import org.apache.fluss.utils.concurrent.FutureUtils;
 
 import javax.annotation.Nullable;
 
@@ -115,6 +117,7 @@ public class TestCoordinatorGateway implements CoordinatorGateway {
     public final AtomicBoolean commitRemoteLogManifestFail = new AtomicBoolean(false);
     public final Map<TableBucket, Integer> currentLeaderEpoch = new HashMap<>();
     private Set<Integer> shutdownTabletServers;
+    private boolean networkIssueEnable = false;
 
     public TestCoordinatorGateway() {
         this(null);
@@ -239,6 +242,10 @@ public class TestCoordinatorGateway implements CoordinatorGateway {
 
     @Override
     public CompletableFuture<AdjustIsrResponse> adjustIsr(AdjustIsrRequest request) {
+        if (networkIssueEnable) {
+            return FutureUtils.completedExceptionally(new NetworkException("Mock network issue."));
+        }
+
         Map<TableBucket, LeaderAndIsr> adjustIsrData = getAdjustIsrData(request);
         List<AdjustIsrResultForBucket> resultForBuckets = new ArrayList<>();
 
@@ -371,5 +378,9 @@ public class TestCoordinatorGateway implements CoordinatorGateway {
 
     public void setShutdownTabletServers(Set<Integer> shutdownTabletServers) {
         this.shutdownTabletServers = shutdownTabletServers;
+    }
+
+    public void setNetworkIssueEnable(boolean networkIssueEnable) {
+        this.networkIssueEnable = networkIssueEnable;
     }
 }

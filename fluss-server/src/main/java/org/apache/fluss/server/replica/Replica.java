@@ -1577,7 +1577,7 @@ public final class Replica {
                                             // We don't know what happened on the coordinator server
                                             // exactly, but we do know this response is out of date,
                                             // so we ignore it.
-                                            LOG.debug(
+                                            LOG.warn(
                                                     "Ignoring failed ISR update to {} for bucket {} since we have already updated state to {}",
                                                     proposedIsrState,
                                                     tableBucket,
