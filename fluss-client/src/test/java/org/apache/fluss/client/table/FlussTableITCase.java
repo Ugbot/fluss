@@ -753,6 +753,11 @@ class FlussTableITCase extends ClientToServerITCaseBase {
         verifyAppendOrPut(false, "ARROW", kvFormat);
     }
 
+    @Test
+    void testPutAndPollCompacted() throws Exception {
+        verifyAppendOrPut(false, "COMPACTED", "COMPACTED");
+    }
+
     void verifyAppendOrPut(boolean append, String logFormat, @Nullable String kvFormat)
             throws Exception {
         Schema schema =
@@ -911,8 +916,9 @@ class FlussTableITCase extends ClientToServerITCaseBase {
         }
     }
 
-    @Test
-    void testPutAndProject() throws Exception {
+    @ParameterizedTest
+    @ValueSource(strings = {"ARROW", "COMPACTED"})
+    void testPutAndProject(String changelogFormat) throws Exception {
         Schema schema =
                 Schema.newBuilder()
                         .column("a", DataTypes.INT())
@@ -921,7 +927,11 @@ class FlussTableITCase extends ClientToServerITCaseBase {
                         .column("d", DataTypes.BIGINT())
                         .primaryKey("a")
                         .build();
-        TableDescriptor tableDescriptor = TableDescriptor.builder().schema(schema).build();
+        TableDescriptor tableDescriptor =
+                TableDescriptor.builder()
+                        .schema(schema)
+                        .property(ConfigOptions.TABLE_LOG_FORMAT.key(), changelogFormat)
+                        .build();
         TablePath tablePath = TablePath.of("test_db_1", "test_pk_table_1");
         createTable(tablePath, tableDescriptor, false);
 

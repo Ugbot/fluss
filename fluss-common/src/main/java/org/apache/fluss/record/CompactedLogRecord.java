@@ -23,8 +23,9 @@ import org.apache.fluss.memory.OutputView;
 import org.apache.fluss.metadata.LogFormat;
 import org.apache.fluss.row.BinaryRow;
 import org.apache.fluss.row.InternalRow;
-import org.apache.fluss.row.indexed.IndexedRow;
-import org.apache.fluss.row.indexed.IndexedRowWriter;
+import org.apache.fluss.row.compacted.CompactedRow;
+import org.apache.fluss.row.compacted.CompactedRowDeserializer;
+import org.apache.fluss.row.compacted.CompactedRowWriter;
 import org.apache.fluss.types.DataType;
 import org.apache.fluss.utils.MurmurHashUtils;
 
@@ -32,30 +33,30 @@ import java.io.IOException;
 
 import static org.apache.fluss.record.LogRecordBatchFormat.LENGTH_LENGTH;
 
-/* This file is based on source code of Apache Kafka Project (https://kafka.apache.org/), licensed by the Apache
- * Software Foundation (ASF) under the Apache License, Version 2.0. See the NOTICE file distributed with this work for
- * additional information regarding copyright ownership. */
-
 /**
- * This class is an immutable log record and can be directly persisted. The schema is as follows:
+ * An immutable log record for {@link CompactedRow} which can be directly persisted. The on-wire
+ * schema is identical to IndexedLogRecord but the row payload uses the CompactedRow binary format:
  *
  * <ul>
- *   <li>Length => int32
- *   <li>Attributes => Int8
- *   <li>Value => {@link InternalRow}
+ *   <li>Length => int32 (total number of bytes following this length field)
+ *   <li>Attributes => int8 (low 4 bits encode {@link ChangeType})
+ *   <li>Value => {@link CompactedRow} (bytes in compacted row format)
  * </ul>
  *
- * <p>The current record attributes are depicted below:
+ * <p>Differences vs {@link IndexedLogRecord}: - Uses CompactedRow encoding which is space-optimized
+ * (VLQ for ints/longs, per-row null bitset) and trades CPU for smaller storage; random access to
+ * fields is not supported without decoding. - Deserialization is lazy: we wrap the underlying bytes
+ * in a CompactedRow with a {@link CompactedRowDeserializer} and only decode to object values when a
+ * field is accessed. - The record header (Length + Attributes) layout and attribute semantics are
+ * the same.
  *
- * <p>----------- | ChangeType (0-3) | Unused (4-7) |---------------
+ * <p>The offset computes the difference relative to the base offset of the batch containing this
+ * record.
  *
- * <p>The offset compute the difference relative to the base offset and of the batch that this
- * record is contained in.
- *
- * @since 0.1
+ * @since 0.8
  */
 @PublicEvolving
-public class IndexedLogRecord implements LogRecord {
+public class CompactedLogRecord implements LogRecord {
 
     private static final int ATTRIBUTES_LENGTH = 1;
 
@@ -67,13 +68,13 @@ public class IndexedLogRecord implements LogRecord {
     private int offset;
     private int sizeInBytes;
 
-    IndexedLogRecord(long logOffset, long timestamp, DataType[] fieldTypes) {
+    CompactedLogRecord(long logOffset, long timestamp, DataType[] fieldTypes) {
         this.logOffset = logOffset;
-        this.fieldTypes = fieldTypes;
         this.timestamp = timestamp;
+        this.fieldTypes = fieldTypes;
     }
 
-    void pointTo(MemorySegment segment, int offset, int sizeInBytes) {
+    private void pointTo(MemorySegment segment, int offset, int sizeInBytes) {
         this.segment = segment;
         this.offset = offset;
         this.sizeInBytes = sizeInBytes;
@@ -88,12 +89,10 @@ public class IndexedLogRecord implements LogRecord {
         if (this == o) {
             return true;
         }
-
         if (o == null || getClass() != o.getClass()) {
             return false;
         }
-
-        IndexedLogRecord that = (IndexedLogRecord) o;
+        CompactedLogRecord that = (CompactedLogRecord) o;
         return sizeInBytes == that.sizeInBytes
                 && segment.equalTo(that.segment, offset, that.offset, sizeInBytes);
     }
@@ -127,35 +126,30 @@ public class IndexedLogRecord implements LogRecord {
                 segment,
                 offset + rowOffset,
                 fieldTypes,
-                LogFormat.INDEXED);
+                LogFormat.COMPACTED);
     }
 
-    /** Write the record to input `target` and return its size. */
-    public static int writeTo(OutputView outputView, ChangeType changeType, IndexedRow row)
+    /** Write the record to output and return total bytes written including length field. */
+    public static int writeTo(OutputView outputView, ChangeType changeType, CompactedRow row)
             throws IOException {
         int sizeInBytes = calculateSizeInBytes(row);
-
-        // TODO using varint instead int to reduce storage size.
-        // write record total bytes size.
+        // write record total bytes size (excluding this int itself)
         outputView.writeInt(sizeInBytes);
-
-        // write attributes.
+        // write attributes
         outputView.writeByte(changeType.toByteValue());
-
-        // write internal row.
-        serializeInternalRow(outputView, row);
-
+        // write row payload
+        CompactedRowWriter.serializeCompactedRow(row, outputView);
         return sizeInBytes + LENGTH_LENGTH;
     }
 
-    public static IndexedLogRecord readFrom(
+    public static CompactedLogRecord readFrom(
             MemorySegment segment,
             int position,
             long logOffset,
             long logTimestamp,
             DataType[] colTypes) {
         int sizeInBytes = segment.getInt(position);
-        IndexedLogRecord logRecord = new IndexedLogRecord(logOffset, logTimestamp, colTypes);
+        CompactedLogRecord logRecord = new CompactedLogRecord(logOffset, logTimestamp, colTypes);
         logRecord.pointTo(segment, position, sizeInBytes + LENGTH_LENGTH);
         return logRecord;
     }
@@ -166,13 +160,8 @@ public class IndexedLogRecord implements LogRecord {
     }
 
     private static int calculateSizeInBytes(BinaryRow row) {
-        int size = 1; // always one byte for attributes
+        int size = 1; // one byte for attributes
         size += row.getSizeInBytes();
         return size;
-    }
-
-    private static void serializeInternalRow(OutputView outputView, IndexedRow row)
-            throws IOException {
-        IndexedRowWriter.serializeIndexedRow(row, outputView);
     }
 }
