@@ -80,6 +80,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
 import static org.apache.flink.util.Preconditions.checkArgument;
@@ -115,6 +116,8 @@ public class FlinkCatalog extends AbstractCatalog {
     protected final String bootstrapServers;
     protected final Map<String, String> securityConfigs;
     protected final LakeFlinkCatalog lakeFlinkCatalog;
+    protected volatile Map<String, String> lakeCatalogProperties;
+    protected final Supplier<Map<String, String>> lakeCatalogPropertiesSupplier;
     protected Connection connection;
     protected Admin admin;
 
@@ -123,13 +126,15 @@ public class FlinkCatalog extends AbstractCatalog {
             String defaultDatabase,
             String bootstrapServers,
             ClassLoader classLoader,
-            Map<String, String> securityConfigs) {
+            Map<String, String> securityConfigs,
+            Supplier<Map<String, String>> lakeCatalogPropertiesSupplier) {
         this(
                 name,
                 defaultDatabase,
                 bootstrapServers,
                 classLoader,
                 securityConfigs,
+                lakeCatalogPropertiesSupplier,
                 new LakeFlinkCatalog(name, classLoader));
     }
 
@@ -140,6 +145,7 @@ public class FlinkCatalog extends AbstractCatalog {
             String bootstrapServers,
             ClassLoader classLoader,
             Map<String, String> securityConfigs,
+            Supplier<Map<String, String>> lakeCatalogPropertiesSupplier,
             LakeFlinkCatalog lakeFlinkCatalog) {
         super(name, defaultDatabase);
         this.catalogName = name;
@@ -147,6 +153,7 @@ public class FlinkCatalog extends AbstractCatalog {
         this.bootstrapServers = bootstrapServers;
         this.classLoader = classLoader;
         this.securityConfigs = securityConfigs;
+        this.lakeCatalogPropertiesSupplier = lakeCatalogPropertiesSupplier;
         this.lakeFlinkCatalog = lakeFlinkCatalog;
     }
 
@@ -312,8 +319,12 @@ public class FlinkCatalog extends AbstractCatalog {
                                             objectPath.getDatabaseName(),
                                             tableName.split("\\" + LAKE_TABLE_SPLITTER)[0])));
                 }
+
                 return getLakeTable(
-                        objectPath.getDatabaseName(), tableName, tableInfo.getProperties());
+                        objectPath.getDatabaseName(),
+                        tableName,
+                        tableInfo.getProperties(),
+                        getLakeCatalogProperties());
             } else {
                 tableInfo = admin.getTableInfo(tablePath).get();
             }
@@ -347,7 +358,10 @@ public class FlinkCatalog extends AbstractCatalog {
     }
 
     protected CatalogBaseTable getLakeTable(
-            String databaseName, String tableName, Configuration properties)
+            String databaseName,
+            String tableName,
+            Configuration properties,
+            Map<String, String> lakeCatalogProperties)
             throws TableNotExistException, CatalogException {
         String[] tableComponents = tableName.split("\\" + LAKE_TABLE_SPLITTER);
         if (tableComponents.length == 1) {
@@ -359,7 +373,7 @@ public class FlinkCatalog extends AbstractCatalog {
             tableName = String.join("", tableComponents);
         }
         return lakeFlinkCatalog
-                .getLakeCatalog(properties)
+                .getLakeCatalog(properties, lakeCatalogProperties)
                 .getTable(new ObjectPath(databaseName, tableName));
     }
 
@@ -771,5 +785,17 @@ public class FlinkCatalog extends AbstractCatalog {
     @VisibleForTesting
     public Map<String, String> getSecurityConfigs() {
         return securityConfigs;
+    }
+
+    @VisibleForTesting
+    public Map<String, String> getLakeCatalogProperties() {
+        if (lakeCatalogProperties == null) {
+            synchronized (this) {
+                if (lakeCatalogProperties == null) {
+                    lakeCatalogProperties = lakeCatalogPropertiesSupplier.get();
+                }
+            }
+        }
+        return lakeCatalogProperties;
     }
 }
