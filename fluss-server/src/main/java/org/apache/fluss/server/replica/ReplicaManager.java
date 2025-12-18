@@ -96,7 +96,7 @@ import org.apache.fluss.server.replica.fetcher.InitialFetchStatus;
 import org.apache.fluss.server.replica.fetcher.ReplicaFetcherManager;
 import org.apache.fluss.server.utils.FatalErrorHandler;
 import org.apache.fluss.server.zk.ZooKeeperClient;
-import org.apache.fluss.server.zk.data.LakeTableSnapshot;
+import org.apache.fluss.server.zk.data.lake.LakeTableSnapshot;
 import org.apache.fluss.utils.FileUtils;
 import org.apache.fluss.utils.FlussPaths;
 import org.apache.fluss.utils.MapUtils;
@@ -120,6 +120,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
@@ -150,6 +151,7 @@ public class ReplicaManager {
     private final Map<TableBucket, HostedReplica> allReplicas = MapUtils.newConcurrentHashMap();
 
     private final TabletServerMetadataCache metadataCache;
+    private final ExecutorService ioExecutor;
     private final ProjectionPushdownCache projectionsCache = new ProjectionPushdownCache();
     private final Lock replicaStateChangeLock = new ReentrantLock();
 
@@ -201,7 +203,8 @@ public class ReplicaManager {
             CompletedKvSnapshotCommitter completedKvSnapshotCommitter,
             FatalErrorHandler fatalErrorHandler,
             TabletServerMetricGroup serverMetricGroup,
-            Clock clock)
+            Clock clock,
+            ExecutorService ioExecutor)
             throws IOException {
         this(
                 conf,
@@ -216,8 +219,9 @@ public class ReplicaManager {
                 completedKvSnapshotCommitter,
                 fatalErrorHandler,
                 serverMetricGroup,
-                new RemoteLogManager(conf, zkClient, coordinatorGateway, clock),
-                clock);
+                new RemoteLogManager(conf, zkClient, coordinatorGateway, clock, ioExecutor),
+                clock,
+                ioExecutor);
     }
 
     @VisibleForTesting
@@ -235,7 +239,8 @@ public class ReplicaManager {
             FatalErrorHandler fatalErrorHandler,
             TabletServerMetricGroup serverMetricGroup,
             RemoteLogManager remoteLogManager,
-            Clock clock)
+            Clock clock,
+            ExecutorService ioExecutor)
             throws IOException {
         this.conf = conf;
         this.zkClient = zkClient;
@@ -273,13 +278,14 @@ public class ReplicaManager {
         this.fatalErrorHandler = fatalErrorHandler;
 
         // for kv snapshot
-        this.kvSnapshotResource = KvSnapshotResource.create(serverId, conf);
+        this.kvSnapshotResource = KvSnapshotResource.create(serverId, conf, ioExecutor);
         this.kvSnapshotContext =
                 DefaultSnapshotContext.create(
                         zkClient, completedKvSnapshotCommitter, kvSnapshotResource, conf);
         this.remoteLogManager = remoteLogManager;
         this.serverMetricGroup = serverMetricGroup;
         this.clock = clock;
+        this.ioExecutor = ioExecutor;
         registerMetrics();
     }
 
@@ -812,6 +818,7 @@ public class ReplicaManager {
         }
     }
 
+    // NOTE: This method can be removed when fetchFromLake is deprecated
     private void updateWithLakeTableSnapshot(Replica replica) throws Exception {
         TableBucket tb = replica.getTableBucket();
         Optional<LakeTableSnapshot> optLakeTableSnapshot =
@@ -820,18 +827,9 @@ public class ReplicaManager {
             LakeTableSnapshot lakeTableSnapshot = optLakeTableSnapshot.get();
             long snapshotId = optLakeTableSnapshot.get().getSnapshotId();
             replica.getLogTablet().updateLakeTableSnapshotId(snapshotId);
-
-            lakeTableSnapshot
-                    .getLogStartOffset(tb)
-                    .ifPresent(replica.getLogTablet()::updateLakeLogStartOffset);
-
             lakeTableSnapshot
                     .getLogEndOffset(tb)
                     .ifPresent(replica.getLogTablet()::updateLakeLogEndOffset);
-
-            lakeTableSnapshot
-                    .getMaxTimestamp(tb)
-                    .ifPresent(replica.getLogTablet()::updateLakeMaxTimestamp);
         }
     }
 

@@ -188,6 +188,10 @@ public class CoordinatorServer extends ServerBase {
 
             MetadataManager metadataManager =
                     new MetadataManager(zkClient, conf, lakeCatalogDynamicLoader);
+            this.ioExecutor =
+                    Executors.newFixedThreadPool(
+                            conf.get(ConfigOptions.SERVER_IO_POOL_SIZE),
+                            new ExecutorThreadFactory("coordinator-io"));
             this.coordinatorService =
                     new CoordinatorService(
                             conf,
@@ -199,7 +203,8 @@ public class CoordinatorServer extends ServerBase {
                             authorizer,
                             lakeCatalogDynamicLoader,
                             lakeTableTieringManager,
-                            dynamicConfigManager);
+                            dynamicConfigManager,
+                            ioExecutor);
 
             this.rpcServer =
                     RpcServer.create(
@@ -224,11 +229,6 @@ public class CoordinatorServer extends ServerBase {
             this.autoPartitionManager =
                     new AutoPartitionManager(metadataCache, metadataManager, conf);
             autoPartitionManager.start();
-
-            int ioExecutorPoolSize = conf.get(ConfigOptions.COORDINATOR_IO_POOL_SIZE);
-            this.ioExecutor =
-                    Executors.newFixedThreadPool(
-                            ioExecutorPoolSize, new ExecutorThreadFactory("coordinator-io"));
 
             // start coordinator event processor after we register coordinator leader to zk
             // so that the event processor can get the coordinator leader node from zk during start
@@ -367,15 +367,6 @@ public class CoordinatorServer extends ServerBase {
             }
 
             try {
-                if (ioExecutor != null) {
-                    // shutdown io executor
-                    ExecutorUtils.gracefulShutdown(5, TimeUnit.SECONDS, ioExecutor);
-                }
-            } catch (Throwable t) {
-                exception = ExceptionUtils.firstOrSuppressed(t, exception);
-            }
-
-            try {
                 if (coordinatorEventProcessor != null) {
                     coordinatorEventProcessor.shutdown();
                 }
@@ -402,6 +393,15 @@ public class CoordinatorServer extends ServerBase {
             try {
                 if (coordinatorService != null) {
                     coordinatorService.shutdown();
+                }
+            } catch (Throwable t) {
+                exception = ExceptionUtils.firstOrSuppressed(t, exception);
+            }
+
+            try {
+                if (ioExecutor != null) {
+                    // shutdown io executor
+                    ExecutorUtils.gracefulShutdown(5, TimeUnit.SECONDS, ioExecutor);
                 }
             } catch (Throwable t) {
                 exception = ExceptionUtils.firstOrSuppressed(t, exception);
@@ -519,11 +519,11 @@ public class CoordinatorServer extends ServerBase {
                             ConfigOptions.KV_MAX_RETAINED_SNAPSHOTS.key()));
         }
 
-        if (conf.get(ConfigOptions.COORDINATOR_IO_POOL_SIZE) < 1) {
+        if (conf.get(ConfigOptions.SERVER_IO_POOL_SIZE) < 1) {
             throw new IllegalConfigurationException(
                     String.format(
                             "Invalid configuration for %s, it must be greater than or equal 1.",
-                            ConfigOptions.COORDINATOR_IO_POOL_SIZE.key()));
+                            ConfigOptions.SERVER_IO_POOL_SIZE.key()));
         }
 
         if (conf.get(ConfigOptions.REMOTE_DATA_DIR) == null) {
