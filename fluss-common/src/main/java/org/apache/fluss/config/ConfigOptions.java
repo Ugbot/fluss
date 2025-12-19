@@ -20,6 +20,7 @@ package org.apache.fluss.config;
 import org.apache.fluss.annotation.Internal;
 import org.apache.fluss.annotation.PublicEvolving;
 import org.apache.fluss.compression.ArrowCompressionType;
+import org.apache.fluss.metadata.ChangelogImage;
 import org.apache.fluss.metadata.DataLakeFormat;
 import org.apache.fluss.metadata.DeleteBehavior;
 import org.apache.fluss.metadata.KvFormat;
@@ -1445,6 +1446,21 @@ public class ConfigOptions {
                                     + "With an auto increment column in the table, whenever a new row is inserted into the table, the new row will be assigned with the next available value from the auto-increment sequence."
                                     + "The auto increment column can only be used in primary-key table. The data type of the auto increment column must be INT or BIGINT."
                                     + "Currently a table can have only one auto-increment column.");
+
+    public static final ConfigOption<ChangelogImage> TABLE_CHANGELOG_IMAGE =
+            key("table.changelog.image")
+                    .enumType(ChangelogImage.class)
+                    .defaultValue(ChangelogImage.FULL)
+                    .withDescription(
+                            "Defines the changelog image mode for the primary key table. "
+                                    + "This configuration is inspired by similar settings in database systems like MySQL's binlog_row_image and PostgreSQL's replica identity. "
+                                    + "The supported modes are `FULL` (default) and `WAL`. "
+                                    + "The `FULL` mode produces both UPDATE_BEFORE and UPDATE_AFTER records for update operations, capturing complete information about updates and allowing tracking of previous values. "
+                                    + "The `WAL` mode does not produce UPDATE_BEFORE records. Only INSERT, UPDATE_AFTER (and DELETE if allowed) records are emitted. "
+                                    + "When WAL mode is enabled with default merge engine (no merge engine configured) and full row updates (not partial update), an optimization is applied to skip looking up old values, "
+                                    + "and in this case INSERT operations are converted to UPDATE_AFTER events. "
+                                    + "This mode reduces storage and transmission costs but loses the ability to track previous values. "
+                                    + "This option only affects primary key tables.");
 
     // ------------------------------------------------------------------------
     //  ConfigOptions for Kv
