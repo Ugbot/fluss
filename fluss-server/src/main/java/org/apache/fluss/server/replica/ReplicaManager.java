@@ -67,6 +67,7 @@ import org.apache.fluss.server.entity.NotifyLeaderAndIsrResultForBucket;
 import org.apache.fluss.server.entity.NotifyRemoteLogOffsetsData;
 import org.apache.fluss.server.entity.StopReplicaData;
 import org.apache.fluss.server.entity.StopReplicaResultForBucket;
+import org.apache.fluss.server.entity.UserContext;
 import org.apache.fluss.server.kv.KvManager;
 import org.apache.fluss.server.kv.KvSnapshotResource;
 import org.apache.fluss.server.kv.snapshot.CompletedKvSnapshotCommitter;
@@ -84,6 +85,7 @@ import org.apache.fluss.server.log.checkpoint.OffsetCheckpointFile;
 import org.apache.fluss.server.log.remote.RemoteLogManager;
 import org.apache.fluss.server.metadata.ClusterMetadata;
 import org.apache.fluss.server.metadata.TabletServerMetadataCache;
+import org.apache.fluss.server.metrics.UserMetrics;
 import org.apache.fluss.server.metrics.group.BucketMetricGroup;
 import org.apache.fluss.server.metrics.group.TableMetricGroup;
 import org.apache.fluss.server.metrics.group.TabletServerMetricGroup;
@@ -186,6 +188,7 @@ public class ReplicaManager {
 
     // for metrics
     private final TabletServerMetricGroup serverMetricGroup;
+    private final UserMetrics userMetrics;
     private final String internalListenerName;
 
     private final Clock clock;
@@ -203,6 +206,7 @@ public class ReplicaManager {
             CompletedKvSnapshotCommitter completedKvSnapshotCommitter,
             FatalErrorHandler fatalErrorHandler,
             TabletServerMetricGroup serverMetricGroup,
+            UserMetrics userMetrics,
             Clock clock,
             ExecutorService ioExecutor)
             throws IOException {
@@ -219,6 +223,7 @@ public class ReplicaManager {
                 completedKvSnapshotCommitter,
                 fatalErrorHandler,
                 serverMetricGroup,
+                userMetrics,
                 new RemoteLogManager(conf, zkClient, coordinatorGateway, clock, ioExecutor),
                 clock,
                 ioExecutor);
@@ -238,6 +243,7 @@ public class ReplicaManager {
             CompletedKvSnapshotCommitter completedKvSnapshotCommitter,
             FatalErrorHandler fatalErrorHandler,
             TabletServerMetricGroup serverMetricGroup,
+            UserMetrics userMetrics,
             RemoteLogManager remoteLogManager,
             Clock clock,
             ExecutorService ioExecutor)
@@ -284,6 +290,7 @@ public class ReplicaManager {
                         zkClient, completedKvSnapshotCommitter, kvSnapshotResource, conf);
         this.remoteLogManager = remoteLogManager;
         this.serverMetricGroup = serverMetricGroup;
+        this.userMetrics = userMetrics;
         this.clock = clock;
         this.ioExecutor = ioExecutor;
         registerMetrics();
@@ -456,6 +463,7 @@ public class ReplicaManager {
             int timeoutMs,
             int requiredAcks,
             Map<TableBucket, MemoryLogRecords> entriesPerBucket,
+            @Nullable UserContext userContext,
             Consumer<List<ProduceLogResultForBucket>> responseCallback) {
         if (isRequiredAcksInvalid(requiredAcks)) {
             throw new InvalidRequiredAcksException("Invalid required acks: " + requiredAcks);
@@ -463,7 +471,7 @@ public class ReplicaManager {
 
         long startTime = System.currentTimeMillis();
         Map<TableBucket, ProduceLogResultForBucket> appendResult =
-                appendToLocalLog(entriesPerBucket, requiredAcks);
+                appendToLocalLog(entriesPerBucket, requiredAcks, userContext);
         LOG.debug("Append records to local log in {} ms", System.currentTimeMillis() - startTime);
 
         // maybe do delay write operation.
@@ -480,9 +488,11 @@ public class ReplicaManager {
     public void fetchLogRecords(
             FetchParams params,
             Map<TableBucket, FetchReqInfo> bucketFetchInfo,
+            @Nullable UserContext userContext,
             Consumer<Map<TableBucket, FetchLogResultForBucket>> responseCallback) {
         long startTime = System.currentTimeMillis();
-        Map<TableBucket, LogReadResult> logReadResults = readFromLog(params, bucketFetchInfo);
+        Map<TableBucket, LogReadResult> logReadResults =
+                readFromLog(params, bucketFetchInfo, userContext);
         if (LOG.isTraceEnabled()) {
             LOG.trace(
                     "Fetch log records from local log in {} ms",
@@ -490,7 +500,8 @@ public class ReplicaManager {
         }
 
         // maybe do delay fetch log operation.
-        maybeAddDelayedFetchLog(params, bucketFetchInfo, logReadResults, responseCallback);
+        maybeAddDelayedFetchLog(
+                params, bucketFetchInfo, logReadResults, userContext, responseCallback);
     }
 
     /**
@@ -925,18 +936,23 @@ public class ReplicaManager {
 
     /** Append log records to leader replicas of the buckets. */
     private Map<TableBucket, ProduceLogResultForBucket> appendToLocalLog(
-            Map<TableBucket, MemoryLogRecords> entriesPerBucket, int requiredAcks) {
+            Map<TableBucket, MemoryLogRecords> entriesPerBucket,
+            int requiredAcks,
+            @Nullable UserContext userContext) {
         Map<TableBucket, ProduceLogResultForBucket> resultForBucketMap = new HashMap<>();
         for (Map.Entry<TableBucket, MemoryLogRecords> entry : entriesPerBucket.entrySet()) {
             TableBucket tb = entry.getKey();
+            MemoryLogRecords records = entry.getValue();
             TableMetricGroup tableMetrics = null;
             try {
                 Replica replica = getReplicaOrException(tb);
                 tableMetrics = replica.tableMetrics();
                 tableMetrics.totalProduceLogRequests().inc();
+                // record user metrics before appending to log,
+                // so that if appending fails, we still account the bytes.
+                userMetrics.incBytesIn(userContext, replica.getTablePath(), records.sizeInBytes());
                 LOG.trace("Append records to local log tablet for table bucket {}", tb);
-                LogAppendInfo appendInfo =
-                        replica.appendRecordsToLeader(entry.getValue(), requiredAcks);
+                LogAppendInfo appendInfo = replica.appendRecordsToLeader(records, requiredAcks);
 
                 long baseOffset = appendInfo.firstOffset();
                 LOG.trace(
@@ -1049,7 +1065,9 @@ public class ReplicaManager {
     }
 
     public Map<TableBucket, LogReadResult> readFromLog(
-            FetchParams fetchParams, Map<TableBucket, FetchReqInfo> bucketFetchInfo) {
+            FetchParams fetchParams,
+            Map<TableBucket, FetchReqInfo> bucketFetchInfo,
+            @Nullable UserContext userContext) {
         Map<TableBucket, LogReadResult> logReadResult = new HashMap<>();
         boolean isFromFollower = fetchParams.isFromFollower();
         int limitBytes = fetchParams.maxFetchBytes();
@@ -1108,6 +1126,7 @@ public class ReplicaManager {
                     serverMetricGroup.replicationBytesOut().inc(recordBatchSize);
                 } else {
                     tableMetrics.incLogBytesOut(recordBatchSize);
+                    userMetrics.incBytesOut(userContext, replica.getTablePath(), recordBatchSize);
                 }
             } catch (Exception e) {
                 if (isUnexpectedException(e)) {
@@ -1297,6 +1316,7 @@ public class ReplicaManager {
             FetchParams params,
             Map<TableBucket, FetchReqInfo> bucketFetchInfo,
             Map<TableBucket, LogReadResult> logReadResults,
+            @Nullable UserContext userContext,
             Consumer<Map<TableBucket, FetchLogResultForBucket>> responseCallback) {
         long bytesReadable = 0;
         boolean errorReadingData = false;
@@ -1363,7 +1383,8 @@ public class ReplicaManager {
                                 delayedResponse.putAll(expectedErrorBuckets);
                                 responseCallback.accept(delayedResponse);
                             },
-                            serverMetricGroup);
+                            serverMetricGroup,
+                            userContext);
 
             // try to complete the request immediately, otherwise put it into the
             // delayedFetchLogManager; this is because while the delayed fetch log operation is

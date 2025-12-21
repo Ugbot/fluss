@@ -380,7 +380,7 @@ Some metrics might not be exposed when using other JVM implementations (e.g. IBM
   </thead>
   <tbody>
     <tr>
-      <th rowspan="29"><strong>tabletserver</strong></th>
+      <th rowspan="33"><strong>tabletserver</strong></th>
       <td style={{textAlign: 'center', verticalAlign: 'middle' }} rowspan="25">-</td>
       <td>messagesInPerSecond</td>
       <td>The number of messages written per second to this server.</td>
@@ -527,6 +527,27 @@ Some metrics might not be exposed when using other JVM implementations (e.g. IBM
       <td>remoteLogSize</td>
       <td>The physical remote log size managed by this TabletServer.</td>
       <td>Gauge</td>
+    </tr>
+    <tr>
+      <td rowspan="4">user</td>
+      <td>bytesIn</td>
+      <td>The total number of bytes written to this server labeled with <code>user</code> name and <code>database</code> name and <code>table</code> name. </td>
+      <td>Counter</td>
+    </tr>
+    <tr>
+      <td>bytesOut</td>
+      <td>The total number of bytes read from this server labeled with <code>user</code> name and <code>database</code> name and <code>table</code> name. </td>
+      <td>Counter</td>
+    </tr>
+     <tr>
+      <td>bytesInPerSecond</td>
+      <td>The number of bytes written per second to this server labeled with <code>user</code>.</td>
+      <td>Meter</td>
+    </tr>
+    <tr>
+      <td>bytesOutPerSecond</td>
+      <td>The number of bytes read per second from this server labeled with <code>user</code>.</td>
+      <td>Meter</td>
     </tr>
   </tbody>
 </table>

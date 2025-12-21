@@ -303,6 +303,7 @@ public class ReplicaTestBase {
                 snapshotReporter,
                 NOPErrorHandler.INSTANCE,
                 TestingMetricGroups.TABLET_SERVER_METRICS,
+                TestingMetricGroups.USER_METRICS,
                 remoteLogManager,
                 manualClock,
                 ioExecutor);

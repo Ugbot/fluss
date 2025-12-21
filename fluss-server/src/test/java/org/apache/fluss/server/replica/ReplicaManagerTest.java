@@ -145,6 +145,7 @@ class ReplicaManagerTest extends ReplicaTestBase {
                 20000,
                 1,
                 Collections.singletonMap(tb, genMemoryLogRecordsByObject(DATA1)),
+                null,
                 future::complete);
         assertThat(future.get()).containsOnly(new ProduceLogResultForBucket(tb, 0, 10L));
 
@@ -154,6 +155,7 @@ class ReplicaManagerTest extends ReplicaTestBase {
                 20000,
                 1,
                 Collections.singletonMap(tb, genMemoryLogRecordsByObject(DATA1)),
+                null,
                 future::complete);
         assertThat(future.get()).containsOnly(new ProduceLogResultForBucket(tb, 10L, 20L));
 
@@ -165,6 +167,7 @@ class ReplicaManagerTest extends ReplicaTestBase {
                                         100,
                                         Collections.singletonMap(
                                                 tb, genMemoryLogRecordsByObject(DATA1)),
+                                        null,
                                         (result) -> {
                                             // do nothing.
                                         }))
@@ -179,6 +182,7 @@ class ReplicaManagerTest extends ReplicaTestBase {
                 20000,
                 1,
                 Collections.singletonMap(unknownBucket, genMemoryLogRecordsByObject(DATA1)),
+                null,
                 future::complete);
         assertThat(future.get())
                 .containsOnly(
@@ -203,6 +207,7 @@ class ReplicaManagerTest extends ReplicaTestBase {
         replicaManager.fetchLogRecords(
                 buildFetchParams(-1),
                 Collections.singletonMap(tb, new FetchReqInfo(tb.getTableId(), 0L, 1024 * 1024)),
+                null,
                 emptyFuture::complete);
         Map<TableBucket, FetchLogResultForBucket> result = emptyFuture.get();
         assertThat(result.size()).isEqualTo(1);
@@ -217,6 +222,7 @@ class ReplicaManagerTest extends ReplicaTestBase {
                 20000,
                 1,
                 Collections.singletonMap(tb, genMemoryLogRecordsByObject(DATA1)),
+                null,
                 future::complete);
         assertThat(future.get()).containsOnly(new ProduceLogResultForBucket(tb, 0, 10L));
 
@@ -226,6 +232,7 @@ class ReplicaManagerTest extends ReplicaTestBase {
         replicaManager.fetchLogRecords(
                 buildFetchParams(-1),
                 Collections.singletonMap(tb, new FetchReqInfo(tb.getTableId(), 0L, 1024 * 1024)),
+                null,
                 future1::complete);
         result = future1.get();
         assertThat(result.size()).isEqualTo(1);
@@ -241,6 +248,7 @@ class ReplicaManagerTest extends ReplicaTestBase {
         replicaManager.fetchLogRecords(
                 buildFetchParams(-1),
                 Collections.singletonMap(tb, new FetchReqInfo(tb.getTableId(), 3L, 1024 * 1024)),
+                null,
                 future1::complete);
         result = future1.get();
         assertThat(result.size()).isEqualTo(1);
@@ -257,6 +265,7 @@ class ReplicaManagerTest extends ReplicaTestBase {
                 20000,
                 1,
                 Collections.singletonMap(tb, genMemoryLogRecordsByObject(DATA1)),
+                null,
                 future::complete);
         assertThat(future.get()).containsOnly(new ProduceLogResultForBucket(tb, 10L, 20L));
 
@@ -265,6 +274,7 @@ class ReplicaManagerTest extends ReplicaTestBase {
         replicaManager.fetchLogRecords(
                 buildFetchParams(-1),
                 Collections.singletonMap(tb, new FetchReqInfo(tb.getTableId(), 10L, 1024 * 1024)),
+                null,
                 future1::complete);
         result = future1.get();
         assertThat(result.size()).isEqualTo(1);
@@ -280,6 +290,7 @@ class ReplicaManagerTest extends ReplicaTestBase {
         replicaManager.fetchLogRecords(
                 buildFetchParams(-1),
                 Collections.singletonMap(tb, new FetchReqInfo(tb.getTableId(), 100L, 1024 * 1024)),
+                null,
                 future1::complete);
         result = future1.get();
         assertThat(result.size()).isEqualTo(1);
@@ -297,6 +308,7 @@ class ReplicaManagerTest extends ReplicaTestBase {
         replicaManager.fetchLogRecords(
                 buildFetchParams(-1),
                 Collections.singletonMap(tb, new FetchReqInfo(tb.getTableId(), 20L, 1024 * 1024)),
+                null,
                 future1::complete);
         result = future1.get();
         assertThat(result.size()).isEqualTo(1);
@@ -319,7 +331,7 @@ class ReplicaManagerTest extends ReplicaTestBase {
         int maxFetchBytesSize = batchSize + 10;
         CompletableFuture<List<ProduceLogResultForBucket>> future = new CompletableFuture<>();
         replicaManager.appendRecordsToLog(
-                20000, 1, Collections.singletonMap(tb, records1), future::complete);
+                20000, 1, Collections.singletonMap(tb, records1), null, future::complete);
         assertThat(future.get()).containsOnly(new ProduceLogResultForBucket(tb, 0, 10L));
 
         // fetch from this bucket from offset 0 with fetch max bytes size bigger that data1 batch
@@ -330,6 +342,7 @@ class ReplicaManagerTest extends ReplicaTestBase {
                 buildFetchParams(-1, maxFetchBytesSize),
                 Collections.singletonMap(
                         tb, new FetchReqInfo(tb.getTableId(), 0L, Integer.MAX_VALUE)),
+                null,
                 future1::complete);
         Map<TableBucket, FetchLogResultForBucket> result = future1.get();
         assertThat(result.size()).isEqualTo(1);
@@ -347,6 +360,7 @@ class ReplicaManagerTest extends ReplicaTestBase {
                 20000,
                 1,
                 Collections.singletonMap(tb, genMemoryLogRecordsByObject(ANOTHER_DATA1)),
+                null,
                 future::complete);
         assertThat(future.get()).containsOnly(new ProduceLogResultForBucket(tb, 10L, 20L));
 
@@ -356,6 +370,7 @@ class ReplicaManagerTest extends ReplicaTestBase {
                 buildFetchParams(-1),
                 Collections.singletonMap(
                         tb, new FetchReqInfo(tb.getTableId(), 0, Integer.MAX_VALUE)),
+                null,
                 future1::complete);
         result = future1.get();
         resultForBucket = result.get(tb);
@@ -374,6 +389,7 @@ class ReplicaManagerTest extends ReplicaTestBase {
                 buildFetchParams(-1, maxFetchBytesSize),
                 Collections.singletonMap(
                         tb, new FetchReqInfo(tb.getTableId(), 0, Integer.MAX_VALUE)),
+                null,
                 future1::complete);
         result = future1.get();
         resultForBucket = result.get(tb);
@@ -397,7 +413,7 @@ class ReplicaManagerTest extends ReplicaTestBase {
         Map<TableBucket, MemoryLogRecords> data = new HashMap<>();
         data.put(tb1, genMemoryLogRecordsByObject(DATA1));
         data.put(tb2, genMemoryLogRecordsByObject(DATA1));
-        replicaManager.appendRecordsToLog(20000, 1, data, future::complete);
+        replicaManager.appendRecordsToLog(20000, 1, data, null, future::complete);
         assertThat(future.get())
                 .containsExactlyInAnyOrder(
                         new ProduceLogResultForBucket(tb1, 0, 10L),
@@ -408,7 +424,7 @@ class ReplicaManagerTest extends ReplicaTestBase {
         data = new HashMap<>();
         data.put(tb1, genMemoryLogRecordsByObject(ANOTHER_DATA1));
         data.put(tb2, genMemoryLogRecordsByObject(ANOTHER_DATA1));
-        replicaManager.appendRecordsToLog(20000, 1, data, future::complete);
+        replicaManager.appendRecordsToLog(20000, 1, data, null, future::complete);
         assertThat(future.get())
                 .containsExactlyInAnyOrder(
                         new ProduceLogResultForBucket(tb1, 10L, 20L),
@@ -421,7 +437,8 @@ class ReplicaManagerTest extends ReplicaTestBase {
         Map<TableBucket, FetchReqInfo> newFetchData = new HashMap<>();
         newFetchData.put(tb1, new FetchReqInfo(tb1.getTableId(), 0, Integer.MAX_VALUE));
         newFetchData.put(tb2, new FetchReqInfo(tb2.getTableId(), 0, Integer.MAX_VALUE));
-        replicaManager.fetchLogRecords(buildFetchParams(-1, 10), newFetchData, future1::complete);
+        replicaManager.fetchLogRecords(
+                buildFetchParams(-1, 10), newFetchData, null, future1::complete);
         Map<TableBucket, FetchLogResultForBucket> result = future1.get();
         assertThat(result.size()).isEqualTo(2);
         List<FetchLogResultForBucket> resultList = new ArrayList<>(result.values());
@@ -533,6 +550,7 @@ class ReplicaManagerTest extends ReplicaTestBase {
         replicaManager.fetchLogRecords(
                 buildFetchParams(-1),
                 Collections.singletonMap(tb, new FetchReqInfo(tb.getTableId(), 0L, 1024 * 1024)),
+                null,
                 future1::complete);
         FetchLogResultForBucket resultForBucket = future1.get().get(tb);
         assertThat(resultForBucket.getHighWatermark()).isEqualTo(5L);
@@ -574,6 +592,7 @@ class ReplicaManagerTest extends ReplicaTestBase {
         replicaManager.fetchLogRecords(
                 buildFetchParams(-1),
                 Collections.singletonMap(tb, new FetchReqInfo(tb.getTableId(), 0L, 1024 * 1024)),
+                null,
                 future1::complete);
         resultForBucket = future1.get().get(tb);
         assertThat(resultForBucket.getHighWatermark()).isEqualTo(5L);
@@ -612,6 +631,7 @@ class ReplicaManagerTest extends ReplicaTestBase {
         replicaManager.fetchLogRecords(
                 buildFetchParams(-1),
                 Collections.singletonMap(tb, new FetchReqInfo(tb.getTableId(), 0L, 1024 * 1024)),
+                null,
                 future1::complete);
         resultForBucket = future1.get().get(tb);
         assertThat(resultForBucket.getHighWatermark()).isEqualTo(8L);
@@ -667,6 +687,7 @@ class ReplicaManagerTest extends ReplicaTestBase {
                 buildFetchParams(-1),
                 Collections.singletonMap(
                         tb, new FetchReqInfo(tb.getTableId(), 0L, Integer.MAX_VALUE)),
+                null,
                 future1::complete);
         FetchLogResultForBucket resultForBucket = future1.get().get(tb);
         assertThat(resultForBucket.getHighWatermark()).isEqualTo(18L);
@@ -892,6 +913,7 @@ class ReplicaManagerTest extends ReplicaTestBase {
                 20000,
                 1,
                 Collections.singletonMap(tb, genMemoryLogRecordsByObject(DATA1)),
+                null,
                 future::complete);
         assertThat(future.get()).containsOnly(new ProduceLogResultForBucket(tb, 0, 10L));
         // produce another batch to this bucket.
@@ -900,6 +922,7 @@ class ReplicaManagerTest extends ReplicaTestBase {
                 20000,
                 1,
                 Collections.singletonMap(tb, genMemoryLogRecordsByObject(ANOTHER_DATA1)),
+                null,
                 future::complete);
         assertThat(future.get()).containsOnly(new ProduceLogResultForBucket(tb, 10, 20L));
 
@@ -928,6 +951,7 @@ class ReplicaManagerTest extends ReplicaTestBase {
                 20000,
                 1,
                 Collections.singletonMap(tb, genMemoryLogRecordsByObject(DATA1)),
+                null,
                 future::complete);
         assertThat(future.get()).containsOnly(new ProduceLogResultForBucket(tb, 0, 10L));
 
@@ -984,6 +1008,7 @@ class ReplicaManagerTest extends ReplicaTestBase {
                     20000,
                     1,
                     Collections.singletonMap(tb, genMemoryLogRecordsByObject(DATA1)),
+                    null,
                     future::complete);
             future.get();
             // advance clock to generate different batch commit timestamp.
@@ -1005,6 +1030,7 @@ class ReplicaManagerTest extends ReplicaTestBase {
                 buildFetchParams(-1, Integer.MAX_VALUE),
                 Collections.singletonMap(
                         tb, new FetchReqInfo(tb.getTableId(), 0L, Integer.MAX_VALUE)),
+                null,
                 future::complete);
         Map<Long, Long> offsetToCommitTimestampMap =
                 startOffsetToBatchCommitTimestamp(future.get().get(tb));
@@ -1082,6 +1108,7 @@ class ReplicaManagerTest extends ReplicaTestBase {
                 300000,
                 -1,
                 Collections.singletonMap(tb, genMemoryLogRecordsByObject(DATA1)),
+                null,
                 future::complete);
         assertThat(future.get()).containsOnly(new ProduceLogResultForBucket(tb, 0, 10L));
     }
@@ -1809,7 +1836,8 @@ class ReplicaManagerTest extends ReplicaTestBase {
         for (TableBucket tb : tableBuckets) {
             fetchData.put(tb, new FetchReqInfo(tb.getTableId(), 0L, 1024 * 1024));
         }
-        replicaManager.fetchLogRecords(buildFetchParams(-1), fetchData, fetchLogFuture::complete);
+        replicaManager.fetchLogRecords(
+                buildFetchParams(-1), fetchData, null, fetchLogFuture::complete);
         return fetchLogFuture.get();
     }
 

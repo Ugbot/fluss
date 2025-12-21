@@ -76,6 +76,7 @@ import static org.apache.fluss.record.TestData.DATA1_TABLE_DESCRIPTOR;
 import static org.apache.fluss.record.TestData.DATA1_TABLE_ID;
 import static org.apache.fluss.record.TestData.DATA1_TABLE_PATH;
 import static org.apache.fluss.server.coordinator.CoordinatorContext.INITIAL_COORDINATOR_EPOCH;
+import static org.apache.fluss.server.metrics.group.TestingMetricGroups.USER_METRICS;
 import static org.apache.fluss.server.zk.data.LeaderAndIsr.INITIAL_BUCKET_EPOCH;
 import static org.apache.fluss.server.zk.data.LeaderAndIsr.INITIAL_LEADER_EPOCH;
 import static org.apache.fluss.testutils.DataTestUtils.genMemoryLogRecordsByObject;
@@ -152,6 +153,7 @@ public class ReplicaFetcherThreadTest {
                 1000,
                 1,
                 Collections.singletonMap(tb, genMemoryLogRecordsByObject(DATA1)),
+                null,
                 future::complete);
         assertThat(future.get()).containsOnly(new ProduceLogResultForBucket(tb, 0, 10L));
 
@@ -175,6 +177,7 @@ public class ReplicaFetcherThreadTest {
                 1000,
                 1,
                 Collections.singletonMap(tb, genMemoryLogRecordsByObject(DATA1)),
+                null,
                 future::complete);
         assertThat(future.get()).containsOnly(new ProduceLogResultForBucket(tb, 10L, 20L));
         retry(
@@ -208,6 +211,7 @@ public class ReplicaFetcherThreadTest {
                     1000,
                     1, // don't wait ack
                     Collections.singletonMap(tb, genMemoryLogRecordsByObject(DATA1)),
+                    null,
                     future::complete);
             assertThat(future.get())
                     .containsOnly(new ProduceLogResultForBucket(tb, baseOffset, baseOffset + 10L));
@@ -240,6 +244,7 @@ public class ReplicaFetcherThreadTest {
                         1,
                         Collections.singletonMap(
                                 tb, genMemoryLogRecordsWithWriterId(DATA1, writerId, i, 0)),
+                        null,
                         future::complete);
                 assertThat(future.get())
                         .containsOnly(
@@ -274,6 +279,7 @@ public class ReplicaFetcherThreadTest {
                 1000,
                 1,
                 Collections.singletonMap(tb, genMemoryLogRecordsWithWriterId(DATA1, 101L, 5, 100L)),
+                null,
                 future::complete);
         assertThat(future.get()).containsOnly(new ProduceLogResultForBucket(tb, 100L, 110L));
 
@@ -285,6 +291,7 @@ public class ReplicaFetcherThreadTest {
                 1000,
                 1,
                 Collections.singletonMap(tb, genMemoryLogRecordsWithWriterId(DATA1, 100L, 5, 110L)),
+                null,
                 future::complete);
         assertThat(future.get()).containsOnly(new ProduceLogResultForBucket(tb, 110L, 120L));
         retry(
@@ -306,6 +313,7 @@ public class ReplicaFetcherThreadTest {
                 1,
                 Collections.singletonMap(
                         tb, genMemoryLogRecordsWithWriterId(DATA1, writerId, 0, 0)),
+                null,
                 future::complete);
         assertThat(future.get()).containsOnly(new ProduceLogResultForBucket(tb, 0L, 10L));
 
@@ -326,6 +334,7 @@ public class ReplicaFetcherThreadTest {
                 1,
                 Collections.singletonMap(
                         tb, genMemoryLogRecordsWithWriterId(DATA1, writerId, 1, 0)),
+                null,
                 future::complete);
         assertThat(future.get()).containsOnly(new ProduceLogResultForBucket(tb, 10L, 20L));
 
@@ -355,6 +364,7 @@ public class ReplicaFetcherThreadTest {
                 1,
                 Collections.singletonMap(
                         tb, genMemoryLogRecordsWithWriterId(DATA1, writerId, 2, 0)),
+                null,
                 future::complete);
         assertThat(future.get()).containsOnly(new ProduceLogResultForBucket(tb, 20L, 30L));
         // now fetcher will work well since the state of writerId=101 is established
@@ -469,6 +479,7 @@ public class ReplicaFetcherThreadTest {
                     new TestingCompletedKvSnapshotCommitter(),
                     NOPErrorHandler.INSTANCE,
                     serverMetricGroup,
+                    USER_METRICS,
                     clock,
                     ioExecutor);
         }

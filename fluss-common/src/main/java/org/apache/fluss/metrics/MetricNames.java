@@ -75,6 +75,12 @@ public class MetricNames {
     public static final String SERVER_PHYSICAL_STORAGE_REMOTE_LOG_SIZE = "remoteLogSize";
 
     // --------------------------------------------------------------------------------------------
+    // metrics for user
+    // --------------------------------------------------------------------------------------------
+    public static final String BYTES_IN = "bytesIn";
+    public static final String BYTES_OUT = "bytesOut";
+
+    // --------------------------------------------------------------------------------------------
     // metrics for table
     // --------------------------------------------------------------------------------------------
     public static final String MESSAGES_IN_RATE = "messagesInPerSecond";
