@@ -19,22 +19,22 @@ package org.apache.fluss.client.table.writer;
 
 import org.apache.fluss.annotation.PublicEvolving;
 
+import java.util.concurrent.CompletableFuture;
+
 /**
- * Used to configure and create a {@link AppendWriter} to write data to a Log Table.
+ * The typed writer to write data to the log table using POJOs.
  *
- * <p>{@link Append} objects are immutable and can be shared between threads.
- *
+ * @param <T> the type of the record
  * @since 0.6
  */
 @PublicEvolving
-public interface Append {
+public interface TypedAppendWriter<T> extends TableWriter {
 
-    // TODO: Add more methods to configure the AppendWriter, such as apply static partitions,
-    //  apply overwrites, etc.
-
-    /** Create a new {@link AppendWriter} to write data to a Log Table using InternalRow. */
-    AppendWriter createWriter();
-
-    /** Create a new typed {@link AppendWriter} to write POJOs directly. */
-    <T> TypedAppendWriter<T> createTypedWriter(Class<T> pojoClass);
+    /**
+     * Append a record into a Log Table.
+     *
+     * @param record the record to append.
+     * @return A {@link CompletableFuture} that always returns append result when complete normally.
+     */
+    CompletableFuture<AppendResult> append(T record);
 }

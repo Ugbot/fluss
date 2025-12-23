@@ -25,11 +25,16 @@ import javax.annotation.concurrent.NotThreadSafe;
 import java.util.concurrent.CompletableFuture;
 
 /**
- * The lookup-er is used to lookup row of a primary key table by primary key or prefix key. The
- * lookuper has retriable ability to handle transient errors during lookup operations which is
- * configured by {@link org.apache.fluss.config.ConfigOptions#CLIENT_LOOKUP_MAX_RETRIES}.
+ * A lookuper performs key-based lookups against a primary key table, using either the full primary
+ * key or a prefix of the primary key (when configured via {@code Lookup#lookupBy}).
  *
- * <p>Note: Lookuper instances are not thread-safe.
+ * <p>Usage examples:
+ *
+ * <pre>{@code
+ * // Row-based key (InternalRow)
+ * Lookuper lookuper = table.newLookup().createLookuper();
+ * LookupResult res = lookuper.lookup(keyRow).get();
+ * }</pre>
  *
  * @since 0.6
  */
@@ -44,7 +49,7 @@ public interface Lookuper {
      * {@code table.newLookup().createLookuper()}), or be the prefix key if the lookuper is a Prefix
      * Key Lookuper (created by {@code table.newLookup().lookupBy(prefixKeys).createLookuper()}).
      *
-     * @param lookupKey the lookup key.
+     * @param lookupKey the lookup key
      * @return the result of lookup.
      */
     CompletableFuture<LookupResult> lookup(InternalRow lookupKey);

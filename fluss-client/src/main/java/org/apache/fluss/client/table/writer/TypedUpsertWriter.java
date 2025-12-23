@@ -19,22 +19,30 @@ package org.apache.fluss.client.table.writer;
 
 import org.apache.fluss.annotation.PublicEvolving;
 
+import java.util.concurrent.CompletableFuture;
+
 /**
- * Used to configure and create a {@link AppendWriter} to write data to a Log Table.
+ * The typed writer to write data to the primary key table using POJOs.
  *
- * <p>{@link Append} objects are immutable and can be shared between threads.
- *
+ * @param <T> the type of the record
  * @since 0.6
  */
 @PublicEvolving
-public interface Append {
+public interface TypedUpsertWriter<T> extends TableWriter {
 
-    // TODO: Add more methods to configure the AppendWriter, such as apply static partitions,
-    //  apply overwrites, etc.
+    /**
+     * Inserts a record into Fluss table if it does not already exist, or updates it if it does.
+     *
+     * @param record the record to upsert.
+     * @return A {@link CompletableFuture} that always returns upsert result when complete normally.
+     */
+    CompletableFuture<UpsertResult> upsert(T record);
 
-    /** Create a new {@link AppendWriter} to write data to a Log Table using InternalRow. */
-    AppendWriter createWriter();
-
-    /** Create a new typed {@link AppendWriter} to write POJOs directly. */
-    <T> TypedAppendWriter<T> createTypedWriter(Class<T> pojoClass);
+    /**
+     * Delete a certain record from the Fluss table. The input must contain the primary key fields.
+     *
+     * @param record the record to delete.
+     * @return A {@link CompletableFuture} that always delete result when complete normally.
+     */
+    CompletableFuture<DeleteResult> delete(T record);
 }

@@ -71,4 +71,9 @@ public class TableLookup implements Lookup {
                     tableInfo, schemaGetter, metadataUpdater, lookupClient, lookupColumnNames);
         }
     }
+
+    @Override
+    public <T> TypedLookuper<T> createTypedLookuper(Class<T> pojoClass) {
+        return new TypedLookuperImpl<>(createLookuper(), tableInfo, lookupColumnNames, pojoClass);
+    }
 }

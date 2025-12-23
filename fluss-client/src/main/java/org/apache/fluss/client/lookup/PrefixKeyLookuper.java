@@ -46,7 +46,7 @@ import static org.apache.fluss.client.utils.ClientUtils.getPartitionId;
  * of the primary key.
  */
 @NotThreadSafe
-class PrefixKeyLookuper extends AbstractLookuper {
+class PrefixKeyLookuper extends AbstractLookuper implements Lookuper {
 
     /** Extract bucket key from prefix lookup key row. */
     private final KeyEncoder bucketKeyEncoder;

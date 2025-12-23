@@ -15,26 +15,26 @@
  * limitations under the License.
  */
 
-package org.apache.fluss.client.table.writer;
+package org.apache.fluss.client.lookup;
 
 import org.apache.fluss.annotation.PublicEvolving;
 
+import java.util.concurrent.CompletableFuture;
+
 /**
- * Used to configure and create a {@link AppendWriter} to write data to a Log Table.
+ * A typed lookuper performs key-based lookups against a primary key table using POJOs.
  *
- * <p>{@link Append} objects are immutable and can be shared between threads.
- *
+ * @param <T> the type of the lookup key
  * @since 0.6
  */
 @PublicEvolving
-public interface Append {
+public interface TypedLookuper<T> {
 
-    // TODO: Add more methods to configure the AppendWriter, such as apply static partitions,
-    //  apply overwrites, etc.
-
-    /** Create a new {@link AppendWriter} to write data to a Log Table using InternalRow. */
-    AppendWriter createWriter();
-
-    /** Create a new typed {@link AppendWriter} to write POJOs directly. */
-    <T> TypedAppendWriter<T> createTypedWriter(Class<T> pojoClass);
+    /**
+     * Lookups certain row from the given lookup key.
+     *
+     * @param lookupKey the lookup key
+     * @return the result of lookup.
+     */
+    CompletableFuture<LookupResult> lookup(T lookupKey);
 }
