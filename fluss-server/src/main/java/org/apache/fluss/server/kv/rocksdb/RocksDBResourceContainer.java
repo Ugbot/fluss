@@ -22,6 +22,7 @@ import org.apache.fluss.config.ConfigOption;
 import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.config.Configuration;
 import org.apache.fluss.config.ReadableConfig;
+import org.apache.fluss.server.kv.KvManager;
 import org.apache.fluss.utils.FileUtils;
 import org.apache.fluss.utils.IOUtils;
 
@@ -33,6 +34,7 @@ import org.rocksdb.CompressionType;
 import org.rocksdb.DBOptions;
 import org.rocksdb.InfoLogLevel;
 import org.rocksdb.PlainTableConfig;
+import org.rocksdb.RateLimiter;
 import org.rocksdb.ReadOptions;
 import org.rocksdb.Statistics;
 import org.rocksdb.TableFormatConfig;
@@ -47,6 +49,8 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
+
+import static org.apache.fluss.utils.Preconditions.checkNotNull;
 
 /* This file is based on source code of Apache Flink Project (https://flink.apache.org/), licensed by the Apache
  * Software Foundation (ASF) under the Apache License, Version 2.0. See the NOTICE file distributed with this work for
@@ -73,22 +77,33 @@ public class RocksDBResourceContainer implements AutoCloseable {
 
     private final boolean enableStatistics;
 
+    /** The shared rate limiter for all RocksDB instances. */
+    private final RateLimiter sharedRateLimiter;
+
     /** The handles to be closed when the container is closed. */
     private final ArrayList<AutoCloseable> handlesToClose;
 
     @VisibleForTesting
     RocksDBResourceContainer() {
-        this(new Configuration(), null, false);
+        this(new Configuration(), null, false, KvManager.getDefaultRateLimiter());
     }
 
     public RocksDBResourceContainer(ReadableConfig configuration, @Nullable File instanceBasePath) {
-        this(configuration, instanceBasePath, false);
+        this(configuration, instanceBasePath, false, KvManager.getDefaultRateLimiter());
     }
 
     public RocksDBResourceContainer(
             ReadableConfig configuration,
             @Nullable File instanceBasePath,
             boolean enableStatistics) {
+        this(configuration, instanceBasePath, enableStatistics, KvManager.getDefaultRateLimiter());
+    }
+
+    public RocksDBResourceContainer(
+            ReadableConfig configuration,
+            @Nullable File instanceBasePath,
+            boolean enableStatistics,
+            RateLimiter sharedRateLimiter) {
         this.configuration = configuration;
 
         this.instanceRocksDBPath =
@@ -96,6 +111,8 @@ public class RocksDBResourceContainer implements AutoCloseable {
                         ? RocksDBKvBuilder.getInstanceRocksDBPath(instanceBasePath)
                         : null;
         this.enableStatistics = enableStatistics;
+        this.sharedRateLimiter =
+                checkNotNull(sharedRateLimiter, "sharedRateLimiter must not be null");
 
         this.handlesToClose = new ArrayList<>();
     }
@@ -116,6 +133,9 @@ public class RocksDBResourceContainer implements AutoCloseable {
 
         // add necessary default options
         opt = opt.setCreateIfMissing(true);
+
+        // set shared rate limiter
+        opt.setRateLimiter(sharedRateLimiter);
 
         if (enableStatistics) {
             Statistics statistics = new Statistics();

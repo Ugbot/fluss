@@ -28,10 +28,12 @@ import org.apache.fluss.metadata.LogFormat;
 import org.apache.fluss.metadata.MergeEngineType;
 import org.apache.fluss.utils.ArrayUtils;
 
+import java.lang.reflect.Field;
 import java.time.Duration;
 import java.time.ZoneId;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -1576,6 +1578,17 @@ public class ConfigOptions {
                             "The max size of the consumed memory for RocksDB batch write, "
                                     + "will flush just based on item count if this config set to 0.");
 
+    public static final ConfigOption<MemorySize> KV_SHARED_RATE_LIMITER_BYTES_PER_SEC =
+            key("kv.rocksdb.shared-rate-limiter.bytes-per-sec")
+                    .memoryType()
+                    .defaultValue(new MemorySize(Long.MAX_VALUE))
+                    .withDescription(
+                            "The shared rate limit in bytes per second for RocksDB flush and compaction operations "
+                                    + "across all RocksDB instances in the TabletServer. "
+                                    + "All KV tablets share a single global RateLimiter to prevent disk IO from being saturated. "
+                                    + "The RateLimiter is always enabled. The default value is Long.MAX_VALUE (effectively unlimited). "
+                                    + "Set to a lower value (e.g., 100MB) to limit the rate.");
+
     // --------------------------------------------------------------------------
     // Provided configurable ColumnFamilyOptions within Fluss
     // --------------------------------------------------------------------------
@@ -1868,5 +1881,46 @@ public class ConfigOptions {
         SNAPPY,
         LZ4,
         ZSTD
+    }
+
+    // ------------------------------------------------------------------------
+    //  ConfigOptions Registry and Utilities
+    // ------------------------------------------------------------------------
+
+    /**
+     * Holder class for lazy initialization of ConfigOptions registry. This ensures that the
+     * registry is initialized only when first accessed, and guarantees that all ConfigOption fields
+     * are already initialized (since static initialization happens in declaration order).
+     */
+    private static class ConfigOptionsHolder {
+        private static final Map<String, ConfigOption<?>> CONFIG_OPTIONS_BY_KEY;
+
+        static {
+            Map<String, ConfigOption<?>> options = new HashMap<>();
+            Field[] fields = ConfigOptions.class.getFields();
+            for (Field field : fields) {
+                if (!ConfigOption.class.isAssignableFrom(field.getType())) {
+                    continue;
+                }
+                try {
+                    ConfigOption<?> configOption = (ConfigOption<?>) field.get(null);
+                    options.put(configOption.key(), configOption);
+                } catch (IllegalAccessException e) {
+                    // Ignore fields that cannot be accessed
+                }
+            }
+            CONFIG_OPTIONS_BY_KEY = Collections.unmodifiableMap(options);
+        }
+    }
+
+    /**
+     * Gets the ConfigOption for a given key.
+     *
+     * @param key the configuration key
+     * @return the ConfigOption if found, null otherwise
+     */
+    @Internal
+    public static ConfigOption<?> getConfigOption(String key) {
+        return ConfigOptionsHolder.CONFIG_OPTIONS_BY_KEY.get(key);
     }
 }

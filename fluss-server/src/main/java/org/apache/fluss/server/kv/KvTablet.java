@@ -67,9 +67,8 @@ import org.apache.fluss.shaded.arrow.org.apache.arrow.memory.BufferAllocator;
 import org.apache.fluss.types.RowType;
 import org.apache.fluss.utils.BytesUtils;
 import org.apache.fluss.utils.FileUtils;
-import org.apache.fluss.utils.FlussPaths;
-import org.apache.fluss.utils.types.Tuple2;
 
+import org.rocksdb.RateLimiter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -162,37 +161,6 @@ public final class KvTablet {
     }
 
     public static KvTablet create(
-            LogTablet logTablet,
-            File kvTabletDir,
-            Configuration serverConf,
-            TabletServerMetricGroup serverMetricGroup,
-            BufferAllocator arrowBufferAllocator,
-            MemorySegmentPool memorySegmentPool,
-            KvFormat kvFormat,
-            RowMerger rowMerger,
-            ArrowCompressionInfo arrowCompressionInfo,
-            SchemaGetter schemaGetter,
-            ChangelogImage changelogImage)
-            throws IOException {
-        Tuple2<PhysicalTablePath, TableBucket> tablePathAndBucket =
-                FlussPaths.parseTabletDir(kvTabletDir);
-        return create(
-                tablePathAndBucket.f0,
-                tablePathAndBucket.f1,
-                logTablet,
-                kvTabletDir,
-                serverConf,
-                serverMetricGroup,
-                arrowBufferAllocator,
-                memorySegmentPool,
-                kvFormat,
-                rowMerger,
-                arrowCompressionInfo,
-                schemaGetter,
-                changelogImage);
-    }
-
-    public static KvTablet create(
             PhysicalTablePath tablePath,
             TableBucket tableBucket,
             LogTablet logTablet,
@@ -205,9 +173,10 @@ public final class KvTablet {
             RowMerger rowMerger,
             ArrowCompressionInfo arrowCompressionInfo,
             SchemaGetter schemaGetter,
-            ChangelogImage changelogImage)
+            ChangelogImage changelogImage,
+            RateLimiter sharedRateLimiter)
             throws IOException {
-        RocksDBKv kv = buildRocksDBKv(serverConf, kvTabletDir);
+        RocksDBKv kv = buildRocksDBKv(serverConf, kvTabletDir, sharedRateLimiter);
         return new KvTablet(
                 tablePath,
                 tableBucket,
@@ -226,10 +195,11 @@ public final class KvTablet {
                 changelogImage);
     }
 
-    private static RocksDBKv buildRocksDBKv(Configuration configuration, File kvDir)
+    private static RocksDBKv buildRocksDBKv(
+            Configuration configuration, File kvDir, RateLimiter sharedRateLimiter)
             throws IOException {
         RocksDBResourceContainer rocksDBResourceContainer =
-                new RocksDBResourceContainer(configuration, kvDir);
+                new RocksDBResourceContainer(configuration, kvDir, false, sharedRateLimiter);
         RocksDBKvBuilder rocksDBKvBuilder =
                 new RocksDBKvBuilder(
                         kvDir,

@@ -191,7 +191,8 @@ class KvTabletTest {
                 rowMerger,
                 DEFAULT_COMPRESSION,
                 schemaGetter,
-                tableConf.getChangelogImage());
+                tableConf.getChangelogImage(),
+                KvManager.getDefaultRateLimiter());
     }
 
     @Test

@@ -1,7 +1,7 @@
 ---
 sidebar_label: Delta Joins
 title: Flink Delta Joins
-sidebar_position: 6
+sidebar_position: 7
 ---
 
 # The Delta Join

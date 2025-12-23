@@ -173,7 +173,10 @@ public class CoordinatorServer extends ServerBase {
 
             this.lakeCatalogDynamicLoader = new LakeCatalogDynamicLoader(conf, pluginManager, true);
             this.dynamicConfigManager = new DynamicConfigManager(zkClient, conf, true);
+
+            // Register server reconfigurable components
             dynamicConfigManager.register(lakeCatalogDynamicLoader);
+
             dynamicConfigManager.startup();
 
             this.coordinatorContext = new CoordinatorContext();

@@ -69,7 +69,9 @@ public class ProcedureManager {
     private enum ProcedureEnum {
         ADD_ACL("sys.add_acl", AddAclProcedure.class),
         DROP_ACL("sys.drop_acl", DropAclProcedure.class),
-        List_ACL("sys.list_acl", ListAclProcedure.class);
+        List_ACL("sys.list_acl", ListAclProcedure.class),
+        SET_CLUSTER_CONFIG("sys.set_cluster_config", SetClusterConfigProcedure.class),
+        GET_CLUSTER_CONFIG("sys.get_cluster_config", GetClusterConfigProcedure.class);
 
         private final String path;
         private final Class<? extends ProcedureBase> procedureClass;

@@ -1,6 +1,6 @@
 ---
 title: Connector Options
-sidebar_position: 8
+sidebar_position: 9
 ---
 
 # Connector Options

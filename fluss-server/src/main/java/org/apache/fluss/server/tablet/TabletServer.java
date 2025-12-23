@@ -220,7 +220,6 @@ public class TabletServer extends ServerBase {
                     new MetadataManager(zkClient, conf, lakeCatalogDynamicLoader);
             this.dynamicConfigManager = new DynamicConfigManager(zkClient, conf, false);
             dynamicConfigManager.register(lakeCatalogDynamicLoader);
-            dynamicConfigManager.startup();
 
             this.metadataCache = new TabletServerMetadataCache(metadataManager);
 
@@ -230,6 +229,11 @@ public class TabletServer extends ServerBase {
 
             this.kvManager = KvManager.create(conf, zkClient, logManager, tabletServerMetricGroup);
             kvManager.startup();
+
+            // Register kvManager to dynamicConfigManager for dynamic reconfiguration
+            dynamicConfigManager.register(kvManager);
+            // Start dynamicConfigManager after all reconfigurable components are registered
+            dynamicConfigManager.startup();
 
             this.authorizer = AuthorizerLoader.createAuthorizer(conf, zkClient, pluginManager);
             if (authorizer != null) {
