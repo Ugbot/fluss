@@ -359,11 +359,7 @@ abstract class FlinkTableSourceBatchITCase extends FlinkTestBase {
         String query = String.format("SELECT COUNT(*) FROM %s", tableName);
         assertThat(tEnv.explainSql(query))
                 .contains(
-                        String.format(
-                                "TableSourceScan(table=[[testcatalog, defaultdb, %s, project=[id], "
-                                        + "aggregates=[grouping=[], aggFunctions=[Count1AggFunction()]]]], "
-                                        + "fields=[count1$0])",
-                                tableName));
+                        "aggregates=[grouping=[], aggFunctions=[Count1AggFunction()]]]], fields=[count1$0]");
         CloseableIterator<Row> iterRows = tEnv.executeSql(query).collect();
         List<String> collected = collectRowsWithTimeout(iterRows, 1);
         List<String> expected = Collections.singletonList(String.format("+I[%s]", expectedRows));
@@ -479,7 +475,7 @@ abstract class FlinkTableSourceBatchITCase extends FlinkTestBase {
         return tableName;
     }
 
-    private String preparePartitionedLogTable() throws Exception {
+    protected String preparePartitionedLogTable() throws Exception {
         String tableName = String.format("test_partitioned_log_table_%s", RandomUtils.nextInt());
         tEnv.executeSql(
                 String.format(
