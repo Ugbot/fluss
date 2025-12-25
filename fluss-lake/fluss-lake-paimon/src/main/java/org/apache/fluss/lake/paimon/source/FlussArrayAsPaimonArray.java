@@ -29,87 +29,72 @@ import org.apache.paimon.data.Timestamp;
 import org.apache.paimon.data.variant.Variant;
 import org.apache.paimon.types.ArrayType;
 import org.apache.paimon.types.DataType;
-import org.apache.paimon.types.RowKind;
-import org.apache.paimon.types.RowType;
 
-/** Adapter class for converting Fluss row to Paimon row. */
-public class FlussRowAsPaimonRow implements InternalRow {
+/** Adapter class for converting Fluss InternalArray to Paimon InternalArray. */
+public class FlussArrayAsPaimonArray implements InternalArray {
 
-    protected org.apache.fluss.row.InternalRow internalRow;
-    protected final RowType tableRowType;
+    private final org.apache.fluss.row.InternalArray flussArray;
+    private final DataType elementType;
 
-    public FlussRowAsPaimonRow(RowType tableTowType) {
-        this.tableRowType = tableTowType;
-    }
-
-    public FlussRowAsPaimonRow(org.apache.fluss.row.InternalRow internalRow, RowType tableTowType) {
-        this.internalRow = internalRow;
-        this.tableRowType = tableTowType;
+    public FlussArrayAsPaimonArray(
+            org.apache.fluss.row.InternalArray flussArray, DataType elementType) {
+        this.flussArray = flussArray;
+        this.elementType = elementType;
     }
 
     @Override
-    public int getFieldCount() {
-        return internalRow.getFieldCount();
-    }
-
-    @Override
-    public RowKind getRowKind() {
-        return RowKind.INSERT;
-    }
-
-    @Override
-    public void setRowKind(RowKind rowKind) {
-        // do nothing
+    public int size() {
+        return flussArray.size();
     }
 
     @Override
     public boolean isNullAt(int pos) {
-        return internalRow.isNullAt(pos);
+        return flussArray.isNullAt(pos);
     }
 
     @Override
     public boolean getBoolean(int pos) {
-        return internalRow.getBoolean(pos);
+        return flussArray.getBoolean(pos);
     }
 
     @Override
     public byte getByte(int pos) {
-        return internalRow.getByte(pos);
+        return flussArray.getByte(pos);
     }
 
     @Override
     public short getShort(int pos) {
-        return internalRow.getShort(pos);
+        return flussArray.getShort(pos);
     }
 
     @Override
     public int getInt(int pos) {
-        return internalRow.getInt(pos);
+        return flussArray.getInt(pos);
     }
 
     @Override
     public long getLong(int pos) {
-        return internalRow.getLong(pos);
+        return flussArray.getLong(pos);
     }
 
     @Override
     public float getFloat(int pos) {
-        return internalRow.getFloat(pos);
+        return flussArray.getFloat(pos);
     }
 
     @Override
     public double getDouble(int pos) {
-        return internalRow.getDouble(pos);
+        return flussArray.getDouble(pos);
     }
 
     @Override
     public BinaryString getString(int pos) {
-        return BinaryString.fromBytes(internalRow.getString(pos).toBytes());
+        return BinaryString.fromBytes(flussArray.getString(pos).toBytes());
     }
 
     @Override
     public Decimal getDecimal(int pos, int precision, int scale) {
-        org.apache.fluss.row.Decimal flussDecimal = internalRow.getDecimal(pos, precision, scale);
+        org.apache.fluss.row.Decimal flussDecimal = flussArray.getDecimal(pos, precision, scale);
         if (flussDecimal.isCompact()) {
             return Decimal.fromUnscaledLong(flussDecimal.toUnscaledLong(), precision, scale);
         } else {
@@ -119,14 +104,14 @@ public class FlussRowAsPaimonRow implements InternalRow {
 
     @Override
     public Timestamp getTimestamp(int pos, int precision) {
-        DataType paimonTimestampType = tableRowType.getTypeAt(pos);
-        switch (paimonTimestampType.getTypeRoot()) {
+        // Default to TIMESTAMP_WITHOUT_TIME_ZONE behavior for arrays
+        switch (elementType.getTypeRoot()) {
             case TIMESTAMP_WITHOUT_TIME_ZONE:
                 if (TimestampNtz.isCompact(precision)) {
                     return Timestamp.fromEpochMillis(
-                            internalRow.getTimestampNtz(pos, precision).getMillisecond());
+                            flussArray.getTimestampNtz(pos, precision).getMillisecond());
                 } else {
-                    TimestampNtz timestampNtz = internalRow.getTimestampNtz(pos, precision);
+                    TimestampNtz timestampNtz = flussArray.getTimestampNtz(pos, precision);
                     return Timestamp.fromEpochMillis(
                             timestampNtz.getMillisecond(), timestampNtz.getNanoOfMillisecond());
                 }
@@ -134,49 +119,89 @@ public class FlussRowAsPaimonRow implements InternalRow {
             case TIMESTAMP_WITH_LOCAL_TIME_ZONE:
                 if (TimestampLtz.isCompact(precision)) {
                     return Timestamp.fromEpochMillis(
-                            internalRow.getTimestampLtz(pos, precision).getEpochMillisecond());
+                            flussArray.getTimestampLtz(pos, precision).getEpochMillisecond());
                 } else {
-                    TimestampLtz timestampLtz = internalRow.getTimestampLtz(pos, precision);
+                    TimestampLtz timestampLtz = flussArray.getTimestampLtz(pos, precision);
                     return Timestamp.fromEpochMillis(
                             timestampLtz.getEpochMillisecond(),
                             timestampLtz.getNanoOfMillisecond());
                 }
             default:
                 throw new UnsupportedOperationException(
-                        "Unsupported data type to get timestamp: " + paimonTimestampType);
+                        "Unsupported array element type for getTimestamp. "
+                                + "Only TIMESTAMP_WITHOUT_TIME_ZONE and "
+                                + "TIMESTAMP_WITH_LOCAL_TIME_ZONE are supported, but got: "
+                                + elementType.getTypeRoot()
+                                + " ("
+                                + elementType
+                                + ").");
         }
     }
 
     @Override
     public byte[] getBinary(int pos) {
-        return internalRow.getBytes(pos);
+        return flussArray.getBytes(pos);
     }
 
     @Override
-    public Variant getVariant(int i) {
+    public Variant getVariant(int pos) {
         throw new UnsupportedOperationException(
-                "getVariant is not support for Fluss record currently.");
+                "getVariant is not supported for Fluss array currently.");
     }
 
     @Override
     public InternalArray getArray(int pos) {
-        org.apache.fluss.row.InternalArray flussArray = internalRow.getArray(pos);
-        return flussArray == null
+        org.apache.fluss.row.InternalArray innerArray = flussArray.getArray(pos);
+        return innerArray == null
                 ? null
                 : new FlussArrayAsPaimonArray(
-                        flussArray,
-                        ((ArrayType) tableRowType.getField(pos).type()).getElementType());
+                        innerArray, ((ArrayType) elementType).getElementType());
     }
 
     @Override
     public InternalMap getMap(int pos) {
         throw new UnsupportedOperationException(
-                "getMap is not support for Fluss record currently.");
+                "getMap is not supported for Fluss array currently.");
     }
 
     @Override
-    public InternalRow getRow(int pos, int pos1) {
+    public InternalRow getRow(int pos, int numFields) {
         throw new UnsupportedOperationException(
-                "getRow is not support for Fluss record currently.");
+                "getRow is not supported for Fluss array currently.");
+    }
+
+    @Override
+    public boolean[] toBooleanArray() {
+        return flussArray.toBooleanArray();
+    }
+
+    @Override
+    public byte[] toByteArray() {
+        return flussArray.toByteArray();
+    }
+
+    @Override
+    public short[] toShortArray() {
+        return flussArray.toShortArray();
+    }
+
+    @Override
+    public int[] toIntArray() {
+        return flussArray.toIntArray();
+    }
+
+    @Override
+    public long[] toLongArray() {
+        return flussArray.toLongArray();
+    }
+
+    @Override
+    public float[] toFloatArray() {
+        return flussArray.toFloatArray();
+    }
+
+    @Override
+    public double[] toDoubleArray() {
+        return flussArray.toDoubleArray();
     }
 }
