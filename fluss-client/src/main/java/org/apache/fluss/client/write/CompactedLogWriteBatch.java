@@ -20,8 +20,9 @@ package org.apache.fluss.client.write;
 import org.apache.fluss.annotation.Internal;
 import org.apache.fluss.memory.AbstractPagedOutputView;
 import org.apache.fluss.metadata.PhysicalTablePath;
-import org.apache.fluss.record.MemoryLogRecordsIndexedBuilder;
-import org.apache.fluss.row.indexed.IndexedRow;
+import org.apache.fluss.record.MemoryLogRecordsCompactedBuilder;
+import org.apache.fluss.row.InternalRow;
+import org.apache.fluss.row.compacted.CompactedRow;
 import org.apache.fluss.rpc.messages.ProduceLogRequest;
 
 import javax.annotation.concurrent.NotThreadSafe;
@@ -29,16 +30,16 @@ import javax.annotation.concurrent.NotThreadSafe;
 import static org.apache.fluss.utils.Preconditions.checkArgument;
 
 /**
- * A batch of log records managed in INDEXED format that is or will be sent to server by {@link
+ * A batch of log records managed in COMPACTED format that is or will be sent to server by {@link
  * ProduceLogRequest}.
  *
  * <p>This class is not thread safe and external synchronization must be used when modifying it.
  */
 @NotThreadSafe
 @Internal
-public final class IndexedLogWriteBatch extends AbstractRowLogWriteBatch<IndexedRow> {
+public final class CompactedLogWriteBatch extends AbstractRowLogWriteBatch<CompactedRow> {
 
-    public IndexedLogWriteBatch(
+    public CompactedLogWriteBatch(
             int bucketId,
             PhysicalTablePath physicalTablePath,
             int schemaId,
@@ -50,13 +51,14 @@ public final class IndexedLogWriteBatch extends AbstractRowLogWriteBatch<Indexed
                 physicalTablePath,
                 createdMs,
                 outputView,
-                MemoryLogRecordsIndexedBuilder.builder(schemaId, writeLimit, outputView, true),
-                "Failed to build indexed log record batch.");
+                MemoryLogRecordsCompactedBuilder.builder(schemaId, writeLimit, outputView, true),
+                "Failed to build compacted log record batch.");
     }
 
     @Override
-    protected IndexedRow requireAndCastRow(org.apache.fluss.row.InternalRow row) {
-        checkArgument(row instanceof IndexedRow, "row must be IndexRow for indexed log table");
-        return (IndexedRow) row;
+    protected CompactedRow requireAndCastRow(InternalRow row) {
+        checkArgument(
+                row instanceof CompactedRow, "row must be CompactedRow for compacted log table");
+        return (CompactedRow) row;
     }
 }

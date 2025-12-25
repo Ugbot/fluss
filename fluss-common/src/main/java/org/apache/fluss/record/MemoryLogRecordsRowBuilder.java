@@ -39,7 +39,7 @@ import static org.apache.fluss.record.LogRecordBatchFormat.schemaIdOffset;
 import static org.apache.fluss.utils.Preconditions.checkArgument;
 
 /** Abstract base builder for row-based MemoryLogRecords builders sharing common logic. */
-abstract class AbstractRowMemoryLogRecordsBuilder<T> implements AutoCloseable {
+public abstract class MemoryLogRecordsRowBuilder<T> implements AutoCloseable {
     protected static final int BUILDER_DEFAULT_OFFSET = 0;
 
     protected final long baseLogOffset;
@@ -59,7 +59,7 @@ abstract class AbstractRowMemoryLogRecordsBuilder<T> implements AutoCloseable {
     private volatile boolean isClosed;
     private boolean aborted = false;
 
-    protected AbstractRowMemoryLogRecordsBuilder(
+    protected MemoryLogRecordsRowBuilder(
             long baseLogOffset,
             int schemaId,
             int writeLimit,

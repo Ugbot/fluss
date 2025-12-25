@@ -20,17 +20,20 @@ package org.apache.fluss.client.write;
 import org.apache.fluss.annotation.Internal;
 import org.apache.fluss.metadata.PhysicalTablePath;
 import org.apache.fluss.metadata.TableInfo;
+import org.apache.fluss.record.CompactedLogRecord;
 import org.apache.fluss.record.DefaultKvRecord;
-import org.apache.fluss.record.DefaultKvRecordBatch;
 import org.apache.fluss.record.IndexedLogRecord;
 import org.apache.fluss.row.BinaryRow;
 import org.apache.fluss.row.InternalRow;
+import org.apache.fluss.row.compacted.CompactedRow;
 import org.apache.fluss.row.indexed.IndexedRow;
 
 import javax.annotation.Nullable;
 
+import static org.apache.fluss.record.DefaultKvRecordBatch.RECORD_BATCH_HEADER_SIZE;
 import static org.apache.fluss.record.LogRecordBatch.CURRENT_LOG_MAGIC_VALUE;
 import static org.apache.fluss.record.LogRecordBatchFormat.recordBatchHeaderSize;
+import static org.apache.fluss.utils.Preconditions.checkArgument;
 import static org.apache.fluss.utils.Preconditions.checkNotNull;
 
 /**
@@ -47,19 +50,20 @@ public final class WriteRecord {
             BinaryRow row,
             byte[] key,
             byte[] bucketKey,
+            WriteFormat writeFormat,
             @Nullable int[] targetColumns) {
         checkNotNull(row, "row must not be null");
         checkNotNull(key, "key must not be null");
         checkNotNull(bucketKey, "bucketKey must not be null");
-        int estimatedSizeInBytes =
-                DefaultKvRecord.sizeOf(key, row) + DefaultKvRecordBatch.RECORD_BATCH_HEADER_SIZE;
+        checkArgument(writeFormat.isKv(), "writeFormat must be a KV format");
+        int estimatedSizeInBytes = DefaultKvRecord.sizeOf(key, row) + RECORD_BATCH_HEADER_SIZE;
         return new WriteRecord(
                 tableInfo,
                 tablePath,
                 key,
                 bucketKey,
                 row,
-                WriteFormat.KV,
+                writeFormat,
                 targetColumns,
                 estimatedSizeInBytes);
     }
@@ -70,18 +74,19 @@ public final class WriteRecord {
             PhysicalTablePath tablePath,
             byte[] key,
             byte[] bucketKey,
+            WriteFormat writeFormat,
             @Nullable int[] targetColumns) {
         checkNotNull(key, "key must not be null");
         checkNotNull(bucketKey, "key must not be null");
-        int estimatedSizeInBytes =
-                DefaultKvRecord.sizeOf(key, null) + DefaultKvRecordBatch.RECORD_BATCH_HEADER_SIZE;
+        checkArgument(writeFormat.isKv(), "writeFormat must be a KV format");
+        int estimatedSizeInBytes = DefaultKvRecord.sizeOf(key, null) + RECORD_BATCH_HEADER_SIZE;
         return new WriteRecord(
                 tableInfo,
                 tablePath,
                 key,
                 bucketKey,
                 null,
-                WriteFormat.KV,
+                writeFormat,
                 targetColumns,
                 estimatedSizeInBytes);
     }
@@ -123,6 +128,26 @@ public final class WriteRecord {
                 bucketKey,
                 row,
                 WriteFormat.ARROW_LOG,
+                null,
+                estimatedSizeInBytes);
+    }
+
+    /** Creates a write record for append operation for Compacted format. */
+    public static WriteRecord forCompactedAppend(
+            TableInfo tableInfo,
+            PhysicalTablePath tablePath,
+            CompactedRow row,
+            @Nullable byte[] bucketKey) {
+        checkNotNull(row);
+        int estimatedSizeInBytes =
+                CompactedLogRecord.sizeOf(row) + recordBatchHeaderSize(CURRENT_LOG_MAGIC_VALUE);
+        return new WriteRecord(
+                tableInfo,
+                tablePath,
+                null,
+                bucketKey,
+                row,
+                WriteFormat.COMPACTED_LOG,
                 null,
                 estimatedSizeInBytes);
     }
