@@ -1834,6 +1834,55 @@ public class ConfigOptions {
                                     + "like 9250-9260.");
 
     // ------------------------------------------------------------------------
+    //  ConfigOptions for prometheus push gateway reporter
+    // ------------------------------------------------------------------------
+    public static final ConfigOption<String> METRICS_REPORTER_PROMETHEUS_PUSHGATEWAY_HOST_URL =
+            key("metrics.reporter.prometheus-push.host-url")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The PushGateway server host URL including scheme, host name, and port.");
+
+    public static final ConfigOption<String> METRICS_REPORTER_PROMETHEUS_PUSHGATEWAY_JOB_NAME =
+            key("metrics.reporter.prometheus-push.job-name")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription("The job name under which metrics will be pushed");
+
+    public static final ConfigOption<Boolean>
+            METRICS_REPORTER_PROMETHEUS_PUSHGATEWAY_RANDOM_JOB_NAME_SUFFIX =
+                    key("metrics.reporter.prometheus-push.random-job-name-suffix")
+                            .booleanType()
+                            .defaultValue(true)
+                            .withDescription(
+                                    "Specifies whether a random suffix should be appended to the job name. "
+                                            + "This is useful when multiple instances of the reporter "
+                                            + "are running on the same host.");
+
+    public static final ConfigOption<Boolean>
+            METRICS_REPORTER_PROMETHEUS_PUSHGATEWAY_DELETE_ON_SHUTDOWN =
+                    key("metrics.reporter.prometheus-push.delete-on-shutdown")
+                            .booleanType()
+                            .defaultValue(true)
+                            .withDescription(
+                                    "Specifies whether to delete metrics from the PushGateway on shutdown. Fluss will try its best to delete the metrics but this is not guaranteed.");
+
+    public static final ConfigOption<String> METRICS_REPORTER_PROMETHEUS_PUSHGATEWAY_GROUPING_KEY =
+            key("metrics.reporter.prometheus-push.grouping-key")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "Specifies the grouping key which is the group and global labels of all metrics. The label name and value are separated by '=', and labels are separated by ';', e.g., k1=v1;k2=v2.");
+
+    public static final ConfigOption<Duration>
+            METRICS_REPORTER_PROMETHEUS_PUSHGATEWAY_PUSH_INTERVAL =
+                    key("metrics.reporter.prometheus-push.push-interval")
+                            .durationType()
+                            .defaultValue(Duration.ofSeconds(10))
+                            .withDescription(
+                                    "The interval of pushing metrics to Prometheus PushGateway.");
+
+    // ------------------------------------------------------------------------
     //  ConfigOptions for jmx reporter
     // ------------------------------------------------------------------------
     public static final ConfigOption<String> METRICS_REPORTER_JMX_HOST =
