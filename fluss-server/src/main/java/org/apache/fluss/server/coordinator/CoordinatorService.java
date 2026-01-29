@@ -389,7 +389,10 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
                                 tablePath,
                                 tableDescriptor,
                                 new DefaultLakeCatalogContext(
-                                        true, currentSession().getPrincipal()));
+                                        true,
+                                        currentSession().getPrincipal(),
+                                        null,
+                                        tableDescriptor));
             } catch (TableAlreadyExistException e) {
                 throw new LakeTableAlreadyExistException(e.getMessage(), e);
             }
@@ -420,15 +423,12 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
                             + "table properties or table schema.");
         }
 
-        LakeCatalog.Context lakeCatalogContext =
-                new DefaultLakeCatalogContext(false, currentSession().getPrincipal());
-
         if (!alterSchemaChanges.isEmpty()) {
             metadataManager.alterTableSchema(
                     tablePath,
                     alterSchemaChanges,
                     request.isIgnoreIfNotExists(),
-                    lakeCatalogContext);
+                    currentSession().getPrincipal());
         }
 
         if (!alterTableConfigChanges.isEmpty()) {
@@ -437,7 +437,7 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
                     alterTableConfigChanges,
                     tablePropertyChanges,
                     request.isIgnoreIfNotExists(),
-                    lakeCatalogContext);
+                    currentSession().getPrincipal());
         }
 
         return CompletableFuture.completedFuture(new AlterTableResponse());
@@ -1011,11 +1011,22 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
 
         private final boolean isCreatingFlussTable;
         private final FlussPrincipal flussPrincipal;
+        @Nullable private final TableDescriptor currentTable;
+        private final TableDescriptor expectedTable;
 
         public DefaultLakeCatalogContext(
-                boolean isCreatingFlussTable, FlussPrincipal flussPrincipal) {
+                boolean isCreatingFlussTable,
+                FlussPrincipal flussPrincipal,
+                @Nullable TableDescriptor currentTable,
+                TableDescriptor expectedTable) {
             this.isCreatingFlussTable = isCreatingFlussTable;
             this.flussPrincipal = flussPrincipal;
+            if (!isCreatingFlussTable) {
+                checkNotNull(
+                        currentTable, "currentTable must be provided when altering a Fluss table.");
+            }
+            this.currentTable = currentTable;
+            this.expectedTable = expectedTable;
         }
 
         @Override
@@ -1026,6 +1037,17 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
         @Override
         public FlussPrincipal getFlussPrincipal() {
             return flussPrincipal;
+        }
+
+        @Nullable
+        @Override
+        public TableDescriptor getCurrentTable() {
+            return currentTable;
+        }
+
+        @Override
+        public TableDescriptor getExpectedTable() {
+            return expectedTable;
         }
     }
 
