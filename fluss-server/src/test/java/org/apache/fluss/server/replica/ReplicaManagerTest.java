@@ -52,6 +52,7 @@ import org.apache.fluss.rpc.entity.ProduceLogResultForBucket;
 import org.apache.fluss.rpc.entity.PutKvResultForBucket;
 import org.apache.fluss.rpc.protocol.ApiError;
 import org.apache.fluss.rpc.protocol.Errors;
+import org.apache.fluss.rpc.protocol.MergeMode;
 import org.apache.fluss.server.entity.FetchReqInfo;
 import org.apache.fluss.server.entity.NotifyLeaderAndIsrData;
 import org.apache.fluss.server.entity.NotifyLeaderAndIsrResultForBucket;
@@ -481,6 +482,7 @@ class ReplicaManagerTest extends ReplicaTestBase {
                 1,
                 Collections.singletonMap(tb, genKvRecordBatch(DATA_1_WITH_KEY_AND_VALUE)),
                 null,
+                MergeMode.DEFAULT,
                 PUT_KV_VERSION,
                 future::complete);
         assertThat(future.get()).containsOnly(new PutKvResultForBucket(tb, 8));
@@ -494,6 +496,7 @@ class ReplicaManagerTest extends ReplicaTestBase {
                                         Collections.singletonMap(
                                                 tb, genKvRecordBatch(DATA_1_WITH_KEY_AND_VALUE)),
                                         null,
+                                        MergeMode.DEFAULT,
                                         PUT_KV_VERSION,
                                         (result) -> {
                                             // do nothing.
@@ -509,6 +512,7 @@ class ReplicaManagerTest extends ReplicaTestBase {
                 1,
                 Collections.singletonMap(unknownTb, genKvRecordBatch(DATA_1_WITH_KEY_AND_VALUE)),
                 null,
+                MergeMode.DEFAULT,
                 PUT_KV_VERSION,
                 future::complete);
         assertThat(future.get())
@@ -544,6 +548,7 @@ class ReplicaManagerTest extends ReplicaTestBase {
                         genKvRecordBatchWithWriterId(
                                 data1, DATA1_KEY_TYPE, DATA1_ROW_TYPE, 100L, 0)),
                 null,
+                MergeMode.DEFAULT,
                 PUT_KV_VERSION,
                 future::complete);
         assertThat(future.get()).containsOnly(new PutKvResultForBucket(tb, 5));
@@ -589,6 +594,7 @@ class ReplicaManagerTest extends ReplicaTestBase {
                         genKvRecordBatchWithWriterId(
                                 data2, DATA1_KEY_TYPE, DATA1_ROW_TYPE, 100L, 3)),
                 null,
+                MergeMode.DEFAULT,
                 PUT_KV_VERSION,
                 future::complete);
         PutKvResultForBucket putKvResultForBucket = future.get().get(0);
@@ -630,6 +636,7 @@ class ReplicaManagerTest extends ReplicaTestBase {
                         genKvRecordBatchWithWriterId(
                                 data3, DATA1_KEY_TYPE, DATA1_ROW_TYPE, 100L, 1)),
                 null,
+                MergeMode.DEFAULT,
                 PUT_KV_VERSION,
                 future::complete);
         assertThat(future.get()).containsOnly(new PutKvResultForBucket(tb, 8));
@@ -679,6 +686,7 @@ class ReplicaManagerTest extends ReplicaTestBase {
                     1,
                     Collections.singletonMap(tb, genKvRecordBatch(deleteList)),
                     null,
+                    MergeMode.DEFAULT,
                     PUT_KV_VERSION,
                     future::complete);
             assertThat(future.get()).containsOnly(new PutKvResultForBucket(tb, i + 1));
@@ -691,6 +699,7 @@ class ReplicaManagerTest extends ReplicaTestBase {
                 1,
                 Collections.singletonMap(tb, genKvRecordBatch(DATA_1_WITH_KEY_AND_VALUE)),
                 null,
+                MergeMode.DEFAULT,
                 PUT_KV_VERSION,
                 future::complete);
         assertThat(future.get()).containsOnly(new PutKvResultForBucket(tb, 18));
@@ -752,6 +761,7 @@ class ReplicaManagerTest extends ReplicaTestBase {
                 1,
                 Collections.singletonMap(tb, genKvRecordBatch(DATA_1_WITH_KEY_AND_VALUE)),
                 null,
+                MergeMode.DEFAULT,
                 PUT_KV_VERSION,
                 future1::complete);
         assertThat(future1.get()).containsOnly(new PutKvResultForBucket(tb, 8));
@@ -824,6 +834,7 @@ class ReplicaManagerTest extends ReplicaTestBase {
                 1,
                 Collections.singletonMap(tb, genKvRecordBatch(keyType, rowType, data1)),
                 null,
+                MergeMode.DEFAULT,
                 PUT_KV_VERSION,
                 future::complete);
         assertThat(future.get()).containsOnly(new PutKvResultForBucket(tb, 4));
@@ -904,6 +915,7 @@ class ReplicaManagerTest extends ReplicaTestBase {
                 1,
                 Collections.singletonMap(tb, genKvRecordBatch(DATA_1_WITH_KEY_AND_VALUE)),
                 null,
+                MergeMode.DEFAULT,
                 PUT_KV_VERSION,
                 future1::complete);
         assertThat(future1.get()).containsOnly(new PutKvResultForBucket(tb, 8));
@@ -1145,6 +1157,7 @@ class ReplicaManagerTest extends ReplicaTestBase {
                 -1,
                 Collections.singletonMap(tb, genKvRecordBatch(DATA_1_WITH_KEY_AND_VALUE)),
                 null,
+                MergeMode.DEFAULT,
                 PUT_KV_VERSION,
                 future::complete);
         assertThat(future.get()).containsOnly(new PutKvResultForBucket(tb, 8));
@@ -1314,6 +1327,7 @@ class ReplicaManagerTest extends ReplicaTestBase {
                                                             Collections.singletonList(
                                                                     Tuple2.of(key, value)))),
                                             null,
+                                            MergeMode.DEFAULT,
                                             PUT_KV_VERSION,
                                             future::complete);
                                 } catch (Exception e) {
@@ -1395,6 +1409,7 @@ class ReplicaManagerTest extends ReplicaTestBase {
                 -1,
                 entriesPerBucket,
                 null,
+                MergeMode.DEFAULT,
                 PUT_KV_VERSION,
                 writeResultForBuckets -> {
                     // do nothing
@@ -1434,6 +1449,7 @@ class ReplicaManagerTest extends ReplicaTestBase {
                 -1,
                 entriesPerBucket,
                 null,
+                MergeMode.DEFAULT,
                 PUT_KV_VERSION,
                 writeResultForBuckets -> {
                     // do nothing
@@ -1847,7 +1863,13 @@ class ReplicaManagerTest extends ReplicaTestBase {
         CompletableFuture<List<PutKvResultForBucket>> writeFuture = new CompletableFuture<>();
         // put kv record batch for every bucket
         replicaManager.putRecordsToKv(
-                300000, -1, kvRecordBatchPerBucket, null, PUT_KV_VERSION, writeFuture::complete);
+                300000,
+                -1,
+                kvRecordBatchPerBucket,
+                null,
+                MergeMode.DEFAULT,
+                PUT_KV_VERSION,
+                writeFuture::complete);
         // wait the write ack
         writeFuture.get();
     }
@@ -1955,6 +1977,7 @@ class ReplicaManagerTest extends ReplicaTestBase {
                 1,
                 Collections.singletonMap(tb, genKvRecordBatch(keyType, rowType, data)),
                 null,
+                MergeMode.DEFAULT,
                 oldClientVersion,
                 putFuture::complete);
         PutKvResultForBucket putResult = putFuture.get().get(0);

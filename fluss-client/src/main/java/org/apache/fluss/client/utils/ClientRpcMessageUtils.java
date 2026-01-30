@@ -79,6 +79,7 @@ import org.apache.fluss.rpc.messages.PrefixLookupRequest;
 import org.apache.fluss.rpc.messages.ProduceLogRequest;
 import org.apache.fluss.rpc.messages.PutKvRequest;
 import org.apache.fluss.rpc.messages.RegisterProducerOffsetsRequest;
+import org.apache.fluss.rpc.protocol.MergeMode;
 import org.apache.fluss.utils.json.DataTypeJsonSerde;
 import org.apache.fluss.utils.json.JsonSerdeUtils;
 
@@ -138,11 +139,12 @@ public class ClientRpcMessageUtils {
                         .setTimeoutMs(maxRequestTimeoutMs);
         // check the target columns in the batch list should be the same. If not same,
         // we throw exception directly currently.
-        int[] targetColumns =
-                ((KvWriteBatch) readyWriteBatches.get(0).writeBatch()).getTargetColumns();
+        KvWriteBatch firstBatch = (KvWriteBatch) readyWriteBatches.get(0).writeBatch();
+        int[] targetColumns = firstBatch.getTargetColumns();
+        MergeMode mergeMode = firstBatch.getMergeMode();
         for (int i = 1; i < readyWriteBatches.size(); i++) {
-            int[] currentBatchTargetColumns =
-                    ((KvWriteBatch) readyWriteBatches.get(i).writeBatch()).getTargetColumns();
+            KvWriteBatch currentBatch = (KvWriteBatch) readyWriteBatches.get(i).writeBatch();
+            int[] currentBatchTargetColumns = currentBatch.getTargetColumns();
             if (!Arrays.equals(targetColumns, currentBatchTargetColumns)) {
                 throw new IllegalStateException(
                         String.format(
@@ -151,10 +153,21 @@ public class ClientRpcMessageUtils {
                                 Arrays.toString(targetColumns),
                                 Arrays.toString(currentBatchTargetColumns)));
             }
+            // Validate mergeMode consistency across batches
+            if (currentBatch.getMergeMode() != mergeMode) {
+                throw new IllegalStateException(
+                        String.format(
+                                "All the write batches to make put kv request should have the same mergeMode, "
+                                        + "but got %s and %s.",
+                                mergeMode, currentBatch.getMergeMode()));
+            }
         }
         if (targetColumns != null) {
             request.setTargetColumns(targetColumns);
         }
+        // Set mergeMode in the request - this is the proper way to pass mergeMode to server
+        request.setAggMode(mergeMode.getProtoValue());
+
         readyWriteBatches.forEach(
                 readyBatch -> {
                     TableBucket tableBucket = readyBatch.tableBucket();

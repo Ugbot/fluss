@@ -62,6 +62,7 @@ import org.apache.fluss.rpc.messages.UpdateMetadataRequest;
 import org.apache.fluss.rpc.messages.UpdateMetadataResponse;
 import org.apache.fluss.rpc.protocol.ApiError;
 import org.apache.fluss.rpc.protocol.Errors;
+import org.apache.fluss.rpc.protocol.MergeMode;
 import org.apache.fluss.security.acl.OperationType;
 import org.apache.fluss.security.acl.Resource;
 import org.apache.fluss.server.DynamicConfigManager;
@@ -224,12 +225,18 @@ public final class TabletService extends RpcServiceBase implements TabletServerG
         authorizeTable(WRITE, request.getTableId());
 
         Map<TableBucket, KvRecordBatch> putKvData = getPutKvData(request);
+        // Get mergeMode from request, default to DEFAULT if not set
+        MergeMode mergeMode =
+                request.hasAggMode()
+                        ? MergeMode.fromValue(request.getAggMode())
+                        : MergeMode.DEFAULT;
         CompletableFuture<PutKvResponse> response = new CompletableFuture<>();
         replicaManager.putRecordsToKv(
                 request.getTimeoutMs(),
                 request.getAcks(),
                 putKvData,
                 getTargetColumns(request),
+                mergeMode,
                 currentSession().getApiVersion(),
                 bucketResponse -> response.complete(makePutKvResponse(bucketResponse)));
         return response;

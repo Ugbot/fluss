@@ -617,6 +617,7 @@ public final class RecordAccumulator {
                         outputView.getPreAllocatedSize(),
                         outputView,
                         writeRecord.getTargetColumns(),
+                        writeRecord.getMergeMode(),
                         clock.milliseconds());
 
             case ARROW_LOG:
