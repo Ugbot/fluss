@@ -19,10 +19,9 @@ package org.apache.fluss.flink.source;
 
 import org.apache.fluss.client.initializer.OffsetsInitializer;
 import org.apache.fluss.config.Configuration;
-import org.apache.fluss.flink.source.deserializer.ChangelogDeserializationSchema;
+import org.apache.fluss.flink.source.deserializer.BinlogDeserializationSchema;
 import org.apache.fluss.flink.utils.FlinkConnectorOptionsUtils;
 import org.apache.fluss.flink.utils.FlinkConversions;
-import org.apache.fluss.metadata.TableDescriptor;
 import org.apache.fluss.metadata.TablePath;
 import org.apache.fluss.predicate.Predicate;
 import org.apache.fluss.types.RowType;
@@ -36,23 +35,18 @@ import org.apache.flink.table.types.logical.LogicalType;
 
 import javax.annotation.Nullable;
 
-import java.util.Arrays;
-import java.util.HashSet;
-import java.util.List;
 import java.util.Map;
-import java.util.Set;
-import java.util.stream.Collectors;
 
-/** A Flink table source for the $changelog virtual table. */
-public class ChangelogFlinkTableSource implements ScanTableSource {
+/** A Flink table source for the $binlog virtual table. */
+public class BinlogFlinkTableSource implements ScanTableSource {
 
     private final TablePath tablePath;
     private final Configuration flussConfig;
-    // The changelog output type (includes metadata columns: _change_type, _log_offset,
-    // _commit_timestamp)
-    private final org.apache.flink.table.types.logical.RowType changelogOutputType;
+    // The binlog output type (includes metadata + nested before/after ROW columns)
+    private final org.apache.flink.table.types.logical.RowType binlogOutputType;
+    // The data columns type extracted from the 'before' nested ROW
     private final org.apache.flink.table.types.logical.RowType dataColumnsType;
-    private final int[] partitionKeyIndexes;
+    private final boolean isPartitioned;
     private final boolean streaming;
     private final FlinkConnectorOptionsUtils.StartupOptions startupOptions;
     private final long scanPartitionDiscoveryIntervalMs;
@@ -64,77 +58,50 @@ public class ChangelogFlinkTableSource implements ScanTableSource {
 
     @Nullable private Predicate partitionFilters;
 
-    private static final Set<String> METADATA_COLUMN_NAMES =
-            new HashSet<>(
-                    Arrays.asList(
-                            TableDescriptor.CHANGE_TYPE_COLUMN,
-                            TableDescriptor.LOG_OFFSET_COLUMN,
-                            TableDescriptor.COMMIT_TIMESTAMP_COLUMN));
-
-    public ChangelogFlinkTableSource(
+    public BinlogFlinkTableSource(
             TablePath tablePath,
             Configuration flussConfig,
-            org.apache.flink.table.types.logical.RowType changelogOutputType,
-            int[] partitionKeyIndexes,
+            org.apache.flink.table.types.logical.RowType binlogOutputType,
+            boolean isPartitioned,
             boolean streaming,
             FlinkConnectorOptionsUtils.StartupOptions startupOptions,
             long scanPartitionDiscoveryIntervalMs,
             Map<String, String> tableOptions) {
         this.tablePath = tablePath;
         this.flussConfig = flussConfig;
-        // The changelogOutputType already includes metadata columns from FlinkCatalog
-        this.changelogOutputType = changelogOutputType;
-        this.partitionKeyIndexes = partitionKeyIndexes;
+        this.binlogOutputType = binlogOutputType;
+        this.isPartitioned = isPartitioned;
         this.streaming = streaming;
         this.startupOptions = startupOptions;
         this.scanPartitionDiscoveryIntervalMs = scanPartitionDiscoveryIntervalMs;
         this.tableOptions = tableOptions;
 
-        // Extract data columns by filtering out metadata columns by name
-        this.dataColumnsType = extractDataColumnsType(changelogOutputType);
-        this.producedDataType = changelogOutputType;
-    }
-
-    /**
-     * Extracts the data columns type by removing the metadata columns from the changelog output
-     * type.
-     */
-    private org.apache.flink.table.types.logical.RowType extractDataColumnsType(
-            org.apache.flink.table.types.logical.RowType changelogType) {
-        // Filter out metadata columns by name
-        List<org.apache.flink.table.types.logical.RowType.RowField> dataFields =
-                changelogType.getFields().stream()
-                        .filter(field -> !METADATA_COLUMN_NAMES.contains(field.getName()))
-                        .collect(Collectors.toList());
-
-        return new org.apache.flink.table.types.logical.RowType(dataFields);
+        // Extract data columns from the 'before' nested ROW type (index 3)
+        // The binlog schema is: [_change_type, _log_offset, _commit_timestamp, before, after]
+        this.dataColumnsType =
+                (org.apache.flink.table.types.logical.RowType) binlogOutputType.getTypeAt(3);
+        this.producedDataType = binlogOutputType;
     }
 
     @Override
     public ChangelogMode getChangelogMode() {
-        // The $changelog virtual table always produces INSERT-only records.
-        // All change types (+I, -U, +U, -D) are flattened into regular rows
         return ChangelogMode.insertOnly();
     }
 
     @Override
     public ScanRuntimeProvider getScanRuntimeProvider(ScanContext scanContext) {
-        // Create the Fluss row type for the data columns (without metadata)
+        // Create the Fluss row type for the data columns (the original table columns)
         RowType flussRowType = FlinkConversions.toFlussRowType(dataColumnsType);
         if (projectedFields != null) {
-            // Adjust projection to account for metadata columns
-            // TODO: Handle projection properly with metadata columns
             flussRowType = flussRowType.project(projectedFields);
         }
-        // to capture all change types (+I, -U, +U, -D).
-        // FULL mode reads snapshot first (no change types), so we use EARLIEST for log-only
-        // reading.
-        // LATEST mode is supported for real-time changelog streaming from current position.
+
+        // Determine the offsets initializer based on startup mode
         OffsetsInitializer offsetsInitializer;
         switch (startupOptions.startupMode) {
             case EARLIEST:
             case FULL:
-                // For changelog, FULL mode should read all log records from beginning
+                // For binlog, read all log records from the beginning
                 offsetsInitializer = OffsetsInitializer.earliest();
                 break;
             case LATEST:
@@ -149,37 +116,33 @@ public class ChangelogFlinkTableSource implements ScanTableSource {
                         "Unsupported startup mode: " + startupOptions.startupMode);
         }
 
-        // Create the source with the changelog deserialization schema
+        // Create the source with the binlog deserialization schema
         FlinkSource<RowData> source =
                 new FlinkSource<>(
                         flussConfig,
                         tablePath,
-                        // Changelog/binlog virtual tables are purely log-based and don't have a
-                        // primary key, setting hasPrimaryKey "false" to ensure the enumerator
-                        // fetches log-only splits (not snapshot splits), which is the correct
-                        // behavior for virtual tables.
                         false,
-                        isPartitioned(),
+                        isPartitioned,
                         flussRowType,
                         projectedFields,
                         offsetsInitializer,
                         scanPartitionDiscoveryIntervalMs,
-                        new ChangelogDeserializationSchema(),
+                        new BinlogDeserializationSchema(),
                         streaming,
                         partitionFilters,
-                        null); // Lake source not supported
+                        null);
 
         return SourceProvider.of(source);
     }
 
     @Override
     public DynamicTableSource copy() {
-        ChangelogFlinkTableSource copy =
-                new ChangelogFlinkTableSource(
+        BinlogFlinkTableSource copy =
+                new BinlogFlinkTableSource(
                         tablePath,
                         flussConfig,
-                        changelogOutputType,
-                        partitionKeyIndexes,
+                        binlogOutputType,
+                        isPartitioned,
                         streaming,
                         startupOptions,
                         scanPartitionDiscoveryIntervalMs,
@@ -192,13 +155,9 @@ public class ChangelogFlinkTableSource implements ScanTableSource {
 
     @Override
     public String asSummaryString() {
-        return "FlussChangelogTableSource";
+        return "FlussBinlogTableSource";
     }
 
-    // TODO: Implement projection pushdown handling for metadata columns
+    // TODO: Implement projection pushdown handling for nested before/after columns
     // TODO: Implement filter pushdown
-
-    private boolean isPartitioned() {
-        return partitionKeyIndexes.length > 0;
-    }
 }
