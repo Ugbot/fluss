@@ -21,6 +21,7 @@ import org.apache.arrow.memory.ArrowBuf;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.vector.FieldVector;
 import org.apache.arrow.vector.VectorSchemaRoot;
+import org.apache.arrow.vector.complex.ListVector;
 import org.apache.arrow.vector.types.pojo.Schema;
 
 import java.nio.ByteBuffer;
@@ -68,6 +69,18 @@ public class ArrowDataConverter {
     private static void copyVectorData(
             org.apache.fluss.shaded.arrow.org.apache.arrow.vector.FieldVector shadedVector,
             FieldVector nonShadedVector) {
+
+        if (shadedVector
+                        instanceof
+                        org.apache.fluss.shaded.arrow.org.apache.arrow.vector.complex.ListVector
+                && nonShadedVector instanceof ListVector) {
+            copyListVectorData(
+                    (org.apache.fluss.shaded.arrow.org.apache.arrow.vector.complex.ListVector)
+                            shadedVector,
+                    (ListVector) nonShadedVector);
+            return;
+        }
+
         List<org.apache.fluss.shaded.arrow.org.apache.arrow.memory.ArrowBuf> shadedBuffers =
                 shadedVector.getFieldBuffers();
 
@@ -89,5 +102,45 @@ public class ArrowDataConverter {
                 nonShadedBuf.setBytes(0, srcBuffer);
             }
         }
+    }
+
+    private static void copyListVectorData(
+            org.apache.fluss.shaded.arrow.org.apache.arrow.vector.complex.ListVector
+                    shadedListVector,
+            ListVector nonShadedListVector) {
+
+        // First, recursively copy the child data vector
+        org.apache.fluss.shaded.arrow.org.apache.arrow.vector.FieldVector shadedDataVector =
+                shadedListVector.getDataVector();
+        FieldVector nonShadedDataVector = nonShadedListVector.getDataVector();
+
+        if (shadedDataVector != null && nonShadedDataVector != null) {
+            copyVectorData(shadedDataVector, nonShadedDataVector);
+        }
+
+        // Copy the ListVector's own buffers (validity and offset buffers)
+        List<org.apache.fluss.shaded.arrow.org.apache.arrow.memory.ArrowBuf> shadedBuffers =
+                shadedListVector.getFieldBuffers();
+        List<ArrowBuf> nonShadedBuffers = nonShadedListVector.getFieldBuffers();
+
+        for (int i = 0; i < Math.min(shadedBuffers.size(), nonShadedBuffers.size()); i++) {
+            org.apache.fluss.shaded.arrow.org.apache.arrow.memory.ArrowBuf shadedBuf =
+                    shadedBuffers.get(i);
+            ArrowBuf nonShadedBuf = nonShadedBuffers.get(i);
+
+            long size = Math.min(shadedBuf.capacity(), nonShadedBuf.capacity());
+            if (size > 0) {
+                ByteBuffer srcBuffer = shadedBuf.nioBuffer(0, (int) size);
+                srcBuffer.position(0);
+                srcBuffer.limit((int) Math.min(size, Integer.MAX_VALUE));
+                nonShadedBuf.setBytes(0, srcBuffer);
+            }
+        }
+
+        // Set value count WITHOUT calling setValueCount() which would overwrite offset buffer
+        // Instead, directly set the internal value count field
+        int valueCount = shadedListVector.getValueCount();
+        // For ListVector, we need to manually set lastSet to avoid offset buffer recalculation
+        nonShadedListVector.setLastSet(valueCount - 1);
     }
 }
