@@ -20,7 +20,6 @@ package org.apache.fluss.spark
 import org.apache.fluss.client.admin.Admin
 import org.apache.fluss.config.{Configuration => FlussConfiguration}
 import org.apache.fluss.metadata.{TableInfo, TablePath}
-import org.apache.fluss.spark.SparkFlussConf.READ_OPTIMIZED
 import org.apache.fluss.spark.catalog.{AbstractSparkTable, SupportsFlussPartitionManagement}
 import org.apache.fluss.spark.read.{FlussAppendScanBuilder, FlussUpsertScanBuilder}
 import org.apache.fluss.spark.write.{FlussAppendWriteBuilder, FlussUpsertWriteBuilder}
@@ -42,7 +41,17 @@ class SparkTable(
   with SupportsWrite
   with SQLConfHelper {
 
+  private def populateSparkConf(flussConfig: FlussConfiguration): Unit = {
+    conf.getAllConfs
+      .filter(_._1.startsWith(SparkFlussConf.SPARK_FLUSS_CONF_PREFIX))
+      .foreach {
+        case (k, v) =>
+          flussConfig.setString(k.substring(SparkFlussConf.SPARK_FLUSS_CONF_PREFIX.length), v)
+      }
+  }
+
   override def newWriteBuilder(logicalWriteInfo: LogicalWriteInfo): WriteBuilder = {
+    populateSparkConf(flussConfig)
     if (tableInfo.getPrimaryKeys.isEmpty) {
       new FlussAppendWriteBuilder(tablePath, logicalWriteInfo.schema(), flussConfig)
     } else {
@@ -51,17 +60,11 @@ class SparkTable(
   }
 
   override def newScanBuilder(options: CaseInsensitiveStringMap): ScanBuilder = {
+    populateSparkConf(flussConfig)
     if (tableInfo.getPrimaryKeys.isEmpty) {
       new FlussAppendScanBuilder(tablePath, tableInfo, options, flussConfig)
     } else {
-      val newFlussConfig = if (conf.getConf(SparkFlussConf.READ_OPTIMIZED, false)) {
-        val newFlussConfig_ = new FlussConfiguration(flussConfig)
-        newFlussConfig_.setBoolean(SparkFlussConf.READ_OPTIMIZED_OPTION.key(), true)
-        newFlussConfig_
-      } else {
-        flussConfig
-      }
-      new FlussUpsertScanBuilder(tablePath, tableInfo, options, newFlussConfig)
+      new FlussUpsertScanBuilder(tablePath, tableInfo, options, flussConfig)
     }
   }
 }
