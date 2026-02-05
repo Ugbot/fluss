@@ -715,12 +715,23 @@ public class ServerRpcMessageUtils {
         return notifyLeaderAndIsrResultForBuckets;
     }
 
+    /**
+     * make stop bucket replica request.
+     *
+     * @param tableBucket table bucket
+     * @param deleteLocal delete local log or kv data
+     * @param deleteRemote delete remote log or kv snapshot because of table or partition was
+     *     deleted.
+     * @param leaderEpoch leader epoch
+     * @return stop bucket replica request
+     */
     public static PbStopReplicaReqForBucket makeStopBucketReplica(
-            TableBucket tableBucket, boolean isDelete, int leaderEpoch) {
+            TableBucket tableBucket, boolean deleteLocal, boolean deleteRemote, int leaderEpoch) {
         PbStopReplicaReqForBucket stopBucketReplicaRequest = new PbStopReplicaReqForBucket();
         PbTableBucket pbTableBucket =
                 stopBucketReplicaRequest
-                        .setDelete(isDelete)
+                        .setDelete(deleteLocal)
+                        .setDeleteRemote(deleteRemote)
                         .setLeaderEpoch(leaderEpoch)
                         .setTableBucket()
                         .setBucketId(tableBucket.getBucket())
@@ -735,10 +746,17 @@ public class ServerRpcMessageUtils {
         List<StopReplicaData> stopReplicaDataList = new ArrayList<>();
         for (PbStopReplicaReqForBucket reqForBucket : request.getStopReplicasReqsList()) {
             PbTableBucket tableBucket = reqForBucket.getTableBucket();
+            // For backward compatibility, if a request does not include the deleteRemote flag, the
+            // system treats delete as deleteRemote (i.e., it falls back to remote deletion). This
+            // ensures older CoordinatorServer continues to function correctly with newer
+            // TabletServers.
             stopReplicaDataList.add(
                     new StopReplicaData(
                             toTableBucket(tableBucket),
                             reqForBucket.isDelete(),
+                            reqForBucket.hasDeleteRemote()
+                                    ? reqForBucket.isDeleteRemote()
+                                    : reqForBucket.isDelete(),
                             request.getCoordinatorEpoch(),
                             reqForBucket.getLeaderEpoch()));
         }
