@@ -55,6 +55,7 @@ import org.apache.fluss.exception.TooManyBucketsException;
 import org.apache.fluss.exception.TooManyPartitionsException;
 import org.apache.fluss.metadata.DatabaseDescriptor;
 import org.apache.fluss.metadata.DatabaseInfo;
+import org.apache.fluss.metadata.DatabaseSummary;
 import org.apache.fluss.metadata.PartitionInfo;
 import org.apache.fluss.metadata.PartitionSpec;
 import org.apache.fluss.metadata.ResolvedPartitionSpec;
@@ -178,6 +179,20 @@ public interface Admin extends AutoCloseable {
 
     /** List all databases in fluss cluster asynchronously. */
     CompletableFuture<List<String>> listDatabases();
+
+    /**
+     * List all databases' summary information in fluss cluster asynchronously. The difference
+     * between this method and {@link #listDatabases()} is that this method also include some
+     * summaries for the database, like {@link DatabaseSummary#getCreatedTime()} and {@link
+     * DatabaseSummary#getTableCount()}.
+     *
+     * <p>When interacting older version of fluss cluster which does not support this API, it will
+     * fall back to {@link #listDatabases()} with {@code -1} value for {@link
+     * DatabaseSummary#getCreatedTime()} and {@link DatabaseSummary#getTableCount()}.
+     *
+     * @since 0.9
+     */
+    CompletableFuture<List<DatabaseSummary>> listDatabaseSummaries();
 
     /**
      * Create a new table asynchronously.

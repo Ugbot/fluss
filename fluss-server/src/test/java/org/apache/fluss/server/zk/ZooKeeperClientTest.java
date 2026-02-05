@@ -23,6 +23,7 @@ import org.apache.fluss.cluster.rebalance.RebalancePlanForBucket;
 import org.apache.fluss.cluster.rebalance.ServerTag;
 import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.config.Configuration;
+import org.apache.fluss.metadata.DatabaseSummary;
 import org.apache.fluss.metadata.Schema;
 import org.apache.fluss.metadata.SchemaInfo;
 import org.apache.fluss.metadata.TableBucket;
@@ -666,5 +667,41 @@ class ZooKeeperClientTest {
             assertThat(clientConfig.getProperty(ZKClientConfig.ZK_SASL_CLIENT_USERNAME))
                     .isEqualTo("zookeeper2");
         }
+    }
+
+    @Test
+    void testGetDatabaseSummary() throws Exception {
+        TablePath tablePath = TablePath.of("db", "tb1");
+
+        assertThat(
+                        zookeeperClient.listDatabaseSummaries(
+                                Collections.singletonList(tablePath.getDatabaseName())))
+                .isEmpty();
+
+        // register table.
+        long beforeCreateTime = System.currentTimeMillis();
+        TableRegistration tableReg1 =
+                new TableRegistration(
+                        11,
+                        "first table",
+                        Arrays.asList("a", "b"),
+                        new TableDescriptor.TableDistribution(16, Collections.singletonList("a")),
+                        Collections.emptyMap(),
+                        Collections.emptyMap(),
+                        beforeCreateTime,
+                        beforeCreateTime);
+        zookeeperClient.registerTable(tablePath, tableReg1);
+
+        long afterCreateTime = System.currentTimeMillis();
+        List<DatabaseSummary> databaseSummaries =
+                zookeeperClient.listDatabaseSummaries(
+                        Collections.singletonList(tablePath.getDatabaseName()));
+        assertThat(databaseSummaries).hasSize(1);
+        DatabaseSummary databaseSummary = databaseSummaries.get(0);
+        assertThat(databaseSummary.getDatabaseName()).isEqualTo("db");
+        assertThat(databaseSummary.getTableCount()).isEqualTo(1);
+        assertThat(databaseSummary.getCreatedTime())
+                .isGreaterThanOrEqualTo(beforeCreateTime)
+                .isLessThanOrEqualTo(afterCreateTime);
     }
 }

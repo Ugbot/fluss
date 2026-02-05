@@ -122,6 +122,7 @@ import static org.apache.fluss.server.utils.ServerRpcMessageUtils.makeListAclsRe
 import static org.apache.fluss.server.utils.ServerRpcMessageUtils.toGetFileSystemSecurityTokenResponse;
 import static org.apache.fluss.server.utils.ServerRpcMessageUtils.toListPartitionInfosResponse;
 import static org.apache.fluss.server.utils.ServerRpcMessageUtils.toPbConfigEntries;
+import static org.apache.fluss.server.utils.ServerRpcMessageUtils.toPbDatabaseSummary;
 import static org.apache.fluss.server.utils.ServerRpcMessageUtils.toTablePath;
 import static org.apache.fluss.utils.Preconditions.checkState;
 
@@ -217,7 +218,13 @@ public abstract class RpcServiceBase extends RpcGatewayService implements AdminR
                     authorizedDatabase.stream().map(Resource::getName).collect(Collectors.toList());
         }
 
-        response.addAllDatabaseNames(databaseNames);
+        if (request.hasIncludeSummary() && request.isIncludeSummary()) {
+            response.addAllDatabaseSummaries(
+                    toPbDatabaseSummary(metadataManager.listDatabaseSummaries(databaseNames)));
+        } else {
+            response.addAllDatabaseNames(databaseNames);
+        }
+
         return CompletableFuture.completedFuture(response);
     }
 
