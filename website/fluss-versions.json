@@ -12,10 +12,10 @@
     "versionName": "version-0.9",
     "fullVersion": "0.9.0-incubating",
     "shortVersion": "0.9",
-    "dockerVersion": "0.9.0-incubating-rc1",
+    "dockerVersion": "0.9.0-incubating-rc2",
     "paimonVersion": "1.3.1",
     "paimonVersionShort": "1.3",
-    "mavenRepoUrl": "https://repository.apache.org/content/repositories/orgapachefluss-1004",
+    "mavenRepoUrl": "https://repository.apache.org/content/repositories/orgapachefluss-1005",
     "released": false
   },
   {
