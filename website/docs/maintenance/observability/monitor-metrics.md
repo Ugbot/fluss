@@ -294,10 +294,15 @@ Some metrics might not be exposed when using other JVM implementations (e.g. IBM
   </thead>
   <tbody>
     <tr>
-       <th rowspan="24"><strong>coordinator</strong></th>
-      <td style={{textAlign: 'center', verticalAlign: 'middle' }} rowspan="9">-</td>
+       <th rowspan="25"><strong>coordinator</strong></th>
+      <td style={{textAlign: 'center', verticalAlign: 'middle' }} rowspan="10">-</td>
       <td>activeCoordinatorCount</td>
-      <td>The number of active CoordinatorServer in this cluster.</td>
+      <td>The number of active CoordinatorServer (only leader) in this cluster.</td>
+      <td>Gauge</td>
+    </tr>
+    <tr>
+      <td>aliveCoordinatorCount</td>
+      <td>The number of alive (including leader and standby) CoordinatorServer in this cluster.</td>
       <td>Gauge</td>
     </tr>
     <tr>
