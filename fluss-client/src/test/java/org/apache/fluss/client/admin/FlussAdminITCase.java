@@ -71,9 +71,11 @@ import org.apache.fluss.metadata.TableChange;
 import org.apache.fluss.metadata.TableDescriptor;
 import org.apache.fluss.metadata.TableInfo;
 import org.apache.fluss.metadata.TablePath;
+import org.apache.fluss.server.coordinator.CoordinatorContext;
 import org.apache.fluss.server.kv.snapshot.CompletedSnapshot;
 import org.apache.fluss.server.kv.snapshot.KvSnapshotHandle;
 import org.apache.fluss.server.log.LogTablet;
+import org.apache.fluss.server.metadata.ServerInfo;
 import org.apache.fluss.server.replica.Replica;
 import org.apache.fluss.server.zk.ZooKeeperClient;
 import org.apache.fluss.server.zk.data.ServerTags;
@@ -1626,19 +1628,24 @@ class FlussAdminITCase extends ClientToServerITCaseBase {
                 .containsEntry(1, ServerTag.PERMANENT_OFFLINE);
 
         // 4.remove server tag for server 100
-        assertThatThrownBy(
-                        () ->
-                                admin.removeServerTag(
-                                                Collections.singletonList(100),
-                                                ServerTag.PERMANENT_OFFLINE)
-                                        .get())
-                .cause()
-                .isInstanceOf(ServerNotExistException.class)
-                .hasMessageContaining("Server 100 not exists when trying to removing server tag.");
+        admin.removeServerTag(Collections.singletonList(100), ServerTag.PERMANENT_OFFLINE).get();
 
         // 5.remove server tag for server 0,1.
+
+        // should remove server tag successfully even we remove live tablet server from context
+        CoordinatorContext coordinatorContext =
+                FLUSS_CLUSTER_EXTENSION
+                        .getCoordinatorServer()
+                        .getCoordinatorEventProcessor()
+                        .getCoordinatorContext();
+        ServerInfo tmpServerInfo = coordinatorContext.getLiveTabletServers().get(0);
+        coordinatorContext.removeLiveTabletServer(0);
+
         admin.removeServerTag(Arrays.asList(0, 1), ServerTag.PERMANENT_OFFLINE).get();
         assertThat(zkClient.getServerTags()).isNotPresent();
+
+        // restore after test, or else will influence other tests
+        coordinatorContext.addLiveTabletServer(tmpServerInfo);
 
         // 6.remove server tag for server 2. error will be thrown and tag for 2 will not be removed
         // as the removed server tag is not equals with the exists one.
