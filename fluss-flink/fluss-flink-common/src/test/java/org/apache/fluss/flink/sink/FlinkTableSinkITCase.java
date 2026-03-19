@@ -1438,6 +1438,40 @@ abstract class FlinkTableSinkITCase extends AbstractTestBase {
         assertResultsIgnoreOrder(rowIter, expectedRows, true);
     }
 
+    @Test
+    void testPartialUpdateOnAggregationMergeEngine() throws Exception {
+        tEnv.executeSql(
+                "create table agg_partial_update ("
+                        + "id int not null primary key not enforced, "
+                        + "sum_a int, "
+                        + "sum_b int"
+                        + ") with ("
+                        + "'table.merge-engine' = 'aggregation', "
+                        + "'fields.sum_a.agg' = 'sum', "
+                        + "'fields.sum_b.agg' = 'sum')");
+
+        // Full insert: all fields
+        tEnv.executeSql("INSERT INTO agg_partial_update VALUES (1, 100, 200)").await();
+
+        // Partial insert: only update sum_a
+        tEnv.executeSql("INSERT INTO agg_partial_update(id, sum_a) VALUES (1, 50)").await();
+
+        CloseableIterator<Row> rowIter =
+                tEnv.executeSql("SELECT * FROM agg_partial_update").collect();
+
+        List<String> expectedRows =
+                Arrays.asList("+I[1, 100, 200]", "-U[1, 100, 200]", "+U[1, 150, 200]");
+
+        assertResultsIgnoreOrder(rowIter, expectedRows, false);
+
+        // Partial insert on a new key (no prior full insert) — unspecified columns should be null
+        tEnv.executeSql("INSERT INTO agg_partial_update(id, sum_a) VALUES (2, 77)").await();
+
+        expectedRows = Arrays.asList("+I[2, 77, null]");
+
+        assertResultsIgnoreOrder(rowIter, expectedRows, true);
+    }
+
     private InsertAndExpectValues rowsToInsertInto(Collection<String> partitions) {
         List<String> insertValues = new ArrayList<>();
         List<String> expectedValues = new ArrayList<>();
