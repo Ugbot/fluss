@@ -1579,6 +1579,22 @@ public class ConfigOptions {
                                     + "This mode reduces storage and transmission costs but loses the ability to track previous values. "
                                     + "This option only affects primary key tables.");
 
+    public static final ConfigOption<String> TABLE_STATISTICS_COLUMNS =
+            key("table.statistics.columns")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "Configures column-level statistics collection for the table. "
+                                    + "By default this option is not set and no column statistics are collected. "
+                                    + "The value '*' means collect statistics for all supported columns. "
+                                    + "A comma-separated list of column names means collect statistics only for the specified columns. "
+                                    + "Supported types include: BOOLEAN, TINYINT, SMALLINT, INTEGER, BIGINT, FLOAT, DOUBLE, "
+                                    + "STRING, CHAR, DECIMAL, DATE, TIME, TIMESTAMP, and TIMESTAMP_LTZ. "
+                                    + "Example: 'id,name,timestamp' to collect statistics only for specified columns. "
+                                    + "Note: enabling column statistics requires the V1 batch format. "
+                                    + "Downstream consumers must be upgraded to Fluss v1.0+ before enabling this option, "
+                                    + "as older versions cannot parse the extended batch format.");
+
     // ------------------------------------------------------------------------
     //  ConfigOptions for Kv
     // ------------------------------------------------------------------------
