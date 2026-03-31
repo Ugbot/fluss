@@ -25,6 +25,8 @@ import org.apache.fluss.fs.token.ObtainedSecurityToken;
 
 import org.junit.jupiter.api.Test;
 
+import java.io.PrintWriter;
+import java.io.StringWriter;
 import java.net.URI;
 import java.util.HashMap;
 import java.util.Map;
@@ -97,7 +99,10 @@ public class AzureFileSystemPluginTest {
         try {
             plugin.create(uri, flussConfig);
         } catch (Exception e) {
-            // expected or ignored
+            // If the plugin creation fails, it must NOT fail with an "init configuration" error.
+            StringWriter sw = new StringWriter();
+            e.printStackTrace(new PrintWriter(sw));
+            assertThat(sw.toString()).doesNotContain("Failure to initialize configuration");
         }
     }
 
