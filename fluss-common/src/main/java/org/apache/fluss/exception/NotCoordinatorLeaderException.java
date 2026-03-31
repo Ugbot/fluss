@@ -17,7 +17,11 @@
 
 package org.apache.fluss.exception;
 
-/** Exception thrown when a request is sent to a stand by coordinator server. since: 0.9 */
+/**
+ * Exception thrown when a request is sent to a stand by coordinator server.
+ *
+ * @since 1.0
+ */
 public class NotCoordinatorLeaderException extends ApiException {
 
     private static final long serialVersionUID = 1L;

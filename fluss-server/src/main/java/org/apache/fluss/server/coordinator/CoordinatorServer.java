@@ -153,9 +153,6 @@ public class CoordinatorServer extends ServerBase {
     private CoordinatorLeaderElection coordinatorLeaderElection;
 
     @GuardedBy("lock")
-    private CompletableFuture<Void> leaderElectionFuture;
-
-    @GuardedBy("lock")
     private KvSnapshotLeaseManager kvSnapshotLeaseManager;
 
     public CoordinatorServer(Configuration conf) {
@@ -182,28 +179,26 @@ public class CoordinatorServer extends ServerBase {
         electCoordinatorLeaderAsync();
     }
 
-    private CompletableFuture<Void> electCoordinatorLeaderAsync() throws Exception {
+    private void electCoordinatorLeaderAsync() throws Exception {
         initCoordinatorStandby();
 
         // start election (coordinatorLeaderElection is created inside initCoordinatorStandby
         // after zkClient is initialized)
-        this.leaderElectionFuture =
-                coordinatorLeaderElection.startElectLeaderAsync(
-                        () -> {
-                            try {
-                                initCoordinatorLeader();
-                            } catch (Exception e) {
-                                throw new RuntimeException(e);
-                            }
-                        },
-                        (Throwable t) -> {
-                            try {
-                                cleanupCoordinatorLeader();
-                            } catch (Exception e) {
-                                LOG.error("Failed to cleanup coordinator leader services", e);
-                            }
-                        });
-        return leaderElectionFuture;
+        coordinatorLeaderElection.startElectLeaderAsync(
+                () -> {
+                    try {
+                        initCoordinatorLeader();
+                    } catch (Exception e) {
+                        throw new RuntimeException(e);
+                    }
+                },
+                (Throwable t) -> {
+                    try {
+                        cleanupCoordinatorLeader();
+                    } catch (Exception e) {
+                        LOG.error("Failed to cleanup coordinator leader services", e);
+                    }
+                });
     }
 
     protected void initCoordinatorStandby() throws Exception {
@@ -421,33 +416,53 @@ public class CoordinatorServer extends ServerBase {
     }
 
     private void registerCoordinatorServer() throws Exception {
-        long startTime = System.currentTimeMillis();
-        List<Endpoint> bindEndpoints = rpcServer.getBindEndpoints();
-        CoordinatorAddress coordinatorAddress =
-                new CoordinatorAddress(
-                        this.serverId, Endpoint.loadAdvertisedEndpoints(bindEndpoints, conf));
+        CoordinatorAddress coordinatorAddress = buildCoordinatorAddress();
+        registerToZookeeperWithRetry(
+                "coordinator server", () -> zkClient.registerCoordinatorServer(coordinatorAddress));
+    }
 
-        // we need to retry to register since although
-        // zkClient reconnect, the ephemeral node may still exist
-        // for a while time, retry to wait the ephemeral node removed
-        // see ZOOKEEPER-2985
+    private void registerCoordinatorLeader() throws Exception {
+        CoordinatorAddress coordinatorAddress = buildCoordinatorAddress();
+        registerToZookeeperWithRetry(
+                "coordinator leader", () -> zkClient.registerCoordinatorLeader(coordinatorAddress));
+    }
+
+    private CoordinatorAddress buildCoordinatorAddress() {
+        List<Endpoint> bindEndpoints = rpcServer.getBindEndpoints();
+        return new CoordinatorAddress(
+                this.serverId, Endpoint.loadAdvertisedEndpoints(bindEndpoints, conf));
+    }
+
+    /**
+     * Registers to ZooKeeper with retry logic to handle the case where the ephemeral node may still
+     * exist for a while after ZK client reconnects.
+     *
+     * @param description a description of the registration for logging
+     * @param registration the registration action to perform
+     * @see <a href="https://issues.apache.org/jira/browse/ZOOKEEPER-2985">ZOOKEEPER-2985</a>
+     */
+    private void registerToZookeeperWithRetry(String description, ThrowingRunnable registration)
+            throws Exception {
+        long startTime = System.currentTimeMillis();
         while (true) {
             try {
-                zkClient.registerCoordinatorServer(coordinatorAddress);
+                registration.run();
                 break;
             } catch (KeeperException.NodeExistsException nodeExistsException) {
                 long elapsedTime = System.currentTimeMillis() - startTime;
                 if (elapsedTime >= ZOOKEEPER_REGISTER_TOTAL_WAIT_TIME_MS) {
                     LOG.error(
-                            "Coordinator Server register to Zookeeper exceeded total retry time of {} ms. "
+                            "Registering {} to Zookeeper exceeded total retry time of {} ms. "
                                     + "Aborting registration attempts.",
+                            description,
                             ZOOKEEPER_REGISTER_TOTAL_WAIT_TIME_MS);
                     throw nodeExistsException;
                 }
 
                 LOG.warn(
-                        "Coordinator server already registered in Zookeeper. "
-                                + "retrying register after {} ms....",
+                        "Node for {} already exists in Zookeeper. "
+                                + "Retrying register after {} ms....",
+                        description,
                         ZOOKEEPER_REGISTER_RETRY_INTERVAL_MS);
                 try {
                     Thread.sleep(ZOOKEEPER_REGISTER_RETRY_INTERVAL_MS);
@@ -459,43 +474,10 @@ public class CoordinatorServer extends ServerBase {
         }
     }
 
-    private void registerCoordinatorLeader() throws Exception {
-        long startTime = System.currentTimeMillis();
-        List<Endpoint> bindEndpoints = rpcServer.getBindEndpoints();
-        CoordinatorAddress coordinatorAddress =
-                new CoordinatorAddress(
-                        this.serverId, Endpoint.loadAdvertisedEndpoints(bindEndpoints, conf));
-
-        // we need to retry to register since although
-        // zkClient reconnect, the ephemeral node may still exist
-        // for a while time, retry to wait the ephemeral node removed
-        // see ZOOKEEPER-2985
-        while (true) {
-            try {
-                zkClient.registerCoordinatorLeader(coordinatorAddress);
-                break;
-            } catch (KeeperException.NodeExistsException nodeExistsException) {
-                long elapsedTime = System.currentTimeMillis() - startTime;
-                if (elapsedTime >= ZOOKEEPER_REGISTER_TOTAL_WAIT_TIME_MS) {
-                    LOG.error(
-                            "Coordinator Server register to Zookeeper exceeded total retry time of {} ms. "
-                                    + "Aborting registration attempts.",
-                            ZOOKEEPER_REGISTER_TOTAL_WAIT_TIME_MS);
-                    throw nodeExistsException;
-                }
-
-                LOG.warn(
-                        "Coordinator server already registered in Zookeeper. "
-                                + "retrying register after {} ms....",
-                        ZOOKEEPER_REGISTER_RETRY_INTERVAL_MS);
-                try {
-                    Thread.sleep(ZOOKEEPER_REGISTER_RETRY_INTERVAL_MS);
-                } catch (InterruptedException interruptedException) {
-                    Thread.currentThread().interrupt();
-                    break;
-                }
-            }
-        }
+    /** A functional interface for actions that may throw checked exceptions. */
+    @FunctionalInterface
+    private interface ThrowingRunnable {
+        void run() throws Exception;
     }
 
     private void createDefaultDatabase() {
@@ -684,11 +666,6 @@ public class CoordinatorServer extends ServerBase {
     @VisibleForTesting
     public CoordinatorService getCoordinatorService() {
         return coordinatorService;
-    }
-
-    @VisibleForTesting
-    public CompletableFuture<Void> getLeaderElectionFuture() {
-        return leaderElectionFuture;
     }
 
     @Override

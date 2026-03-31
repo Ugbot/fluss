@@ -68,7 +68,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * (initialize leader services) -> lose leadership (become standby) -> re-participate in election ->
  * become leader again.
  */
-class CoordinatorHAITCase {
+class CoordinatorHighAvailabilityITCase {
 
     @RegisterExtension
     public static final AllCallbackWrapper<ZooKeeperExtension> ZOO_KEEPER_EXTENSION_WRAPPER =

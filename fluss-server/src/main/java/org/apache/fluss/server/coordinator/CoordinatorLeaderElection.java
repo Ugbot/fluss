@@ -53,17 +53,15 @@ public class CoordinatorLeaderElection implements AutoCloseable {
     private final String serverId;
     private final LeaderLatch leaderLatch;
     private final AtomicBoolean isLeader = new AtomicBoolean(false);
-    private final CompletableFuture<Void> leaderReadyFuture = new CompletableFuture<>();
-    // Single-threaded executor to run leader init callbacks outside Curator's EventThread.
+    // Cached thread pool to run leader init/cleanup callbacks outside Curator's EventThread.
     // Curator's LeaderLatchListener callbacks run on its internal EventThread; performing
     // synchronous ZK operations there causes deadlock because ZK response dispatch also
-    // needs that same thread.
+    // needs that same thread. A cached pool is used because these callbacks are transient
+    // (only run during leadership transitions), so idle threads can be reclaimed.
     private final ExecutorService leaderCallbackExecutor;
     // Tracks the pending cleanup task so that init can wait for it to complete.
     private final AtomicReference<CompletableFuture<Void>> pendingCleanup =
             new AtomicReference<>(CompletableFuture.completedFuture(null));
-    private volatile Runnable initLeaderServices;
-    private volatile Consumer<Throwable> cleanupLeaderServices;
 
     public CoordinatorLeaderElection(ZooKeeperClient zkClient, String serverId) {
         this.serverId = serverId;
@@ -73,34 +71,35 @@ public class CoordinatorLeaderElection implements AutoCloseable {
                         ZkData.CoordinatorElectionZNode.path(),
                         String.valueOf(serverId));
         this.leaderCallbackExecutor =
-                Executors.newSingleThreadExecutor(
+                Executors.newCachedThreadPool(
                         r -> {
                             Thread t = new Thread(r, "coordinator-leader-callback-" + serverId);
+                            // Daemon threads ensure the JVM can exit even if close() is not
+                            // called. Orderly shutdown is handled by close() -> shutdownNow().
                             t.setDaemon(true);
                             return t;
                         });
     }
 
     /**
-     * Starts the leader election process asynchronously. The returned future completes when this
-     * server becomes the leader for the first time and initializes the leader services.
+     * Starts the leader election process asynchronously.
      *
      * <p>After the first election, the server will continue to participate in future elections.
      * When re-elected as leader, the initLeaderServices callback will be invoked again.
      *
      * @param initLeaderServices the callback to initialize leader services once elected
      * @param cleanupLeaderServices the callback to clean up leader services when losing leadership
-     * @return a CompletableFuture that completes when this server becomes leader for the first time
      */
-    public CompletableFuture<Void> startElectLeaderAsync(
+    public void startElectLeaderAsync(
             Runnable initLeaderServices, Consumer<Throwable> cleanupLeaderServices) {
-        this.initLeaderServices = initLeaderServices;
-        this.cleanupLeaderServices = cleanupLeaderServices;
-
         leaderLatch.addListener(
                 new LeaderLatchListener() {
                     @Override
                     public void isLeader() {
+                        // return if already marked as leader to avoid duplicate init calls
+                        if (isLeader.get()) {
+                            return;
+                        }
                         LOG.info("Coordinator server {} has become the leader.", serverId);
                         // Capture the pending cleanup future at this point so that
                         // init waits for it before proceeding.
@@ -124,15 +123,15 @@ public class CoordinatorLeaderElection implements AutoCloseable {
                                     }
                                     try {
                                         initLeaderServices.run();
-                                        leaderReadyFuture.complete(null);
                                     } catch (Exception e) {
                                         LOG.error(
                                                 "Failed to initialize leader services for server {}",
                                                 serverId,
                                                 e);
-                                        leaderReadyFuture.completeExceptionally(e);
                                     }
                                 });
+                        // Set leader flag before init completes, so when zk found this leader, the
+                        // leader can accept requests
                         isLeader.set(true);
                     }
 
@@ -142,31 +141,27 @@ public class CoordinatorLeaderElection implements AutoCloseable {
                             LOG.warn(
                                     "Coordinator server {} has lost the leadership, cleaning up leader services.",
                                     serverId);
-                            // Run cleanup on a separate daemon thread (NOT on the
-                            // leaderCallbackExecutor) to avoid blocking init tasks.
+                            // Submit cleanup to leaderCallbackExecutor. The cached thread
+                            // pool can spawn a new thread even if init is still running.
                             // The cleanup completion is tracked via pendingCleanup so
                             // that subsequent init waits for it.
                             CompletableFuture<Void> cleanupFuture = new CompletableFuture<>();
                             pendingCleanup.set(cleanupFuture);
-                            Thread cleanupThread =
-                                    new Thread(
-                                            () -> {
-                                                try {
-                                                    if (cleanupLeaderServices != null) {
-                                                        cleanupLeaderServices.accept(null);
-                                                    }
-                                                } catch (Exception e) {
-                                                    LOG.error(
-                                                            "Failed to cleanup leader services for server {}",
-                                                            serverId,
-                                                            e);
-                                                } finally {
-                                                    cleanupFuture.complete(null);
-                                                }
-                                            },
-                                            "coordinator-leader-cleanup-" + serverId);
-                            cleanupThread.setDaemon(true);
-                            cleanupThread.start();
+                            leaderCallbackExecutor.execute(
+                                    () -> {
+                                        try {
+                                            if (cleanupLeaderServices != null) {
+                                                cleanupLeaderServices.accept(null);
+                                            }
+                                        } catch (Exception e) {
+                                            LOG.error(
+                                                    "Failed to cleanup leader services for server {}",
+                                                    serverId,
+                                                    e);
+                                        } finally {
+                                            cleanupFuture.complete(null);
+                                        }
+                                    });
                         }
                     }
                 });
@@ -176,11 +171,7 @@ public class CoordinatorLeaderElection implements AutoCloseable {
             LOG.info("Coordinator server {} started leader election.", serverId);
         } catch (Exception e) {
             LOG.error("Failed to start LeaderLatch for server {}", serverId, e);
-            leaderReadyFuture.completeExceptionally(
-                    new RuntimeException("Leader election start failed", e));
         }
-
-        return leaderReadyFuture;
     }
 
     @Override
@@ -196,12 +187,6 @@ public class CoordinatorLeaderElection implements AutoCloseable {
         }
 
         leaderCallbackExecutor.shutdownNow();
-
-        // Complete the future exceptionally if it hasn't been completed yet
-        if (!leaderReadyFuture.isDone()) {
-            leaderReadyFuture.completeExceptionally(
-                    new RuntimeException("Leader election closed for server " + serverId));
-        }
     }
 
     public boolean isLeader() {

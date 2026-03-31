@@ -710,10 +710,10 @@ public class CoordinatorContext {
         tablesToBeDeleted.clear();
         coordinatorEpoch = 0;
         clearTablesState();
-        // clear the live tablet servers
         liveTabletServers.clear();
         shuttingDownTabletServers.clear();
         serverTags.clear();
+        liveCoordinatorServers.clear();
     }
 
     public int getTotalPartitionCount() {

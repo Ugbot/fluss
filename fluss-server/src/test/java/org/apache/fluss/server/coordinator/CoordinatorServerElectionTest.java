@@ -34,6 +34,7 @@ import java.time.Duration;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 
 import static org.apache.fluss.testutils.common.CommonTestUtils.waitUntil;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -141,12 +142,11 @@ class CoordinatorServerElectionTest {
 
     public void waitUntilCoordinatorServerReelected(CoordinatorAddress originAddress) {
         waitUntil(
-                () ->
-                        zookeeperClient.getCoordinatorLeaderAddress().isPresent()
-                                && !zookeeperClient
-                                        .getCoordinatorLeaderAddress()
-                                        .get()
-                                        .equals(originAddress),
+                () -> {
+                    Optional<CoordinatorAddress> address =
+                            zookeeperClient.getCoordinatorLeaderAddress();
+                    return address.isPresent() && !address.get().equals(originAddress);
+                },
                 Duration.ofMinutes(1),
                 "Fail to wait coordinator server reelected");
     }

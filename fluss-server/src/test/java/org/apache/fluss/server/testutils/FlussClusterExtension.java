@@ -944,8 +944,6 @@ public final class FlussClusterExtension
     }
 
     public void waitUntilCoordinatorServerElected() throws Exception {
-        coordinatorServer.getLeaderElectionFuture().get();
-
         waitUntil(
                 () -> zooKeeperClient.getCoordinatorLeaderAddress().isPresent(),
                 Duration.ofSeconds(10),

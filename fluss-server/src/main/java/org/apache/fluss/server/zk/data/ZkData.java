@@ -349,7 +349,7 @@ public final class ZkData {
     /**
      * The znode for the active coordinator leader. The znode path is:
      *
-     * <p>/coordinators/leader
+     * <p>/coordinators/active
      */
     public static final class CoordinatorLeaderZNode {
         public static String path() {
