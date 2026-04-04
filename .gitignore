@@ -24,6 +24,7 @@ dependency-reduced-pom.xml
 
 ### claude code ###
 .claude/
+.qoder/
 
 ### Mac OS ###
 .DS_Store
