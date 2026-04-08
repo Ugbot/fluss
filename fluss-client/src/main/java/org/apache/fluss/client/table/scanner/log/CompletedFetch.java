@@ -29,7 +29,6 @@ import org.apache.fluss.record.LogRecordBatch;
 import org.apache.fluss.record.LogRecordReadContext;
 import org.apache.fluss.row.GenericRow;
 import org.apache.fluss.row.InternalRow;
-import org.apache.fluss.rpc.messages.FetchLogRequest;
 import org.apache.fluss.rpc.protocol.ApiError;
 import org.apache.fluss.utils.CloseableIterator;
 
@@ -42,19 +41,24 @@ import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
 
+import static org.apache.fluss.utils.Preconditions.checkArgument;
+
 /**
- * {@link CompletedFetch} represents the result that was returned from the tablet server via a
- * {@link FetchLogRequest}, which can be a {@link LogRecordBatch} or remote log segments path. It
- * contains logic to maintain state between calls to {@link #fetchRecords(int)}.
+ * {@link CompletedFetch} represents the result that was returned from the tablet server via a fetch
+ * log request, which can be a {@link LogRecordBatch} or remote log segments path. It contains logic
+ * to maintain state between calls to {@link #fetchRecords(int)}.
  */
 @Internal
 abstract class CompletedFetch {
     static final Logger LOG = LoggerFactory.getLogger(CompletedFetch.class);
+    static final long NO_FILTERED_END_OFFSET = -1L;
 
     final TableBucket tableBucket;
     final ApiError error;
     final int sizeInBytes;
     final long highWatermark;
+    private final long fetchOffset;
+    private final long filteredEndOffset;
 
     private final boolean isCheckCrcs;
     private final Iterator<LogRecordBatch> batches;
@@ -81,7 +85,8 @@ abstract class CompletedFetch {
             LogRecordReadContext readContext,
             LogScannerStatus logScannerStatus,
             boolean isCheckCrcs,
-            long fetchOffset) {
+            long fetchOffset,
+            long filteredEndOffset) {
         this.tableBucket = tableBucket;
         this.error = error;
         this.sizeInBytes = sizeInBytes;
@@ -90,8 +95,17 @@ abstract class CompletedFetch {
         this.readContext = readContext;
         this.isCheckCrcs = isCheckCrcs;
         this.logScannerStatus = logScannerStatus;
-        this.nextFetchOffset = fetchOffset;
         this.selectedFieldGetters = readContext.getSelectedFieldGetters();
+        this.fetchOffset = fetchOffset;
+        checkArgument(
+                filteredEndOffset == NO_FILTERED_END_OFFSET || filteredEndOffset >= fetchOffset,
+                "filteredEndOffset (%s) must be %s (NO_FILTERED_END_OFFSET) or >= fetchOffset (%s) for bucket %s.",
+                filteredEndOffset,
+                NO_FILTERED_END_OFFSET,
+                fetchOffset,
+                tableBucket);
+        this.filteredEndOffset = filteredEndOffset;
+        this.nextFetchOffset = fetchOffset;
     }
 
     // TODO: optimize this to avoid deep copying the record.
@@ -140,6 +154,10 @@ abstract class CompletedFetch {
 
     boolean isInitialized() {
         return initialized;
+    }
+
+    long fetchOffset() {
+        return fetchOffset;
     }
 
     long nextFetchOffset() {
@@ -207,6 +225,8 @@ abstract class CompletedFetch {
                 ScanRecord record = toScanRecord(lastRecord);
                 scanRecords.add(record);
                 recordsRead++;
+                // Per-record offset is a best-effort value; the authoritative offset
+                // comes from the batch's nextLogOffset once the batch is fully consumed.
                 nextFetchOffset = lastRecord.logOffset() + 1;
                 cachedRecordException = null;
             }
@@ -235,8 +255,12 @@ abstract class CompletedFetch {
                     // next fetch will point to the next batch, which avoids unnecessary re-fetching
                     // of the same batch (in the worst case, the scanner could get stuck fetching
                     // the same batch repeatedly).
+                    // When filteredEndOffset is set, use the max of the batch-derived offset and
+                    // filteredEndOffset to skip already-scanned-and-filtered trailing batches.
                     if (currentBatch != null) {
-                        nextFetchOffset = currentBatch.nextLogOffset();
+                        nextFetchOffset = Math.max(currentBatch.nextLogOffset(), filteredEndOffset);
+                    } else if (filteredEndOffset != NO_FILTERED_END_OFFSET) {
+                        nextFetchOffset = filteredEndOffset;
                     }
                     drain();
                     return null;

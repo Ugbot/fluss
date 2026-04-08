@@ -57,7 +57,8 @@ class DefaultCompletedFetch extends CompletedFetch {
                 readContext,
                 logScannerStatus,
                 isCheckCrc,
-                fetchOffset);
+                fetchOffset,
+                fetchLogResultForBucket.getFilteredEndOffset());
         this.parsedByteBuf = parsedByteBuf;
     }
 

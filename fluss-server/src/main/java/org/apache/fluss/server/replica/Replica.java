@@ -34,6 +34,7 @@ import org.apache.fluss.fs.FsPath;
 import org.apache.fluss.metadata.ChangelogImage;
 import org.apache.fluss.metadata.LogFormat;
 import org.apache.fluss.metadata.PhysicalTablePath;
+import org.apache.fluss.metadata.Schema;
 import org.apache.fluss.metadata.SchemaGetter;
 import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.metadata.TableInfo;
@@ -41,12 +42,15 @@ import org.apache.fluss.metadata.TablePath;
 import org.apache.fluss.metrics.Counter;
 import org.apache.fluss.metrics.MetricNames;
 import org.apache.fluss.metrics.groups.MetricGroup;
+import org.apache.fluss.predicate.Predicate;
 import org.apache.fluss.record.DefaultValueRecordBatch;
 import org.apache.fluss.record.KvRecordBatch;
+import org.apache.fluss.record.LogRecordReadContext;
 import org.apache.fluss.record.LogRecords;
 import org.apache.fluss.record.MemoryLogRecords;
 import org.apache.fluss.rpc.protocol.Errors;
 import org.apache.fluss.rpc.protocol.MergeMode;
+import org.apache.fluss.rpc.util.PredicateMessageUtils;
 import org.apache.fluss.server.SequenceIDCounter;
 import org.apache.fluss.server.coordinator.CoordinatorContext;
 import org.apache.fluss.server.entity.NotifyLeaderAndIsrData;
@@ -67,6 +71,8 @@ import org.apache.fluss.server.kv.snapshot.SnapshotContext;
 import org.apache.fluss.server.log.FetchDataInfo;
 import org.apache.fluss.server.log.FetchIsolation;
 import org.apache.fluss.server.log.FetchParams;
+import org.apache.fluss.server.log.FilterContext;
+import org.apache.fluss.server.log.FilterInfo;
 import org.apache.fluss.server.log.ListOffsetsParam;
 import org.apache.fluss.server.log.LogAppendInfo;
 import org.apache.fluss.server.log.LogManager;
@@ -90,6 +96,7 @@ import org.apache.fluss.server.zk.ZkSequenceIDCounter;
 import org.apache.fluss.server.zk.ZooKeeperClient;
 import org.apache.fluss.server.zk.data.LeaderAndIsr;
 import org.apache.fluss.server.zk.data.ZkData;
+import org.apache.fluss.types.RowType;
 import org.apache.fluss.utils.CloseableRegistry;
 import org.apache.fluss.utils.FlussPaths;
 import org.apache.fluss.utils.IOUtils;
@@ -1335,6 +1342,7 @@ public final class Replica {
                                         Integer.MAX_VALUE,
                                         FetchIsolation.HIGH_WATERMARK,
                                         true,
+                                        null,
                                         null);
                         return dataInfo.getRecords();
                     } catch (IOException e) {
@@ -1494,14 +1502,77 @@ public final class Replica {
 
         // todo validate fetched epoch.
 
-        FetchDataInfo fetchDataInfo =
-                logTablet.read(
-                        readOffset,
-                        fetchParams.maxFetchBytes(),
-                        fetchParams.isolation(),
-                        fetchParams.minOneMessage(),
-                        fetchParams.projection());
+        FilterContext filterContext = createFilterContext(fetchParams);
+
+        FetchDataInfo fetchDataInfo;
+        try {
+            fetchDataInfo =
+                    logTablet.read(
+                            readOffset,
+                            fetchParams.maxFetchBytes(),
+                            fetchParams.isolation(),
+                            fetchParams.minOneMessage(),
+                            fetchParams.projection(),
+                            filterContext);
+        } finally {
+            // Close readContext eagerly — it is only used for statistics extraction during
+            // batch filtering and is NOT referenced by the returned FetchDataInfo records.
+            if (filterContext != null) {
+                IOUtils.closeQuietly(filterContext.getReadContext());
+            }
+        }
         return new LogReadInfo(fetchDataInfo, initialHighWatermark, initialLogEndOffset);
+    }
+
+    /**
+     * Creates a {@link FilterContext} for batch filtering if a filter is configured for this table
+     * and the log format supports it. Returns null if no filter is applicable.
+     */
+    @Nullable
+    private FilterContext createFilterContext(FetchParams fetchParams) {
+        FilterInfo filterInfo = fetchParams.getFilterInfo(tableBucket.getTableId());
+        if (filterInfo == null || logFormat != LogFormat.ARROW) {
+            return null;
+        }
+
+        LogRecordReadContext readContext = null;
+        try {
+            int filterSchemaId = filterInfo.getSchemaId();
+            if (filterSchemaId < 0) {
+                LOG.warn(
+                        "Invalid filter schema ID ({}) for {}, falling back to unfiltered read.",
+                        filterSchemaId,
+                        tableBucket);
+                return null;
+            }
+            Schema filterSchema = schemaGetter.getSchema(filterSchemaId);
+            if (filterSchema == null) {
+                LOG.warn(
+                        "Filter schema not found (schemaId={}) for {}, falling back to unfiltered read.",
+                        filterSchemaId,
+                        tableBucket);
+                return null;
+            }
+            RowType rowType = filterSchema.getRowType();
+            Predicate resolvedFilter =
+                    PredicateMessageUtils.toPredicate(filterInfo.getPbPredicate(), rowType);
+            if (resolvedFilter != null) {
+                readContext =
+                        LogRecordReadContext.createArrowReadContext(
+                                rowType, filterSchemaId, schemaGetter);
+                return new FilterContext(resolvedFilter, readContext, filterSchemaId, schemaGetter);
+            }
+            return null;
+        } catch (Exception e) {
+            LOG.warn(
+                    "Failed to initialize filter context for {} ({}), "
+                            + "falling back to unfiltered read.",
+                    tableBucket,
+                    e.getClass().getSimpleName(),
+                    e);
+            IOUtils.closeQuietly(readContext);
+            return null;
+        }
     }
 
     private void tryCompleteDelayedOperations() {
