@@ -312,9 +312,7 @@ public class TableBucketStateMachine {
             LeaderAndIsr leaderAndIsr = electionResult.leaderAndIsr;
             try {
                 zooKeeperClient.registerLeaderAndIsr(
-                        tableBucket,
-                        leaderAndIsr,
-                        coordinatorContext.getCoordinatorEpochZkVersion());
+                        tableBucket, leaderAndIsr, coordinatorContext.getCoordinatorZkVersion());
             } catch (Exception e) {
                 LOG.error(
                         "Fail to create state node for table bucket {} in zookeeper.",
@@ -382,8 +380,7 @@ public class TableBucketStateMachine {
         if (!tableBucketLeadAndIsrInfos.isEmpty()) {
             try {
                 zooKeeperClient.batchRegisterLeaderAndIsrForTablePartition(
-                        tableBucketLeadAndIsrInfos,
-                        coordinatorContext.getCoordinatorEpochZkVersion());
+                        tableBucketLeadAndIsrInfos, coordinatorContext.getCoordinatorZkVersion());
                 registerSuccessList.addAll(tableBucketLeadAndIsrInfos);
             } catch (Exception e) {
                 LOG.error(
@@ -461,7 +458,7 @@ public class TableBucketStateMachine {
                 zooKeeperClient.registerLeaderAndIsr(
                         info.getTableBucket(),
                         info.getLeaderAndIsr(),
-                        coordinatorContext.getCoordinatorEpochZkVersion());
+                        coordinatorContext.getCoordinatorZkVersion());
                 registerSuccessList.add(info);
             } catch (Exception e) {
                 LOG.error(
@@ -506,7 +503,7 @@ public class TableBucketStateMachine {
             zooKeeperClient.updateLeaderAndIsr(
                     tableBucket,
                     electionResult.leaderAndIsr,
-                    coordinatorContext.getCoordinatorEpochZkVersion());
+                    coordinatorContext.getCoordinatorZkVersion());
         } catch (Exception e) {
             LOG.error(
                     "Fail to update bucket LeaderAndIsr for table bucket {}.",

@@ -52,8 +52,6 @@ public class CoordinatorLeaderElection implements AutoCloseable {
     private static final Logger LOG = LoggerFactory.getLogger(CoordinatorLeaderElection.class);
 
     private final String serverId;
-    private final ZooKeeperClient zkClient;
-    private final CoordinatorContext coordinatorContext;
     private final LeaderLatch leaderLatch;
     private final AtomicBoolean isLeader = new AtomicBoolean(false);
     // Cached thread pool to run leader init/cleanup callbacks outside Curator's EventThread.
@@ -66,11 +64,8 @@ public class CoordinatorLeaderElection implements AutoCloseable {
     private final AtomicReference<CompletableFuture<Void>> pendingCleanup =
             new AtomicReference<>(CompletableFuture.completedFuture(null));
 
-    public CoordinatorLeaderElection(
-            ZooKeeperClient zkClient, String serverId, CoordinatorContext coordinatorContext) {
+    public CoordinatorLeaderElection(ZooKeeperClient zkClient, String serverId) {
         this.serverId = serverId;
-        this.zkClient = zkClient;
-        this.coordinatorContext = coordinatorContext;
         this.leaderLatch =
                 new LeaderLatch(
                         zkClient.getCuratorClient(),
@@ -113,10 +108,6 @@ public class CoordinatorLeaderElection implements AutoCloseable {
                         // Run init on a separate thread to avoid deadlock with
                         // Curator's EventThread when performing ZK operations.
 
-                        // Set leader flag before init completes, so when zk found this leader, the
-                        // leader can accept requests
-                        isLeader.set(true);
-
                         leaderCallbackExecutor.execute(
                                 () -> {
                                     // Wait for any pending cleanup to finish first.
@@ -134,6 +125,9 @@ public class CoordinatorLeaderElection implements AutoCloseable {
                                     }
                                     try {
                                         initLeaderServices.run();
+                                        // Set leader flag after init completes, so when zk found
+                                        // this leader, the leader can accept requests
+                                        isLeader.set(true);
                                     } catch (CoordinatorEpochFencedException e) {
                                         LOG.warn(
                                                 "Coordinator server {} has been fenced and not become leader successfully.",

@@ -139,24 +139,39 @@ import static org.apache.fluss.utils.Preconditions.checkNotNull;
  *
  * <p>In some method, 'expectedZkVersion' is used to execute an epoch Zookeeper version check.
  * Conditions requiring epoch checks (all must be met):
- * ┌─────────────────────────────────────────────────────────┐ │ 1. Invoked by the Coordinator (not
- * the TabletServer) │ │ 2. Operates on persistent nodes (not ephemeral) │ │ 3. Constitutes a
- * "control plane" operation: │ │ partition assignment or LeaderAndIsr election │ │ 4. Concurrent
- * access to the same path by old and new │ │ leaders during leader failover │ │ 5. No other
- * mechanisms (optimistic locking, │ │ idempotency, or reloading) provide fallback │
- * └─────────────────────────────────────────────────────────┘
  *
- * <p>In practice, only two types of operations truly require this: - CRUD for Table/Partition
- * Assignment (assignment decisions). - CRUD for LeaderAndIsr (leader election results).
+ * <pre>
+ * ┌─────────────────────────────────────────────────────────┐
+ * │ 1. Invoked by the Coordinator (not the TabletServer)    │
+ * │ 2. Operates on persistent nodes (not ephemeral)         │
+ * │ 3. Constitutes a "control plane" operation:             │
+ * │    partition assignment or LeaderAndIsr election        │
+ * │ 4. Concurrent access to the same path by old and new    │
+ * │    leaders during leader failover                       │
+ * │ 5. No other mechanisms (optimistic locking,             │
+ * │    idempotency, or reloading) provide fallback          │
+ * └─────────────────────────────────────────────────────────┘
+ * </pre>
+ *
+ * <p>In practice, only two types of operations truly require this:
+ *
+ * <ul>
+ *   <li>CRUD for Table/Partition Assignment (assignment decisions).
+ *   <li>CRUD for LeaderAndIsr (leader election results).
+ * </ul>
  *
  * <p>These operations are inevitably executed concurrently by the old and new coordinators during
  * failover (as the new leader immediately reassigns partitions), and overwrites cannot be
  * automatically recovered.
  *
- * <p>All other operations do not require epoch checks because: - DDL operations are protected
- * against concurrency by client reconnection mechanisms. - TabletServer operations are unaffected
- * by coordinator failovers. - ACLs and Configs have their own version control or idempotency
- * guarantees. - Ephemeral nodes are managed via session lifecycle.
+ * <p>All other operations do not require epoch checks because:
+ *
+ * <ul>
+ *   <li>DDL operations are protected against concurrency by client reconnection mechanisms.
+ *   <li>TabletServer operations are unaffected by coordinator failovers.
+ *   <li>ACLs and Configs have their own version control or idempotency guarantees.
+ *   <li>Ephemeral nodes are managed via session lifecycle.
+ * </ul>
  */
 @Internal
 public class ZooKeeperClient implements AutoCloseable {

@@ -142,9 +142,6 @@ public class CoordinatorServer extends ServerBase {
     private Authorizer authorizer;
 
     @GuardedBy("lock")
-    private CoordinatorContext coordinatorContext;
-
-    @GuardedBy("lock")
     private DynamicConfigManager dynamicConfigManager;
 
     @GuardedBy("lock")
@@ -221,11 +218,9 @@ public class CoordinatorServer extends ServerBase {
                             serverId);
 
             this.zkClient = ZooKeeperUtils.startZookeeperClient(conf, this);
-            this.coordinatorContext = new CoordinatorContext();
 
             // CoordinatorLeaderElection must be created after zkClient is initialized.
-            this.coordinatorLeaderElection =
-                    new CoordinatorLeaderElection(zkClient, serverId, coordinatorContext);
+            this.coordinatorLeaderElection = new CoordinatorLeaderElection(zkClient, serverId);
 
             this.lakeCatalogDynamicLoader = new LakeCatalogDynamicLoader(conf, pluginManager, true);
             this.dynamicConfigManager = new DynamicConfigManager(zkClient, conf, true);
@@ -298,8 +293,8 @@ public class CoordinatorServer extends ServerBase {
     protected void initCoordinatorLeader() throws Exception {
         // to avoid split-brain
         ZkEpoch zkEpoch = zkClient.fenceBecomeCoordinatorLeader(serverId);
-
         registerCoordinatorLeader();
+
         synchronized (lock) {
             this.clientMetricGroup = new ClientMetricGroup(metricRegistry, SERVER_NAME);
             this.rpcClient = RpcClient.create(conf, clientMetricGroup);
@@ -311,14 +306,13 @@ public class CoordinatorServer extends ServerBase {
             autoPartitionManager.start();
 
             // start coordinator event processor after we register coordinator leader to zk
-            // so that the event processor can get the coordinator leader node from zk during start
-            // up.
-            // in HA for coordinator server, the processor also need to know the leader node during
-            // start up
+            // so that the event processor can get the coordinator leader node from zk during
+            // start up. In HA for coordinator server, the processor also need to know the leader
+            // node during start up
+            CoordinatorContext coordinatorContext = new CoordinatorContext(zkEpoch);
             this.coordinatorEventProcessor =
                     new CoordinatorEventProcessor(
                             zkClient,
-                            zkEpoch,
                             metadataCache,
                             coordinatorChannelManager,
                             coordinatorContext,
@@ -400,11 +394,6 @@ public class CoordinatorServer extends ServerBase {
                 }
             } catch (Throwable t) {
                 LOG.warn("Failed to close client metric group", t);
-            }
-
-            // Reset coordinator context for next election
-            if (coordinatorContext != null) {
-                coordinatorContext.resetContext();
             }
 
             LOG.info("Coordinator leader services cleaned up successfully.");
@@ -596,15 +585,6 @@ public class CoordinatorServer extends ServerBase {
                 if (ioExecutor != null) {
                     // shutdown io executor
                     ExecutorUtils.gracefulShutdown(5, TimeUnit.SECONDS, ioExecutor);
-                }
-            } catch (Throwable t) {
-                exception = ExceptionUtils.firstOrSuppressed(t, exception);
-            }
-
-            try {
-                if (coordinatorContext != null) {
-                    // then reset coordinatorContext
-                    coordinatorContext.resetContext();
                 }
             } catch (Throwable t) {
                 exception = ExceptionUtils.firstOrSuppressed(t, exception);

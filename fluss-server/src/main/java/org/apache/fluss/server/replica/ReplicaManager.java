@@ -336,6 +336,11 @@ public class ReplicaManager implements ServerReconfigurable {
         return minInSyncReplicas;
     }
 
+    @VisibleForTesting
+    public int getCoordinatorEpoch() {
+        return coordinatorEpoch;
+    }
+
     // ============ ServerReconfigurable Implementation ============
 
     @Override
@@ -1879,9 +1884,14 @@ public class ReplicaManager implements ServerReconfigurable {
                             requestCoordinatorEpoch, requestName, this.coordinatorEpoch);
             LOG.warn("Ignore the {} request because {}", requestName, errorMessage);
             throw new InvalidCoordinatorException(errorMessage);
-        } else {
+        } else if (requestCoordinatorEpoch > this.coordinatorEpoch) {
+            LOG.info(
+                    "Update coordinator epoch from {} to {} for coordinator leader switch.",
+                    this.coordinatorEpoch,
+                    requestCoordinatorEpoch);
             this.coordinatorEpoch = requestCoordinatorEpoch;
         }
+        // ignore equal case
     }
 
     private void dropEmptyTableOrPartitionDir(Path dir, long id, String dirType) {
@@ -1989,11 +1999,6 @@ public class ReplicaManager implements ServerReconfigurable {
 
     public TabletServerMetricGroup getServerMetricGroup() {
         return serverMetricGroup;
-    }
-
-    @VisibleForTesting
-    public void resetCoordinatorEpoch() {
-        this.coordinatorEpoch = CoordinatorContext.INITIAL_COORDINATOR_EPOCH;
     }
 
     /**

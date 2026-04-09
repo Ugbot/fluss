@@ -283,15 +283,13 @@ class CoordinatorHighAvailabilityITCase {
                 .isEqualTo(standby.getServerId());
 
         int newCoordinatorEpoch = standby.getCoordinatorEventProcessor().getCoordinatorEpoch();
+        // wait the new coordinator notifies the tablet server about the new coordinator epoch
+        waitUntil(
+                () -> tabletServer.getReplicaManager().getCoordinatorEpoch() == newCoordinatorEpoch,
+                Duration.ofSeconds(30),
+                "Tablet server did not update to new coordinator epoch");
 
         TabletServerGateway tsGateway = createGatewayForTabletServer(tabletServer);
-
-        // Send request with new coordinator epoch first to ensure the tablet server
-        // has updated its stored epoch to the latest value
-        tsGateway
-                .updateMetadata(
-                        new UpdateMetadataRequest().setCoordinatorEpoch(newCoordinatorEpoch))
-                .get();
 
         // Send request with old coordinator epoch — tablet server should reject it
         assertThatThrownBy(
@@ -339,11 +337,11 @@ class CoordinatorHighAvailabilityITCase {
         int newLeaderEpochZkVersion =
                 standby.getCoordinatorEventProcessor()
                         .getCoordinatorContext()
-                        .getCoordinatorEpochZkVersion();
+                        .getCoordinatorZkVersion();
         int oldLeaderEpochZkVersion =
                 leader.getCoordinatorEventProcessor()
                         .getCoordinatorContext()
-                        .getCoordinatorEpochZkVersion();
+                        .getCoordinatorZkVersion();
 
         assertThatThrownBy(
                         () ->
@@ -413,11 +411,23 @@ class CoordinatorHighAvailabilityITCase {
         return configuration;
     }
 
-    private void waitUntilCoordinatorServerElected() {
+    private void waitUntilCoordinatorServerElected() throws Exception {
         waitUntil(
                 () -> zookeeperClient.getCoordinatorLeaderAddress().isPresent(),
                 Duration.ofMinutes(1),
                 "Fail to wait coordinator server elected");
+        waitUntilCoordinatorLeaderReady();
+    }
+
+    private void waitUntilCoordinatorLeaderReady() throws Exception {
+        CoordinatorAddress currentLeaderAddress =
+                zookeeperClient.getCoordinatorLeaderAddress().get();
+        CoordinatorServer currentLeader = findServerById(currentLeaderAddress.getId());
+        // we need to wait some time for the coordinator leader start services after election
+        waitUntil(
+                () -> currentLeader.getCoordinatorService().isLeader(),
+                Duration.ofSeconds(30),
+                "Coordinator leader did not recognize itself as leader");
     }
 
     private CoordinatorServer findServerById(String serverId) {
@@ -493,7 +503,7 @@ class CoordinatorHighAvailabilityITCase {
     }
 
     /** Waits until a new coordinator leader is elected that is different from the given old one. */
-    private void waitUntilNewLeaderElected(String oldLeaderId) {
+    private void waitUntilNewLeaderElected(String oldLeaderId) throws Exception {
         waitUntil(
                 () -> {
                     try {
@@ -507,6 +517,7 @@ class CoordinatorHighAvailabilityITCase {
                 },
                 Duration.ofMinutes(1),
                 "Fail to wait for new coordinator leader to be elected");
+        waitUntilCoordinatorLeaderReady();
     }
 
     /** Verifies that the given server can process requests as a leader. */

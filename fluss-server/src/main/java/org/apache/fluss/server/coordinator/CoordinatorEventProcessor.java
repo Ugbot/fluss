@@ -108,7 +108,6 @@ import org.apache.fluss.server.metadata.CoordinatorMetadataCache;
 import org.apache.fluss.server.metadata.ServerInfo;
 import org.apache.fluss.server.metrics.group.CoordinatorMetricGroup;
 import org.apache.fluss.server.utils.ServerRpcMessageUtils;
-import org.apache.fluss.server.zk.ZkEpoch;
 import org.apache.fluss.server.zk.ZooKeeperClient;
 import org.apache.fluss.server.zk.data.BucketAssignment;
 import org.apache.fluss.server.zk.data.LeaderAndIsr;
@@ -189,7 +188,6 @@ public class CoordinatorEventProcessor implements EventProcessor {
 
     public CoordinatorEventProcessor(
             ZooKeeperClient zooKeeperClient,
-            ZkEpoch zkEpoch,
             CoordinatorMetadataCache serverMetadataCache,
             CoordinatorChannelManager coordinatorChannelManager,
             CoordinatorContext coordinatorContext,
@@ -255,9 +253,6 @@ public class CoordinatorEventProcessor implements EventProcessor {
         this.ioExecutor = ioExecutor;
         this.lakeTableHelper =
                 new LakeTableHelper(zooKeeperClient, conf.getString(ConfigOptions.REMOTE_DATA_DIR));
-
-        this.coordinatorContext.setCoordinatorEpochAndZkVersion(
-                zkEpoch.getCoordinatorEpoch(), zkEpoch.getCoordinatorEpochZkVersion());
     }
 
     public CoordinatorEventManager getCoordinatorEventManager() {
@@ -314,6 +309,7 @@ public class CoordinatorEventProcessor implements EventProcessor {
         coordinatorEventManager.close();
         rebalanceManager.close();
         onShutdown();
+        coordinatorContext.resetContext();
     }
 
     private ServerInfo getCoordinatorServerInfo() {
@@ -1626,7 +1622,7 @@ public class CoordinatorEventProcessor implements EventProcessor {
             zooKeeperClient.updateTableAssignment(
                     tableId,
                     new TableAssignment(newTableAssignment),
-                    coordinatorContext.getCoordinatorEpochZkVersion());
+                    coordinatorContext.getCoordinatorZkVersion());
         } else {
             Map<Integer, List<Integer>> partitionAssignment =
                     coordinatorContext.getPartitionAssignment(
@@ -1639,7 +1635,7 @@ public class CoordinatorEventProcessor implements EventProcessor {
             zooKeeperClient.updatePartitionAssignment(
                     partitionId,
                     new PartitionAssignment(tableId, newPartitionAssignment),
-                    coordinatorContext.getCoordinatorEpochZkVersion());
+                    coordinatorContext.getCoordinatorZkVersion());
         }
     }
 
@@ -1686,7 +1682,7 @@ public class CoordinatorEventProcessor implements EventProcessor {
 
         try {
             zooKeeperClient.batchUpdateLeaderAndIsr(
-                    newLeaderAndIsrList, coordinatorContext.getCoordinatorEpochZkVersion());
+                    newLeaderAndIsrList, coordinatorContext.getCoordinatorZkVersion());
             newLeaderAndIsrList.forEach(
                     (tableBucket, newLeaderAndIsr) ->
                             result.add(new AdjustIsrResultForBucket(tableBucket, newLeaderAndIsr)));
@@ -1700,7 +1696,7 @@ public class CoordinatorEventProcessor implements EventProcessor {
                     zooKeeperClient.updateLeaderAndIsr(
                             tableBucket,
                             newLeaderAndIsr,
-                            coordinatorContext.getCoordinatorEpochZkVersion());
+                            coordinatorContext.getCoordinatorZkVersion());
                 } catch (Exception e) {
                     LOG.error("Error when register leader and isr.", e);
                     result.add(
@@ -2227,7 +2223,7 @@ public class CoordinatorEventProcessor implements EventProcessor {
 
         coordinatorContext.putBucketLeaderAndIsr(tableBucket, newLeaderAndIsr);
         zooKeeperClient.updateLeaderAndIsr(
-                tableBucket, newLeaderAndIsr, coordinatorContext.getCoordinatorEpochZkVersion());
+                tableBucket, newLeaderAndIsr, coordinatorContext.getCoordinatorZkVersion());
 
         coordinatorRequestBatch.newBatch();
         coordinatorRequestBatch.addNotifyLeaderRequestForTabletServers(

@@ -30,11 +30,11 @@ import org.apache.fluss.server.coordinator.CoordinatorContext;
 import org.apache.fluss.server.coordinator.CoordinatorRequestBatch;
 import org.apache.fluss.server.coordinator.CoordinatorTestUtils;
 import org.apache.fluss.server.coordinator.TestCoordinatorChannelManager;
-import org.apache.fluss.server.coordinator.TestCoordinatorContext;
 import org.apache.fluss.server.coordinator.event.DeleteReplicaResponseReceivedEvent;
 import org.apache.fluss.server.entity.DeleteReplicaResultForBucket;
 import org.apache.fluss.server.metadata.ServerInfo;
 import org.apache.fluss.server.zk.NOPErrorHandler;
+import org.apache.fluss.server.zk.ZkEpoch;
 import org.apache.fluss.server.zk.ZooKeeperClient;
 import org.apache.fluss.server.zk.ZooKeeperExtension;
 import org.apache.fluss.server.zk.data.LeaderAndIsr;
@@ -71,18 +71,20 @@ class ReplicaStateMachineTest {
             new AllCallbackWrapper<>(new ZooKeeperExtension());
 
     private static ZooKeeperClient zookeeperClient;
+    private static ZkEpoch zkEpoch;
 
     @BeforeAll
-    static void baseBeforeAll() {
+    static void baseBeforeAll() throws Exception {
         zookeeperClient =
                 ZOO_KEEPER_EXTENSION_WRAPPER
                         .getCustomExtension()
                         .getZooKeeperClient(NOPErrorHandler.INSTANCE);
+        zkEpoch = zookeeperClient.fenceBecomeCoordinatorLeader("1");
     }
 
     @Test
     void testStartup() {
-        CoordinatorContext coordinatorContext = new TestCoordinatorContext();
+        CoordinatorContext coordinatorContext = new CoordinatorContext(zkEpoch);
 
         // init coordinator server context with a table assignment
         TableBucket tableBucket = new TableBucket(1, 0);
@@ -107,7 +109,7 @@ class ReplicaStateMachineTest {
 
     @Test
     void testReplicaStateChange() {
-        CoordinatorContext coordinatorContext = new TestCoordinatorContext();
+        CoordinatorContext coordinatorContext = new CoordinatorContext(zkEpoch);
         ReplicaStateMachine replicaStateMachine = createReplicaStateMachine(coordinatorContext);
 
         // test check valid replica state change
@@ -136,7 +138,7 @@ class ReplicaStateMachineTest {
     @Test
     void testDeleteReplicaStateChange() {
         Map<TableBucketReplica, Boolean> isReplicaDeleteSuccess = new HashMap<>();
-        CoordinatorContext coordinatorContext = new TestCoordinatorContext();
+        CoordinatorContext coordinatorContext = new CoordinatorContext(zkEpoch);
         coordinatorContext.setLiveTabletServers(
                 CoordinatorTestUtils.createServers(Arrays.asList(0, 1)));
         // use a context that will return a gateway that always get success ack
@@ -167,7 +169,7 @@ class ReplicaStateMachineTest {
         }
 
         // now, we change a context that some gateway will return exception
-        coordinatorContext = new CoordinatorContext();
+        coordinatorContext = new CoordinatorContext(zkEpoch);
         coordinatorContext.setLiveTabletServers(
                 CoordinatorTestUtils.createServers(Arrays.asList(0, 1)));
         coordinatorContext.putBucketLeaderAndIsr(tableBucket1, new LeaderAndIsr(0, 0));
@@ -193,7 +195,7 @@ class ReplicaStateMachineTest {
 
     @Test
     void testOfflineReplicasShouldBeRemovedFromIsr() throws Exception {
-        CoordinatorContext coordinatorContext = new TestCoordinatorContext();
+        CoordinatorContext coordinatorContext = new CoordinatorContext(zkEpoch);
         coordinatorContext.setLiveTabletServers(createServers(new int[] {0, 1, 2}));
         ReplicaStateMachine replicaStateMachine = createReplicaStateMachine(coordinatorContext);
 
@@ -233,7 +235,7 @@ class ReplicaStateMachineTest {
 
     @Test
     void testOfflineReplicaShouldBeRemovedFromIsr() throws Exception {
-        CoordinatorContext coordinatorContext = new TestCoordinatorContext();
+        CoordinatorContext coordinatorContext = new CoordinatorContext(zkEpoch);
         coordinatorContext.setLiveTabletServers(createServers(new int[] {0, 1, 2}));
         ReplicaStateMachine replicaStateMachine = createReplicaStateMachine(coordinatorContext);
 

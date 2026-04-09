@@ -18,8 +18,15 @@
 
 package org.apache.fluss.server.zk;
 
+import static org.apache.fluss.server.coordinator.CoordinatorContext.INITIAL_COORDINATOR_EPOCH;
+import static org.apache.fluss.server.coordinator.CoordinatorContext.INITIAL_COORDINATOR_EPOCH_ZK_VERSION;
+
 /** Class for coordinator epoch and coordinator epoch zk version. */
 public class ZkEpoch {
+
+    public static final ZkEpoch INITIAL_EPOCH =
+            new ZkEpoch(INITIAL_COORDINATOR_EPOCH, INITIAL_COORDINATOR_EPOCH_ZK_VERSION);
+
     private final int coordinatorEpoch;
     private final int coordinatorEpochZkVersion;
 

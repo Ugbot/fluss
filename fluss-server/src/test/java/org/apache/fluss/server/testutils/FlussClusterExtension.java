@@ -942,11 +942,16 @@ public final class FlussClusterExtension
         return coordinatorServer;
     }
 
-    public void waitUntilCoordinatorServerElected() throws Exception {
+    private void waitUntilCoordinatorServerElected() {
         waitUntil(
                 () -> zooKeeperClient.getCoordinatorLeaderAddress().isPresent(),
                 Duration.ofSeconds(10),
                 "Fail to wait coordinator server elected");
+        // we need to wait some time for the coordinator leader start services after election
+        waitUntil(
+                () -> coordinatorServer.getCoordinatorService().isLeader(),
+                Duration.ofSeconds(10),
+                "Coordinator leader did not recognize itself as leader");
     }
 
     // --------------------------------------------------------------------------------------------

@@ -34,7 +34,6 @@ import org.apache.fluss.server.coordinator.LakeCatalogDynamicLoader;
 import org.apache.fluss.server.coordinator.LakeTableTieringManager;
 import org.apache.fluss.server.coordinator.MetadataManager;
 import org.apache.fluss.server.coordinator.TestCoordinatorChannelManager;
-import org.apache.fluss.server.coordinator.TestCoordinatorContext;
 import org.apache.fluss.server.coordinator.event.CoordinatorEventManager;
 import org.apache.fluss.server.coordinator.lease.KvSnapshotLeaseManager;
 import org.apache.fluss.server.coordinator.statemachine.ReplicaLeaderElection.ControlledShutdownLeaderElection;
@@ -57,7 +56,6 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
 
-import java.io.IOException;
 import java.time.Duration;
 import java.util.Arrays;
 import java.util.Collections;
@@ -106,12 +104,12 @@ class TableBucketStateMachineTest {
     }
 
     @BeforeEach
-    void beforeEach() throws IOException {
+    void beforeEach() {
         Configuration conf = new Configuration();
         conf.setString(ConfigOptions.COORDINATOR_HOST, "localhost");
         String remoteDir = "/tmp/fluss/remote-data";
         conf.setString(ConfigOptions.REMOTE_DATA_DIR, remoteDir);
-        coordinatorContext = new TestCoordinatorContext();
+        coordinatorContext = new CoordinatorContext(zkEpoch);
         testCoordinatorChannelManager = new TestCoordinatorChannelManager();
         coordinatorRequestBatch =
                 new CoordinatorRequestBatch(
@@ -233,8 +231,6 @@ class TableBucketStateMachineTest {
         coordinatorContext.putTablePath(tableId, fakeTablePath);
         coordinatorContext.updateBucketReplicaAssignment(tableBucket, Arrays.asList(0, 1, 2));
         coordinatorContext.putBucketState(tableBucket, NewBucket);
-        coordinatorContext.setCoordinatorEpochAndZkVersion(
-                0, ZkVersion.MATCH_ANY_VERSION.getVersion());
         // case1: init a new leader for NewBucket to OnlineBucket
         tableBucketStateMachine.handleStateChange(Collections.singleton(tableBucket), OnlineBucket);
         // non any alive servers, the state change fail
@@ -280,7 +276,6 @@ class TableBucketStateMachineTest {
         CoordinatorEventProcessor coordinatorEventProcessor =
                 new CoordinatorEventProcessor(
                         zookeeperClient,
-                        zkEpoch,
                         serverMetadataCache,
                         new CoordinatorChannelManager(
                                 RpcClient.create(

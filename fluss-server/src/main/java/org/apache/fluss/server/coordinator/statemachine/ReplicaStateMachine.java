@@ -488,7 +488,7 @@ public class ReplicaStateMachine {
         }
         try {
             zooKeeperClient.batchUpdateLeaderAndIsr(
-                    toUpdateLeaderAndIsrList, coordinatorContext.getCoordinatorEpochZkVersion());
+                    toUpdateLeaderAndIsrList, coordinatorContext.getCoordinatorZkVersion());
             toUpdateLeaderAndIsrList.forEach(coordinatorContext::putBucketLeaderAndIsr);
             return adjustedLeaderAndIsr;
         } catch (Exception e) {

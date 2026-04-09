@@ -1061,10 +1061,9 @@ class CoordinatorEventProcessorTest {
     private CoordinatorEventProcessor buildCoordinatorEventProcessor() {
         return new CoordinatorEventProcessor(
                 zookeeperClient,
-                zkEpoch,
                 serverMetadataCache,
                 testCoordinatorChannelManager,
-                new TestCoordinatorContext(),
+                new CoordinatorContext(zkEpoch),
                 autoPartitionManager,
                 lakeTableTieringManager,
                 TestingMetricGroups.COORDINATOR_METRICS,
