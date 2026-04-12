@@ -24,7 +24,6 @@ import org.apache.fluss.cluster.rebalance.GoalType;
 import org.apache.fluss.cluster.rebalance.ServerTag;
 import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.config.Configuration;
-import org.apache.fluss.config.StatisticsConfigUtils;
 import org.apache.fluss.config.cluster.AlterConfig;
 import org.apache.fluss.config.cluster.AlterConfigOpType;
 import org.apache.fluss.exception.ApiException;
@@ -459,9 +458,6 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
         // apply system defaults if the config is not set
         tableDescriptor =
                 applySystemDefaults(tableDescriptor, lakeCatalogContainer.getDataLakeFormat());
-
-        // validate statistics configuration
-        StatisticsConfigUtils.validateStatisticsConfig(tableDescriptor);
 
         // the distribution and bucket count must be set now
         //noinspection OptionalGetWithoutIsPresent
