@@ -156,10 +156,7 @@ public class LogFetchCollector {
                     tb,
                     nextInLineFetch.fetchOffset());
         } else {
-            // When server-side filtering is enabled, the CompletedFetch's nextFetchOffset
-            // may have been advanced by filteredEndOffset (all batches filtered out).
-            // The fetchOffset still matches the original request offset.
-            if (nextInLineFetch.fetchOffset() == offset) {
+            if (nextInLineFetch.nextFetchOffset() == offset) {
                 List<ScanRecord> records = nextInLineFetch.fetchRecords(maxRecords);
                 LOG.trace(
                         "Returning {} fetched records at offset {} for assigned bucket {}.",
@@ -183,7 +180,7 @@ public class LogFetchCollector {
                 LOG.warn(
                         "Ignoring fetched records for {} at offset {} since the current offset is {}",
                         nextInLineFetch.tableBucket,
-                        nextInLineFetch.fetchOffset(),
+                        nextInLineFetch.nextFetchOffset(),
                         offset);
             }
         }

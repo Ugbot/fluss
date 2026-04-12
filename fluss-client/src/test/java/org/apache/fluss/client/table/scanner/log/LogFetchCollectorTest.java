@@ -20,6 +20,7 @@ package org.apache.fluss.client.table.scanner.log;
 import org.apache.fluss.client.metadata.MetadataUpdater;
 import org.apache.fluss.client.metadata.TestingMetadataUpdater;
 import org.apache.fluss.client.table.scanner.ScanRecord;
+import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.config.Configuration;
 import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.record.LogRecordBatch;
@@ -203,6 +204,54 @@ public class LogFetchCollectorTest {
             totalBytesRead += record.getSizeInBytes();
         }
         assertThat(totalBytesRead).isEqualTo(expectedTotal);
+    }
+
+    @Test
+    void testShouldContinueConsumeSameCompletedFetchAcrossPolls() throws Exception {
+        Configuration conf = new Configuration();
+        conf.setInt(ConfigOptions.CLIENT_SCANNER_LOG_MAX_POLL_RECORDS, 2);
+        MetadataUpdater metadataUpdater =
+                new TestingMetadataUpdater(
+                        Collections.singletonMap(DATA1_TABLE_PATH, DATA1_TABLE_INFO));
+        LogFetchCollector collector =
+                new LogFetchCollector(DATA1_TABLE_PATH, logScannerStatus, conf, metadataUpdater);
+
+        TableBucket tb = new TableBucket(DATA1_TABLE_ID, 0);
+        FetchLogResultForBucket result =
+                new FetchLogResultForBucket(tb, genMemoryLogRecordsByObject(DATA1), 10L);
+        CompletedFetch completedFetch = makeCompletedFetch(tb, result, 0L);
+        logFetchBuffer.add(completedFetch);
+
+        ScanRecords firstPoll = collector.collectFetch(logFetchBuffer);
+        assertThat(firstPoll.records(tb).size()).isEqualTo(2);
+        assertThat(logScannerStatus.getBucketOffset(tb)).isEqualTo(2L);
+        assertThat(completedFetch.isConsumed()).isFalse();
+
+        ScanRecords secondPoll = collector.collectFetch(logFetchBuffer);
+        assertThat(secondPoll.records(tb).size()).isEqualTo(2);
+        assertThat(logScannerStatus.getBucketOffset(tb)).isEqualTo(4L);
+        assertThat(completedFetch.isConsumed()).isFalse();
+    }
+
+    @Test
+    void testFilteredEmptyResponseAdvancesOffset() {
+        Configuration conf = new Configuration();
+        conf.setInt(ConfigOptions.CLIENT_SCANNER_LOG_MAX_POLL_RECORDS, 2);
+        MetadataUpdater metadataUpdater =
+                new TestingMetadataUpdater(
+                        Collections.singletonMap(DATA1_TABLE_PATH, DATA1_TABLE_INFO));
+        LogFetchCollector collector =
+                new LogFetchCollector(DATA1_TABLE_PATH, logScannerStatus, conf, metadataUpdater);
+
+        TableBucket tb = new TableBucket(DATA1_TABLE_ID, 1);
+        FetchLogResultForBucket filteredEmpty = new FetchLogResultForBucket(tb, 10L, 20L);
+        CompletedFetch completedFetch = makeCompletedFetch(tb, filteredEmpty, 0L);
+        logFetchBuffer.add(completedFetch);
+
+        ScanRecords scanRecords = collector.collectFetch(logFetchBuffer);
+        assertThat(scanRecords.records(tb)).isEmpty();
+        assertThat(logScannerStatus.getBucketOffset(tb)).isEqualTo(20L);
+        assertThat(completedFetch.isConsumed()).isTrue();
     }
 
     private DefaultCompletedFetch makeCompletedFetch(
