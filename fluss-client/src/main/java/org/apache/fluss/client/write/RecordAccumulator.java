@@ -35,8 +35,8 @@ import org.apache.fluss.metrics.MetricNames;
 import org.apache.fluss.record.LogRecordBatchStatisticsCollector;
 import org.apache.fluss.row.arrow.ArrowWriter;
 import org.apache.fluss.row.arrow.ArrowWriterPool;
+import org.apache.fluss.row.arrow.memory.BufferAllocatorUtil;
 import org.apache.fluss.shaded.arrow.org.apache.arrow.memory.BufferAllocator;
-import org.apache.fluss.shaded.arrow.org.apache.arrow.memory.RootAllocator;
 import org.apache.fluss.utils.CopyOnWriteMap;
 import org.apache.fluss.utils.MathUtils;
 import org.apache.fluss.utils.clock.Clock;
@@ -134,7 +134,7 @@ public final class RecordAccumulator {
                 Math.max(1, (int) conf.get(ConfigOptions.CLIENT_WRITER_BATCH_SIZE).getBytes());
 
         this.writerBufferPool = LazyMemorySegmentPool.createWriterBufferPool(conf);
-        this.bufferAllocator = new RootAllocator(Long.MAX_VALUE);
+        this.bufferAllocator = BufferAllocatorUtil.createBufferAllocator();
         this.arrowWriterPool = new ArrowWriterPool(bufferAllocator);
         this.incomplete = new IncompleteBatches();
         this.nodesDrainIndex = new HashMap<>();
