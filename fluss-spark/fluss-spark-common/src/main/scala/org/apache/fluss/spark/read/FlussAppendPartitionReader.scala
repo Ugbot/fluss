@@ -20,6 +20,7 @@ package org.apache.fluss.spark.read
 import org.apache.fluss.client.table.scanner.ScanRecord
 import org.apache.fluss.config.Configuration
 import org.apache.fluss.metadata.{TableBucket, TablePath}
+import org.apache.fluss.types.RowType
 
 /** Partition reader that reads log data from a single Fluss table bucket. */
 class FlussAppendPartitionReader(
@@ -28,6 +29,8 @@ class FlussAppendPartitionReader(
     flussPartition: FlussAppendInputPartition,
     flussConfig: Configuration)
   extends FlussPartitionReader(tablePath, flussConfig) {
+
+  override protected lazy val projectedRowType: RowType = rowType.project(projection)
 
   private val tableBucket: TableBucket = flussPartition.tableBucket
   private val partitionId = tableBucket.getPartitionId
