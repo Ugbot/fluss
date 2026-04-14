@@ -168,6 +168,7 @@ public class CoordinatorServer extends ServerBase {
     public static void main(String[] args) {
         Configuration configuration =
                 loadConfiguration(args, CoordinatorServer.class.getSimpleName());
+        applyServerDefaultConfigurations(configuration);
         CoordinatorServer coordinatorServer = new CoordinatorServer(configuration);
         startServer(coordinatorServer);
     }
