@@ -25,8 +25,10 @@ import org.apache.fluss.metadata.TableInfo;
 import org.apache.fluss.row.InternalRow;
 import org.apache.fluss.row.InternalRow.FieldGetter;
 import org.apache.fluss.row.ProjectedRow;
-import org.apache.fluss.row.arrow.memory.BufferAllocatorUtil;
+import org.apache.fluss.shaded.arrow.org.apache.arrow.memory.AllocationManager;
 import org.apache.fluss.shaded.arrow.org.apache.arrow.memory.BufferAllocator;
+import org.apache.fluss.shaded.arrow.org.apache.arrow.memory.BufferAllocatorUtil;
+import org.apache.fluss.shaded.arrow.org.apache.arrow.memory.ChunkedAllocationManager;
 import org.apache.fluss.shaded.arrow.org.apache.arrow.vector.VectorSchemaRoot;
 import org.apache.fluss.types.DataType;
 import org.apache.fluss.types.RowType;
@@ -68,6 +70,29 @@ public class LogRecordReadContext implements LogRecordBatch.ReadContext, AutoClo
             boolean readFromRemote,
             @Nullable Projection projection,
             SchemaGetter schemaGetter) {
+        return createReadContext(
+                tableInfo,
+                readFromRemote,
+                projection,
+                schemaGetter,
+                new ChunkedAllocationManager.ChunkedFactory());
+    }
+
+    /**
+     * Creates a {@link LogRecordReadContext} with a custom {@link AllocationManager.Factory}.
+     *
+     * @param tableInfo the table info of the table to read
+     * @param readFromRemote whether the data is read from remote storage
+     * @param projection the projection to apply, or null for all fields
+     * @param schemaGetter the schema getter to resolve schema by id
+     * @param allocationManagerFactory the factory for creating Arrow memory allocations
+     */
+    public static LogRecordReadContext createReadContext(
+            TableInfo tableInfo,
+            boolean readFromRemote,
+            @Nullable Projection projection,
+            SchemaGetter schemaGetter,
+            AllocationManager.Factory allocationManagerFactory) {
         RowType rowType = tableInfo.getRowType();
         LogFormat logFormat = tableInfo.getTableConfig().getLogFormat();
         // only for arrow log format, the projection can be push downed to the server side
@@ -84,7 +109,12 @@ public class LogRecordReadContext implements LogRecordBatch.ReadContext, AutoClo
                 // so set the rowType as is.
                 int[] selectedFields = projection.getProjection();
                 return createArrowReadContext(
-                        rowType, schemaId, selectedFields, false, schemaGetter);
+                        rowType,
+                        schemaId,
+                        selectedFields,
+                        false,
+                        schemaGetter,
+                        allocationManagerFactory);
             } else {
                 // arrow data that returned from server has been projected (in order)
                 RowType projectedRowType = projection.projectInOrder(rowType);
@@ -95,7 +125,8 @@ public class LogRecordReadContext implements LogRecordBatch.ReadContext, AutoClo
                         schemaId,
                         selectedFields,
                         projectionPushDowned,
-                        schemaGetter);
+                        schemaGetter,
+                        allocationManagerFactory);
             }
         } else if (logFormat == LogFormat.INDEXED) {
             int[] selectedFields = projection.getProjection();
@@ -113,9 +144,11 @@ public class LogRecordReadContext implements LogRecordBatch.ReadContext, AutoClo
             int schemaId,
             int[] selectedFields,
             boolean projectionPushDowned,
-            SchemaGetter schemaGetter) {
+            SchemaGetter schemaGetter,
+            AllocationManager.Factory allocationManagerFactory) {
         // TODO: use a more reasonable memory limit
-        BufferAllocator allocator = BufferAllocatorUtil.createBufferAllocator();
+        BufferAllocator allocator =
+                BufferAllocatorUtil.createBufferAllocator(allocationManagerFactory);
         FieldGetter[] fieldGetters = buildProjectedFieldGetters(dataRowType, selectedFields);
         return new LogRecordReadContext(
                 LogFormat.ARROW,
@@ -139,7 +172,13 @@ public class LogRecordReadContext implements LogRecordBatch.ReadContext, AutoClo
     public static LogRecordReadContext createArrowReadContext(
             RowType rowType, int schemaId, SchemaGetter schemaGetter) {
         int[] selectedFields = IntStream.range(0, rowType.getFieldCount()).toArray();
-        return createArrowReadContext(rowType, schemaId, selectedFields, false, schemaGetter);
+        return createArrowReadContext(
+                rowType,
+                schemaId,
+                selectedFields,
+                false,
+                schemaGetter,
+                new ChunkedAllocationManager.ChunkedFactory());
     }
 
     @VisibleForTesting
@@ -150,7 +189,12 @@ public class LogRecordReadContext implements LogRecordBatch.ReadContext, AutoClo
             boolean projectionPushDowned) {
         int[] selectedFields = IntStream.range(0, rowType.getFieldCount()).toArray();
         return createArrowReadContext(
-                rowType, schemaId, selectedFields, projectionPushDowned, schemaGetter);
+                rowType,
+                schemaId,
+                selectedFields,
+                projectionPushDowned,
+                schemaGetter,
+                new ChunkedAllocationManager.ChunkedFactory());
     }
 
     /**
