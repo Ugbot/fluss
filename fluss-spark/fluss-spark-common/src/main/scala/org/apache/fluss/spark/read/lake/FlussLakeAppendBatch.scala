@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-package org.apache.fluss.spark.read
+package org.apache.fluss.spark.read.lake
 
 import org.apache.fluss.client.initializer.{BucketOffsetsRetrieverImpl, OffsetsInitializer}
 import org.apache.fluss.client.table.scanner.log.LogScanner
@@ -24,6 +24,7 @@ import org.apache.fluss.exception.LakeTableSnapshotNotExistException
 import org.apache.fluss.lake.serializer.SimpleVersionedSerializer
 import org.apache.fluss.lake.source.{LakeSource, LakeSplit}
 import org.apache.fluss.metadata.{ResolvedPartitionSpec, TableBucket, TableInfo, TablePath}
+import org.apache.fluss.spark.read._
 import org.apache.fluss.utils.ExceptionUtils
 
 import org.apache.spark.sql.connector.read.{InputPartition, PartitionReaderFactory}
@@ -40,37 +41,24 @@ class FlussLakeAppendBatch(
     readSchema: StructType,
     options: CaseInsensitiveStringMap,
     flussConfig: Configuration)
-  extends FlussBatch(tablePath, tableInfo, readSchema, flussConfig) {
+  extends FlussLakeBatch(tablePath, tableInfo, readSchema, options, flussConfig) {
 
-  // Required by FlussBatch but unused — lake snapshot determines start offsets.
+  // Required by FlussLakeBatch but unused — lake snapshot determines start offsets.
   override val startOffsetsInitializer: OffsetsInitializer = OffsetsInitializer.earliest()
-
-  override val stoppingOffsetsInitializer: OffsetsInitializer = {
-    FlussOffsetInitializers.stoppingOffsetsInitializer(true, options, flussConfig)
-  }
-
-  private lazy val (partitions, isFallback) = doPlan()
-
-  override def planInputPartitions(): Array[InputPartition] = partitions
 
   override def createReaderFactory(): PartitionReaderFactory = {
     if (isFallback) {
       new FlussAppendPartitionReaderFactory(tablePath, projection, options, flussConfig)
     } else {
-      new FlussLakeAppendPartitionReaderFactory(
+      new FlussLakePartitionReaderFactory(
         tableInfo.getProperties.toMap,
         tablePath,
-        tableInfo.getRowType,
         projection,
         flussConfig)
     }
   }
 
-  /**
-   * Plans input partitions for reading. The returned isFallback flag is true when no lake snapshot
-   * exists and the plan falls back to pure log reading.
-   */
-  private def doPlan(): (Array[InputPartition], Boolean) = {
+  override def doPlan(): (Array[InputPartition], Boolean) = {
     val lakeSnapshot =
       try {
         admin.getReadableLakeSnapshot(tablePath).get()
@@ -86,8 +74,8 @@ class FlussLakeAppendBatch(
           throw e
       }
 
-    val lakeSource = FlussLakeSourceUtils.createLakeSource(tableInfo.getProperties.toMap, tablePath)
-    lakeSource.withProject(FlussLakeSourceUtils.lakeProjection(projection))
+    val lakeSource = FlussLakeUtils.createLakeSource(tableInfo.getProperties.toMap, tablePath)
+    lakeSource.withProject(FlussLakeUtils.lakeProjection(projection))
 
     val lakeSplits = lakeSource
       .createPlanner(new LakeSource.PlannerContext {
@@ -259,18 +247,6 @@ class FlussLakeAppendBatch(
     } else {
       None
     }
-  }
-
-  private def getBucketOffsets(
-      initializer: OffsetsInitializer,
-      partitionName: String,
-      buckets: Seq[Int],
-      bucketOffsetsRetriever: BucketOffsetsRetrieverImpl): Map[Int, Long] = {
-    initializer
-      .getBucketOffsets(partitionName, buckets.map(Integer.valueOf).asJava, bucketOffsetsRetriever)
-      .asScala
-      .map(e => (e._1.intValue(), Long2long(e._2)))
-      .toMap
   }
 
   private def planFallbackPartitions(): Array[InputPartition] = {

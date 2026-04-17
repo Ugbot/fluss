@@ -15,41 +15,50 @@
  * limitations under the License.
  */
 
-package org.apache.fluss.spark.read
+package org.apache.fluss.spark.read.lake
 
 import org.apache.fluss.config.Configuration
 import org.apache.fluss.lake.source.{LakeSource, LakeSplit}
 import org.apache.fluss.metadata.TablePath
-import org.apache.fluss.types.RowType
+import org.apache.fluss.spark.read.{FlussAppendInputPartition, FlussAppendPartitionReader}
 
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.connector.read.{InputPartition, PartitionReader, PartitionReaderFactory}
 
 import java.util
 
-/** Factory for lake-enabled log table reads. Dispatches to lake or log reader per partition type. */
-class FlussLakeAppendPartitionReaderFactory(
+/** Factory for lake-enabled table reads. Dispatches to lake or log reader per partition type. */
+class FlussLakePartitionReaderFactory(
     tableProperties: util.Map[String, String],
     tablePath: TablePath,
-    rowType: RowType,
     projection: Array[Int],
     flussConfig: Configuration)
   extends PartitionReaderFactory {
 
   @transient private lazy val lakeSource: LakeSource[LakeSplit] = {
-    val source = FlussLakeSourceUtils.createLakeSource(tableProperties, tablePath)
-    source.withProject(FlussLakeSourceUtils.lakeProjection(projection))
+    val source = FlussLakeUtils.createLakeSource(tableProperties, tablePath)
+    source.withProject(FlussLakeUtils.lakeProjection(projection))
     source
   }
 
-  private lazy val projectedRowType: RowType = rowType.project(projection)
-
   override def createReader(partition: InputPartition): PartitionReader[InternalRow] = {
     partition match {
-      case lake: FlussLakeInputPartition =>
-        new FlussLakePartitionReader(tablePath, projectedRowType, lake, lakeSource)
-      case log: FlussAppendInputPartition =>
-        new FlussAppendPartitionReader(tablePath, projection, log, flussConfig)
+      case lakeOnlySplit: FlussLakeInputPartition =>
+        new FlussLakeAppendPartitionReader(
+          tablePath,
+          lakeOnlySplit,
+          lakeSource,
+          projection,
+          flussConfig)
+      case logSplit: FlussAppendInputPartition =>
+        new FlussAppendPartitionReader(tablePath, projection, logSplit, flussConfig)
+      case mixedSplit: FlussLakeUpsertInputPartition =>
+        new FlussLakeUpsertPartitionReader(
+          tablePath,
+          lakeSource,
+          projection,
+          mixedSplit,
+          flussConfig)
       case _ =>
         throw new IllegalArgumentException(s"Unexpected partition type: ${partition.getClass}")
     }

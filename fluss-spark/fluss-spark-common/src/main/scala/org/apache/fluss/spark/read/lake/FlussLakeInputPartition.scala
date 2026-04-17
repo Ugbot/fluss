@@ -15,58 +15,52 @@
  * limitations under the License.
  */
 
-package org.apache.fluss.spark.read
+package org.apache.fluss.spark.read.lake
 
 import org.apache.fluss.metadata.TableBucket
-
-import org.apache.spark.sql.connector.read.InputPartition
-
-trait FlussInputPartition extends InputPartition {
-
-  override def preferredLocations(): Array[String] = {
-    // Could return tablet server locations for data locality
-    Array.empty[String]
-  }
-
-}
+import org.apache.fluss.spark.read.FlussInputPartition
 
 /**
- * Represents an input partition for reading data from a Fluss table bucket.
+ * Represents an input partition for reading data from a single lake split. Each lake split maps to
+ * one Spark task, enabling parallel lake reads across splits.
  *
  * @param tableBucket
- *   the table bucket to read from
+ *   the table bucket this split belongs to
+ * @param lakeSplitBytes
+ *   serialized lake split data
  */
-case class FlussAppendInputPartition(tableBucket: TableBucket, startOffset: Long, stopOffset: Long)
+case class FlussLakeInputPartition(tableBucket: TableBucket, lakeSplitBytes: Array[Byte])
   extends FlussInputPartition {
   override def toString: String = {
-    s"FlussAppendInputPartition{tableId=${tableBucket.getTableId}, bucketId=${tableBucket.getBucket}," +
-      s" partitionId=${tableBucket.getPartitionId}" +
-      s" logStartOffset=$startOffset, logStopOffset=$stopOffset"
+    s"FlussLakeInputPartition{tableId=${tableBucket.getTableId}, bucketId=${tableBucket.getBucket}," +
+      s" partitionId=${tableBucket.getPartitionId}," +
+      s" splitSize=${lakeSplitBytes.length}}"
   }
 }
 
 /**
- * Represents an input partition for reading data from a primary key table bucket. This partition
- * includes snapshot information for hybrid snapshot-log reading.
+ * Represents an input partition for reading data from a lake-enabled primary key table bucket. This
+ * partition combines lake snapshot splits with Fluss log tail for hybrid lake-kv reading.
  *
  * @param tableBucket
  *   the table bucket to read from
- * @param snapshotId
- *   the snapshot ID to read from, -1 if no snapshot
+ * @param lakeSplitBytes
+ *   serialized lake splits data (may be null if no lake snapshot)
  * @param logStartingOffset
  *   the log offset where incremental reading should start
  * @param logStoppingOffset
  *   the log offset where incremental reading should end
  */
-case class FlussUpsertInputPartition(
+case class FlussLakeUpsertInputPartition(
     tableBucket: TableBucket,
-    snapshotId: Long,
+    lakeSplitBytes: Array[Byte],
     logStartingOffset: Long,
     logStoppingOffset: Long)
   extends FlussInputPartition {
   override def toString: String = {
-    s"FlussUpsertInputPartition{tableId=${tableBucket.getTableId}, bucketId=${tableBucket.getBucket}," +
-      s" partitionId=${tableBucket.getPartitionId}, snapshotId=$snapshotId," +
+    s"FlussLakeUpsertInputPartition{tableId=${tableBucket.getTableId}, bucketId=${tableBucket.getBucket}," +
+      s" partitionId=${tableBucket.getPartitionId}," +
+      s" lakeSplitSize=${if (lakeSplitBytes != null) lakeSplitBytes.length else 0}," +
       s" logStartOffset=$logStartingOffset, logStopOffset=$logStoppingOffset}"
   }
 }
