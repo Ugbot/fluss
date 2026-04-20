@@ -59,6 +59,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.apache.fluss.record.LogRecordBatchFormat.NO_BATCH_SEQUENCE;
@@ -102,6 +103,9 @@ public final class RecordAccumulator {
 
     /** The chunked allocation manager factory, stored for explicit native memory release. */
     private final ChunkedAllocationManager.ChunkedFactory chunkedFactory;
+
+    /** Guard to make {@link #destroyResources()} idempotent. */
+    private final AtomicBoolean resourcesDestroyed = new AtomicBoolean(false);
 
     /** The pool of lazily created arrow {@link ArrowWriter}s for arrow log write batch. */
     private final ArrowWriterPool arrowWriterPool;
@@ -960,16 +964,29 @@ public final class RecordAccumulator {
         }
     }
 
-    /** Close this accumulator and force all the record buffers to be drained. */
+    /** Close this accumulator to reject new appends. */
     public void close() {
         closed = true;
+    }
 
+    /**
+     * Destroy all resources held by this accumulator including the Arrow writer pool and buffer
+     * allocator.
+     *
+     * <p>This must only be called after the sender thread has fully exited and no more drain
+     * operations will occur. Otherwise, draining batches may attempt to recycle Arrow writers using
+     * an already-closed allocator, causing "Accounted size went negative" errors.
+     *
+     * <p>This method is idempotent: subsequent calls after the first are no-ops.
+     */
+    @VisibleForTesting
+    public void destroyResources() {
+        if (!resourcesDestroyed.compareAndSet(false, true)) {
+            return;
+        }
         writerBufferPool.close();
         arrowWriterPool.close();
-        // Release all the memory segments.
-        bufferAllocator.releaseBytes(bufferAllocator.getAllocatedMemory());
         bufferAllocator.close();
-        // Release native memory held by the chunked allocation manager factory.
         chunkedFactory.close();
     }
 
