@@ -221,6 +221,31 @@ public class ZooKeeperClient implements AutoCloseable {
         }
     }
 
+    /**
+     * Idempotently write {@code data} at {@code path}, creating any missing parent znodes. Used
+     * by non-Fluss protocol plugins (e.g. the Kafka consumer-offsets store) for small metadata
+     * writes that don't warrant their own domain-specific znode type.
+     */
+    public void writeData(String path, byte[] data) throws Exception {
+        try {
+            zkClient.create().creatingParentsIfNeeded().forPath(path, data);
+        } catch (KeeperException.NodeExistsException existing) {
+            zkClient.setData().forPath(path, data);
+        }
+    }
+
+    /**
+     * Delete the node at {@code path} and all descendants. No-op if the node does not exist.
+     * Companion to {@link #writeData}; same usage-scope caveat.
+     */
+    public void deleteRecursive(String path) throws Exception {
+        try {
+            zkClient.delete().deletingChildrenIfNeeded().forPath(path);
+        } catch (KeeperException.NoNodeException gone) {
+            // already gone - nothing to do
+        }
+    }
+
     public String getDefaultRemoteDataDir() {
         return defaultRemoteDataDir;
     }

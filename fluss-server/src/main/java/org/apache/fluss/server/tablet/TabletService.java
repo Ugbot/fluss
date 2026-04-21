@@ -29,6 +29,7 @@ import org.apache.fluss.rpc.entity.FetchLogResultForBucket;
 import org.apache.fluss.rpc.entity.LookupResultForBucket;
 import org.apache.fluss.rpc.entity.PrefixLookupResultForBucket;
 import org.apache.fluss.rpc.entity.ResultForBucket;
+import org.apache.fluss.rpc.gateway.CoordinatorGateway;
 import org.apache.fluss.rpc.gateway.TabletServerGateway;
 import org.apache.fluss.rpc.messages.FetchLogRequest;
 import org.apache.fluss.rpc.messages.FetchLogResponse;
@@ -137,6 +138,7 @@ public final class TabletService extends RpcServiceBase implements TabletServerG
     private final ReplicaManager replicaManager;
     private final TabletServerMetadataCache metadataCache;
     private final TabletServerMetadataProvider metadataFunctionProvider;
+    private final @Nullable CoordinatorGateway coordinatorGateway;
 
     public TabletService(
             int serverId,
@@ -148,6 +150,30 @@ public final class TabletService extends RpcServiceBase implements TabletServerG
             @Nullable Authorizer authorizer,
             DynamicConfigManager dynamicConfigManager,
             ExecutorService ioExecutor) {
+        this(
+                serverId,
+                remoteFileSystem,
+                zkClient,
+                replicaManager,
+                metadataCache,
+                metadataManager,
+                authorizer,
+                dynamicConfigManager,
+                ioExecutor,
+                null);
+    }
+
+    public TabletService(
+            int serverId,
+            FileSystem remoteFileSystem,
+            ZooKeeperClient zkClient,
+            ReplicaManager replicaManager,
+            TabletServerMetadataCache metadataCache,
+            MetadataManager metadataManager,
+            @Nullable Authorizer authorizer,
+            DynamicConfigManager dynamicConfigManager,
+            ExecutorService ioExecutor,
+            @Nullable CoordinatorGateway coordinatorGateway) {
         super(
                 remoteFileSystem,
                 ServerType.TABLET_SERVER,
@@ -161,6 +187,7 @@ public final class TabletService extends RpcServiceBase implements TabletServerG
         this.metadataCache = metadataCache;
         this.metadataFunctionProvider =
                 new TabletServerMetadataProvider(zkClient, metadataManager, metadataCache);
+        this.coordinatorGateway = coordinatorGateway;
     }
 
     @Override
@@ -170,6 +197,41 @@ public final class TabletService extends RpcServiceBase implements TabletServerG
 
     @Override
     public void shutdown() {}
+
+    /** Exposes the local metadata cache for non-Fluss protocol plugins (e.g. Kafka). */
+    public TabletServerMetadataCache getMetadataCache() {
+        return metadataCache;
+    }
+
+    /** Exposes the metadata manager for non-Fluss protocol plugins (e.g. Kafka). */
+    public MetadataManager getMetadataManager() {
+        return metadataManager;
+    }
+
+    /**
+     * Exposes the coordinator gateway for non-Fluss protocol plugins that need to forward admin
+     * operations (e.g. Kafka CreateTopics). Null in the testing gateway path.
+     */
+    @Nullable
+    public CoordinatorGateway getCoordinatorGateway() {
+        return coordinatorGateway;
+    }
+
+    /**
+     * Exposes the local ReplicaManager for non-Fluss protocol plugins (e.g. Kafka Produce/Fetch)
+     * that bypass the RPC gateway's thread-local session machinery.
+     */
+    public org.apache.fluss.server.replica.ReplicaManager getReplicaManager() {
+        return replicaManager;
+    }
+
+    /**
+     * Exposes the ZooKeeper client for non-Fluss protocol plugins (e.g. Kafka durable consumer
+     * offsets). Pass-through to {@link org.apache.fluss.server.RpcServiceBase#zkClient}.
+     */
+    public org.apache.fluss.server.zk.ZooKeeperClient getZooKeeperClient() {
+        return zkClient;
+    }
 
     @Override
     public CompletableFuture<ProduceLogResponse> produceLog(ProduceLogRequest request) {

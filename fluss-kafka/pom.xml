@@ -91,5 +91,13 @@
             <type>test-jar</type>
             <scope>test</scope>
         </dependency>
+
+        <!-- Needed for FlussClusterExtension which spins up an embedded ZooKeeper. -->
+        <dependency>
+            <groupId>org.apache.curator</groupId>
+            <artifactId>curator-test</artifactId>
+            <version>${curator.version}</version>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 </project>

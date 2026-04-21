@@ -50,6 +50,7 @@ public class KafkaRequest implements RpcRequest {
     private final ChannelHandlerContext ctx;
     private final long startTimeMs;
     private final CompletableFuture<AbstractResponse> future;
+    private final String listenerName;
     private volatile boolean cancelled = false;
 
     protected KafkaRequest(
@@ -59,7 +60,8 @@ public class KafkaRequest implements RpcRequest {
             AbstractRequest request,
             ByteBuf buffer,
             ChannelHandlerContext ctx,
-            CompletableFuture<AbstractResponse> future) {
+            CompletableFuture<AbstractResponse> future,
+            String listenerName) {
         this.apiKey = apiKey;
         this.apiVersion = apiVersion;
         this.header = header;
@@ -68,6 +70,11 @@ public class KafkaRequest implements RpcRequest {
         this.ctx = ctx;
         this.startTimeMs = System.currentTimeMillis();
         this.future = future;
+        this.listenerName = listenerName;
+    }
+
+    public String listenerName() {
+        return listenerName;
     }
 
     @Override

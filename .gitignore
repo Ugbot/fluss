@@ -26,6 +26,9 @@ dependency-reduced-pom.xml
 .claude/
 .qoder/
 
+### dev-docs (local-only research / ADRs) ###
+dev-docs/
+
 ### Mac OS ###
 .DS_Store
 
