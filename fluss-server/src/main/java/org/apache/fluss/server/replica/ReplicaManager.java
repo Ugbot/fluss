@@ -624,6 +624,26 @@ public class ReplicaManager implements ServerReconfigurable {
     }
 
     /**
+     * Client-style fetch entry point used by protocol bolt-ons (Kafka, etc.) so they don't reach
+     * into the internal {@link FetchParams} / {@link FetchReqInfo} mutable structs. The {@code
+     * replicaId} is hard-wired to {@code -1} (read-committed client semantics).
+     */
+    public void fetchLogRecordsForClient(
+            org.apache.fluss.rpc.log.ClientFetchRequest request,
+            Consumer<Map<TableBucket, FetchLogResultForBucket>> responseCallback) {
+        FetchParams params = new FetchParams(-1, request.maxFetchBytes());
+        Map<TableBucket, FetchReqInfo> bucketFetchInfo = new java.util.HashMap<>();
+        for (Map.Entry<TableBucket, org.apache.fluss.rpc.log.ClientFetchRequest.BucketRead> e :
+                request.buckets().entrySet()) {
+            org.apache.fluss.rpc.log.ClientFetchRequest.BucketRead read = e.getValue();
+            bucketFetchInfo.put(
+                    e.getKey(),
+                    new FetchReqInfo(read.tableId(), read.fetchOffset(), read.maxBytes()));
+        }
+        fetchLogRecords(params, bucketFetchInfo, /* userContext */ null, responseCallback);
+    }
+
+    /**
      * Put kv records to leader replicas of the buckets, the kv data will write to kv tablet and the
      * response callback need to wait for the cdc log to be replicated to other replicas if needed.
      *

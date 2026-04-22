@@ -29,8 +29,7 @@ import org.apache.fluss.record.LogRecords;
 import org.apache.fluss.row.InternalArray;
 import org.apache.fluss.row.InternalRow;
 import org.apache.fluss.rpc.entity.FetchLogResultForBucket;
-import org.apache.fluss.server.entity.FetchReqInfo;
-import org.apache.fluss.server.log.FetchParams;
+import org.apache.fluss.rpc.log.ClientFetchRequest;
 import org.apache.fluss.server.replica.ReplicaManager;
 
 import org.apache.kafka.common.compress.Compression;
@@ -156,8 +155,8 @@ public final class KafkaFetchTranscoder {
                                 topicInfo, fp.partition(), timestampType, fp.fetchOffset());
                 contexts.add(ctx);
                 requested.put(new TableBucket(topicInfo.flussTableId(), fp.partition()), ctx);
-                ctx.flussFetchInfo =
-                        new FetchReqInfo(
+                ctx.bucketRead =
+                        new ClientFetchRequest.BucketRead(
                                 topicInfo.flussTableId(),
                                 fp.fetchOffset(),
                                 fp.partitionMaxBytes() > 0
@@ -166,27 +165,21 @@ public final class KafkaFetchTranscoder {
             }
         }
 
-        // Build FetchParams. Use a negative replicaId to indicate "client fetch", matching Fluss's
-        // convention for non-follower reads.
-        FetchParams fetchParams = new FetchParams(-1, request.maxBytes());
-
-        Map<TableBucket, FetchReqInfo> flussFetchMap = new HashMap<>();
+        Map<TableBucket, ClientFetchRequest.BucketRead> bucketReads = new HashMap<>();
         for (Map.Entry<TableBucket, PartitionContext> e : requested.entrySet()) {
-            flussFetchMap.put(e.getKey(), e.getValue().flussFetchInfo);
+            bucketReads.put(e.getKey(), e.getValue().bucketRead);
         }
 
         CompletableFuture<FetchResponseData> done = new CompletableFuture<>();
-        if (flussFetchMap.isEmpty()) {
+        if (bucketReads.isEmpty()) {
             assembleResponse(response, pendingByTopic);
             done.complete(response);
             return done;
         }
 
         try {
-            replicaManager.fetchLogRecords(
-                    fetchParams,
-                    flussFetchMap,
-                    /* userContext */ null,
+            replicaManager.fetchLogRecordsForClient(
+                    new ClientFetchRequest(request.maxBytes(), bucketReads),
                     results -> {
                         for (Map.Entry<TableBucket, FetchLogResultForBucket> entry :
                                 results.entrySet()) {
@@ -240,7 +233,7 @@ public final class KafkaFetchTranscoder {
         private final int partitionIndex;
         private final TimestampType timestampType;
         private final long fetchOffset;
-        private FetchReqInfo flussFetchInfo;
+        private ClientFetchRequest.BucketRead bucketRead;
         private FetchLogResultForBucket result;
         private short errorCode = Errors.NONE.code();
         private String errorMessage;
