@@ -667,6 +667,9 @@
                         <!-- Bundled license files -->
                         <exclude>**/LICENSE*</exclude>
                         <exclude>**/NOTICE*</exclude>
+                        <!-- ServiceLoader descriptors are plain text lists of class names;
+                             headers are not appropriate. -->
+                        <exclude>**/src/main/resources/META-INF/services/**</exclude>
                         <!-- artifacts created during release process -->
                         <exclude>tools/releasing/release/**</exclude>
                         <!-- Configuration Files. -->

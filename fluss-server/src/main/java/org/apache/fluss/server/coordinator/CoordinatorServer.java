@@ -34,6 +34,7 @@ import org.apache.fluss.server.authorizer.Authorizer;
 import org.apache.fluss.server.authorizer.AuthorizerLoader;
 import org.apache.fluss.server.coordinator.lease.KvSnapshotLeaseManager;
 import org.apache.fluss.server.coordinator.rebalance.RebalanceManager;
+import org.apache.fluss.server.coordinator.spi.CoordinatorLeaderBootstrap;
 import org.apache.fluss.server.metadata.CoordinatorMetadataCache;
 import org.apache.fluss.server.metadata.ServerMetadataCache;
 import org.apache.fluss.server.metrics.ServerMetricUtils;
@@ -60,6 +61,7 @@ import javax.annotation.concurrent.GuardedBy;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
+import java.util.ServiceLoader;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
@@ -154,13 +156,13 @@ public class CoordinatorServer extends ServerBase {
     private KvSnapshotLeaseManager kvSnapshotLeaseManager;
 
     /**
-     * Schema Registry HTTP listener, only non-null on the elected leader when {@code
-     * kafka.schema-registry.enabled=true}. Wired via reflection to keep {@code fluss-server} free
-     * of a compile-time dep on {@code fluss-kafka}.
+     * Bolt-on services started on the elected leader via the {@link CoordinatorLeaderBootstrap} SPI
+     * (e.g. Kafka Schema Registry, the forthcoming Fluss catalog + Iceberg REST endpoints).
+     * Discovered through {@link ServiceLoader} so {@code fluss-server} keeps no compile-time dep on
+     * the bolt-on modules that implement them.
      */
     @GuardedBy("lock")
-    @Nullable
-    private AutoCloseable schemaRegistryHttpServer;
+    private final List<AutoCloseable> leaderBolts = new ArrayList<>();
 
     public CoordinatorServer(Configuration conf) {
         this(conf, SystemClock.getInstance());
@@ -337,36 +339,32 @@ public class CoordinatorServer extends ServerBase {
 
             createDefaultDatabase();
 
-            startSchemaRegistryHttpServerIfEnabled();
+            startLeaderBoltsViaServiceLoader();
         }
     }
 
     /**
-     * Start the Kafka Schema Registry HTTP listener via reflection. Keeping the call reflective
-     * avoids a {@code fluss-server → fluss-kafka} Maven cycle (fluss-kafka already depends on
-     * fluss-server). No-op when {@code kafka.enabled=false} or {@code
-     * kafka.schema-registry.enabled=false}.
+     * Start every {@link CoordinatorLeaderBootstrap} on the classpath. A bootstrap returning {@code
+     * null} is treated as "self-disabled in this configuration"; a throwing bootstrap is logged and
+     * skipped so a single misbehaving bolt-on cannot take the leader down.
      */
-    private void startSchemaRegistryHttpServerIfEnabled() {
-        try {
-            Class<?> bootstrap = Class.forName("org.apache.fluss.kafka.sr.SchemaRegistryBootstrap");
-            Object instance =
-                    bootstrap
-                            .getMethod(
-                                    "start",
-                                    Configuration.class,
-                                    ZooKeeperClient.class,
-                                    MetadataManager.class)
-                            .invoke(null, conf, zkClient, metadataManager);
-            if (instance instanceof AutoCloseable) {
-                schemaRegistryHttpServer = (AutoCloseable) instance;
-                LOG.info("Kafka Schema Registry HTTP listener started.");
+    private void startLeaderBoltsViaServiceLoader() {
+        for (CoordinatorLeaderBootstrap bootstrap :
+                ServiceLoader.load(
+                        CoordinatorLeaderBootstrap.class,
+                        CoordinatorLeaderBootstrap.class.getClassLoader())) {
+            try {
+                AutoCloseable instance = bootstrap.start(conf, zkClient, metadataManager);
+                if (instance != null) {
+                    leaderBolts.add(instance);
+                    LOG.info("Leader bolt-on '{}' started.", bootstrap.name());
+                }
+            } catch (Throwable t) {
+                LOG.warn(
+                        "Leader bolt-on '{}' failed to start; continuing without it.",
+                        bootstrap.name(),
+                        t);
             }
-        } catch (ClassNotFoundException noKafka) {
-            LOG.debug(
-                    "fluss-kafka is not on the classpath; skipping Schema Registry HTTP listener.");
-        } catch (Throwable t) {
-            LOG.warn("Failed to start Kafka Schema Registry HTTP listener; continuing", t);
         }
     }
 
@@ -392,14 +390,15 @@ public class CoordinatorServer extends ServerBase {
             }
 
             // Clean up leader-specific resources in reverse order of initialization
-            try {
-                if (schemaRegistryHttpServer != null) {
-                    schemaRegistryHttpServer.close();
-                    schemaRegistryHttpServer = null;
+            for (int i = leaderBolts.size() - 1; i >= 0; i--) {
+                AutoCloseable bolt = leaderBolts.get(i);
+                try {
+                    bolt.close();
+                } catch (Throwable t) {
+                    LOG.warn("Failed to close leader bolt-on {}", bolt, t);
                 }
-            } catch (Throwable t) {
-                LOG.warn("Failed to close Schema Registry HTTP listener", t);
             }
+            leaderBolts.clear();
 
             try {
                 if (coordinatorEventProcessor != null) {

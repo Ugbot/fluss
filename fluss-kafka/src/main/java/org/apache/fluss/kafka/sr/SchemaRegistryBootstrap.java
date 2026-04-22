@@ -21,27 +21,27 @@ import org.apache.fluss.annotation.Internal;
 import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.config.Configuration;
 import org.apache.fluss.server.coordinator.MetadataManager;
+import org.apache.fluss.server.coordinator.spi.CoordinatorLeaderBootstrap;
 import org.apache.fluss.server.zk.ZooKeeperClient;
 
 /**
- * Reflection target called by {@code CoordinatorServer} on leadership acquisition to avoid a {@code
- * fluss-server → fluss-kafka} Maven dependency (the cycle exists because fluss-kafka already
- * depends on fluss-server).
+ * {@link CoordinatorLeaderBootstrap} implementation that stands up the Kafka Schema Registry HTTP
+ * listener on the elected coordinator leader. Discovered via {@link java.util.ServiceLoader}
+ * through {@code META-INF/services/...CoordinatorLeaderBootstrap} in this module's JAR.
  *
- * <p>Contract: static {@link #start(Configuration, ZooKeeperClient, MetadataManager)} returns an
- * {@link AutoCloseable}; callers close it on leadership loss / shutdown. Returns {@code null} if
- * the SR is not enabled in config.
+ * <p>Returns {@code null} from {@link #start} when either {@code kafka.enabled=false} or {@code
+ * kafka.schema-registry.enabled=false}.
  */
 @Internal
-public final class SchemaRegistryBootstrap {
+public final class SchemaRegistryBootstrap implements CoordinatorLeaderBootstrap {
 
-    private SchemaRegistryBootstrap() {}
+    @Override
+    public String name() {
+        return "Kafka Schema Registry";
+    }
 
-    /**
-     * Called reflectively from CoordinatorServer. If the SR is disabled in config, returns {@code
-     * null} so the caller can skip lifecycle tracking.
-     */
-    public static AutoCloseable start(
+    @Override
+    public AutoCloseable start(
             Configuration conf, ZooKeeperClient zkClient, MetadataManager metadataManager)
             throws Exception {
         if (!conf.getBoolean(ConfigOptions.KAFKA_ENABLED)
