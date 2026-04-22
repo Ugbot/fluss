@@ -21,7 +21,7 @@ import org.apache.fluss.annotation.Internal;
 import org.apache.fluss.kafka.catalog.KafkaTopicInfo;
 import org.apache.fluss.kafka.catalog.KafkaTopicsCatalog;
 import org.apache.fluss.metadata.TableBucket;
-import org.apache.fluss.server.replica.Replica;
+import org.apache.fluss.rpc.replica.ReplicaSnapshot;
 import org.apache.fluss.server.replica.ReplicaManager;
 
 import org.apache.kafka.common.message.ListOffsetsRequestData;
@@ -99,22 +99,21 @@ public final class KafkaListOffsetsTranscoder {
                 new ListOffsetsPartitionResponse().setPartitionIndex(p.partitionIndex());
         long requestedTs = p.timestamp();
 
-        Replica replica;
-        try {
-            replica = replicaManager.getReplicaOrException(bucket);
-        } catch (Exception e) {
+        Optional<ReplicaSnapshot> maybeSnapshot = replicaManager.getReplicaSnapshot(bucket);
+        if (!maybeSnapshot.isPresent()) {
             return resp.setErrorCode(Errors.UNKNOWN_TOPIC_OR_PARTITION.code())
                     .setOffset(-1L)
                     .setTimestamp(-1L);
         }
+        ReplicaSnapshot snapshot = maybeSnapshot.get();
 
         long offset;
         if (requestedTs == ListOffsetsRequest.EARLIEST_TIMESTAMP
                 || requestedTs == ListOffsetsRequest.EARLIEST_LOCAL_TIMESTAMP) {
-            offset = replica.getLogStartOffset();
+            offset = snapshot.logStartOffset();
         } else if (requestedTs == ListOffsetsRequest.LATEST_TIMESTAMP
                 || requestedTs == ListOffsetsRequest.LATEST_TIERED_TIMESTAMP) {
-            offset = replica.getLocalLogEndOffset();
+            offset = snapshot.localLogEndOffset();
         } else {
             // Timestamp-based lookup is not implemented yet; surface as unsupported so the client
             // can fall back to LATEST / EARLIEST rather than waiting forever.
@@ -126,6 +125,6 @@ public final class KafkaListOffsetsTranscoder {
         return resp.setErrorCode(Errors.NONE.code())
                 .setOffset(offset)
                 .setTimestamp(-1L)
-                .setLeaderEpoch(0);
+                .setLeaderEpoch(snapshot.leaderEpoch());
     }
 }

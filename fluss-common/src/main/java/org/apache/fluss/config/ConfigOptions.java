@@ -2106,11 +2106,12 @@ public class ConfigOptions {
     public static final ConfigOption<String> KAFKA_OFFSETS_STORE =
             key("kafka.offsets.store")
                     .stringType()
-                    .defaultValue("zk")
+                    .defaultValue("fluss_pk_table")
                     .withDescription(
                             "Backing store for Kafka consumer-group committed offsets. Accepted values: "
-                                    + "'zk' (default, legacy ZooKeeper-backed) and 'fluss_pk_table' "
-                                    + "(persist to the Fluss PK table kafka.__consumer_offsets__).");
+                                    + "'fluss_pk_table' (default, persists to the Fluss PK table "
+                                    + "kafka.__consumer_offsets__) and 'zk' (legacy ZooKeeper-backed, "
+                                    + "retained for one release as a migration escape hatch).");
 
     /**
      * Whether the Confluent-compatible Schema Registry HTTP endpoint is started on the coordinator

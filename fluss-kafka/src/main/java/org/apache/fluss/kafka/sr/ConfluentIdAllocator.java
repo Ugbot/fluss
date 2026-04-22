@@ -19,8 +19,6 @@ package org.apache.fluss.kafka.sr;
 
 import org.apache.fluss.annotation.Internal;
 import org.apache.fluss.server.zk.ZooKeeperClient;
-import org.apache.fluss.shaded.curator5.org.apache.curator.framework.CuratorFramework;
-import org.apache.fluss.shaded.zookeeper3.org.apache.zookeeper.KeeperException;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Optional;
@@ -52,34 +50,36 @@ public final class ConfluentIdAllocator {
     public int allocate(long tableId, int schemaVersion, String format) {
         int base = stableHash(tableId, schemaVersion, format) & 0x7fffffff;
         String expected = encode(tableId, schemaVersion, format);
-        CuratorFramework curator = zk.getCuratorClient();
+        byte[] expectedBytes = expected.getBytes(StandardCharsets.UTF_8);
         for (int probe = 0; probe < PROBE_LIMIT; probe++) {
             int id = (base + probe) & 0x7fffffff;
             String path = SchemaRegistryPaths.idReservation(id);
+            boolean reserved;
             try {
-                curator.create()
-                        .creatingParentsIfNeeded()
-                        .forPath(path, expected.getBytes(StandardCharsets.UTF_8));
-                return id;
-            } catch (KeeperException.NodeExistsException collision) {
-                try {
-                    byte[] existing = curator.getData().forPath(path);
-                    if (expected.equals(new String(existing, StandardCharsets.UTF_8))) {
-                        return id;
-                    }
-                } catch (Exception readFailure) {
-                    throw new SchemaRegistryException(
-                            SchemaRegistryException.Kind.INTERNAL,
-                            "Failed to inspect existing SR id reservation at " + path,
-                            readFailure);
-                }
-                // else: different tuple at this id, probe next.
+                reserved = zk.createIfAbsent(path, expectedBytes);
             } catch (Exception other) {
                 throw new SchemaRegistryException(
                         SchemaRegistryException.Kind.INTERNAL,
                         "Failed to reserve SR id at " + path,
                         other);
             }
+            if (reserved) {
+                return id;
+            }
+            Optional<byte[]> existing;
+            try {
+                existing = zk.getOrEmpty(path);
+            } catch (Exception readFailure) {
+                throw new SchemaRegistryException(
+                        SchemaRegistryException.Kind.INTERNAL,
+                        "Failed to inspect existing SR id reservation at " + path,
+                        readFailure);
+            }
+            if (existing.isPresent()
+                    && expected.equals(new String(existing.get(), StandardCharsets.UTF_8))) {
+                return id;
+            }
+            // else: different tuple at this id, probe next.
         }
         throw new SchemaRegistryException(
                 SchemaRegistryException.Kind.INTERNAL,
@@ -97,17 +97,16 @@ public final class ConfluentIdAllocator {
     /** Look up a reservation, returning the stored tuple or empty if the id is free. */
     public Optional<Reservation> lookup(int id) {
         String path = SchemaRegistryPaths.idReservation(id);
+        Optional<byte[]> data;
         try {
-            byte[] data = zk.getCuratorClient().getData().forPath(path);
-            return Optional.of(decode(new String(data, StandardCharsets.UTF_8)));
-        } catch (KeeperException.NoNodeException missing) {
-            return Optional.empty();
+            data = zk.getOrEmpty(path);
         } catch (Exception other) {
             throw new SchemaRegistryException(
                     SchemaRegistryException.Kind.INTERNAL,
                     "Failed to read SR id reservation at " + path,
                     other);
         }
+        return data.map(bytes -> decode(new String(bytes, StandardCharsets.UTF_8)));
     }
 
     private static int stableHash(long tableId, int schemaVersion, String format) {

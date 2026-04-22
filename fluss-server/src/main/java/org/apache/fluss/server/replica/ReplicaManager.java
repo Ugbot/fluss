@@ -1978,6 +1978,26 @@ public class ReplicaManager implements ServerReconfigurable {
         return allReplicas.getOrDefault(tableBucket, new NoneReplica());
     }
 
+    /**
+     * Stable, read-only view of a replica's log metadata — the subset protocol bolt-ons (Kafka's
+     * {@code LIST_OFFSETS}, {@code METADATA}) need. Returns {@link java.util.Optional#empty()} when
+     * the bucket is not hosted locally.
+     */
+    public java.util.Optional<org.apache.fluss.rpc.replica.ReplicaSnapshot> getReplicaSnapshot(
+            TableBucket tableBucket) {
+        HostedReplica hosted = getReplica(tableBucket);
+        if (!(hosted instanceof OnlineReplica)) {
+            return java.util.Optional.empty();
+        }
+        Replica replica = ((OnlineReplica) hosted).getReplica();
+        return java.util.Optional.of(
+                new org.apache.fluss.rpc.replica.ReplicaSnapshot(
+                        replica.getLogStartOffset(),
+                        replica.getLocalLogEndOffset(),
+                        replica.getLogHighWatermark(),
+                        replica.getLeaderEpoch()));
+    }
+
     private boolean isRequiredAcksInvalid(int requiredAcks) {
         return requiredAcks != 0 && requiredAcks != 1 && requiredAcks != -1;
     }

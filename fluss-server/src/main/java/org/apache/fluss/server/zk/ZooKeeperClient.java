@@ -246,6 +246,22 @@ public class ZooKeeperClient implements AutoCloseable {
         }
     }
 
+    /**
+     * Atomically create a znode at {@code path} with {@code data} if and only if it does not yet
+     * exist. Returns {@code true} if this call created the node, {@code false} if another caller
+     * (or an earlier call) had already created it. Used by bolt-on plugins (Kafka SR id allocator,
+     * etc.) that need a CAS-style reservation primitive without reaching for the raw Curator
+     * client.
+     */
+    public boolean createIfAbsent(String path, byte[] data) throws Exception {
+        try {
+            zkClient.create().creatingParentsIfNeeded().forPath(path, data);
+            return true;
+        } catch (KeeperException.NodeExistsException existing) {
+            return false;
+        }
+    }
+
     public String getDefaultRemoteDataDir() {
         return defaultRemoteDataDir;
     }
