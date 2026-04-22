@@ -354,7 +354,8 @@ public class CoordinatorServer extends ServerBase {
                         CoordinatorLeaderBootstrap.class,
                         CoordinatorLeaderBootstrap.class.getClassLoader())) {
             try {
-                AutoCloseable instance = bootstrap.start(conf, zkClient, metadataManager);
+                AutoCloseable instance =
+                        bootstrap.start(conf, zkClient, metadataManager, metadataCache);
                 if (instance != null) {
                     leaderBolts.add(instance);
                     LOG.info("Leader bolt-on '{}' started.", bootstrap.name());

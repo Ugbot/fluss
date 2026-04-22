@@ -22,6 +22,7 @@ import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.config.Configuration;
 import org.apache.fluss.server.coordinator.MetadataManager;
 import org.apache.fluss.server.coordinator.spi.CoordinatorLeaderBootstrap;
+import org.apache.fluss.server.metadata.ServerMetadataCache;
 import org.apache.fluss.server.zk.ZooKeeperClient;
 
 /**
@@ -42,7 +43,10 @@ public final class SchemaRegistryBootstrap implements CoordinatorLeaderBootstrap
 
     @Override
     public AutoCloseable start(
-            Configuration conf, ZooKeeperClient zkClient, MetadataManager metadataManager)
+            Configuration conf,
+            ZooKeeperClient zkClient,
+            MetadataManager metadataManager,
+            ServerMetadataCache metadataCache)
             throws Exception {
         if (!conf.getBoolean(ConfigOptions.KAFKA_ENABLED)
                 || !conf.getBoolean(ConfigOptions.KAFKA_SCHEMA_REGISTRY_ENABLED)) {

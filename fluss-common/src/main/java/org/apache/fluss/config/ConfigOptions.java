@@ -2114,6 +2114,22 @@ public class ConfigOptions {
                                     + "retained for one release as a migration escape hatch).");
 
     /**
+     * Whether the Fluss catalog service (the Polaris/Unity-style metadata service backing SR and
+     * future Iceberg/Flink catalog projections) starts on the coordinator leader. Off by default —
+     * the catalog bootstraps its system tables lazily on first write, so enabling this in a running
+     * cluster is safe.
+     */
+    public static final ConfigOption<Boolean> CATALOG_SERVICE_ENABLED =
+            key("catalog.service.enabled")
+                    .booleanType()
+                    .defaultValue(false)
+                    .withDescription(
+                            "Whether to start the Fluss catalog service on the coordinator leader. "
+                                    + "Required for the Kafka Schema Registry to persist subjects and "
+                                    + "schema history to _catalog system tables (otherwise the Kafka "
+                                    + "SR falls back to its Phase-A1 per-table custom-property store).");
+
+    /**
      * Whether the Confluent-compatible Schema Registry HTTP endpoint is started on the coordinator
      * leader. Phase A1 scaffolding: implements ping, GET /subjects, POST /subjects/{s}/versions,
      * and GET /schemas/ids/{id}. Avro-only, TopicNameStrategy value subjects only (design 0002).

@@ -20,6 +20,7 @@ package org.apache.fluss.server.coordinator.spi;
 import org.apache.fluss.annotation.PublicEvolving;
 import org.apache.fluss.config.Configuration;
 import org.apache.fluss.server.coordinator.MetadataManager;
+import org.apache.fluss.server.metadata.ServerMetadataCache;
 import org.apache.fluss.server.zk.ZooKeeperClient;
 
 /**
@@ -53,9 +54,16 @@ public interface CoordinatorLeaderBootstrap {
     /**
      * Start the bolt-on service.
      *
+     * @param metadataCache coordinator-side {@link ServerMetadataCache} so bolt-ons that need to
+     *     open a Fluss client {@code Connection} (catalog service, future Iceberg REST endpoint)
+     *     can discover alive tablet-server FLUSS-listener endpoints.
      * @return a closeable whose {@code close()} tears down every resource the service acquired, or
      *     {@code null} if the service is disabled by configuration.
      */
-    AutoCloseable start(Configuration conf, ZooKeeperClient zk, MetadataManager metadataManager)
+    AutoCloseable start(
+            Configuration conf,
+            ZooKeeperClient zk,
+            MetadataManager metadataManager,
+            ServerMetadataCache metadataCache)
             throws Exception;
 }
