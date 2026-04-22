@@ -63,6 +63,18 @@
             <version>${project.version}</version>
         </dependency>
 
+        <!--
+            Used by FlussPkOffsetStore to persist consumer offsets to the Fluss PK table
+            kafka.__consumer_offsets__ via the public client API (Connection / UpsertWriter /
+            Lookuper). fluss-server already transitively depends on fluss-rpc and fluss-common,
+            so adding fluss-client here does not introduce a cycle.
+        -->
+        <dependency>
+            <groupId>${project.groupId}</groupId>
+            <artifactId>fluss-client</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
         <!-- test dependency -->
         <dependency>
             <groupId>org.apache.fluss</groupId>

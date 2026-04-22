@@ -24,11 +24,19 @@ import org.apache.fluss.rpc.protocol.RequestType;
  *
  * @param <T> the type of the RPC request that is handled by this handler
  */
-public interface RequestHandler<T extends RpcRequest> {
+public interface RequestHandler<T extends RpcRequest> extends AutoCloseable {
 
     /** Returns the type of the RPC requests that is handled by this handler. */
     RequestType requestType();
 
     /** Processes the RPC request. */
     void processRequest(T request);
+
+    /**
+     * Release any resources held by this handler. Called by the {@link RequestProcessorPool} during
+     * server shutdown, after all in-flight requests have drained. The default implementation is a
+     * no-op; protocol plugins holding resources (Fluss client Connections, etc.) must override.
+     */
+    @Override
+    default void close() throws Exception {}
 }

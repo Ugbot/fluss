@@ -2098,6 +2098,21 @@ public class ConfigOptions {
                             "Close kafka idle connections after the given time specified by this config.");
 
     /**
+     * Backing store for Kafka consumer-group committed offsets. {@code zk} is the legacy
+     * implementation (znodes under {@code /fluss/kafka/offsets/...}). {@code fluss_pk_table} is the
+     * Phase 2D+ target, persisting offsets to the PK table {@code kafka.__consumer_offsets__} (see
+     * design doc 0004).
+     */
+    public static final ConfigOption<String> KAFKA_OFFSETS_STORE =
+            key("kafka.offsets.store")
+                    .stringType()
+                    .defaultValue("zk")
+                    .withDescription(
+                            "Backing store for Kafka consumer-group committed offsets. Accepted values: "
+                                    + "'zk' (default, legacy ZooKeeper-backed) and 'fluss_pk_table' "
+                                    + "(persist to the Fluss PK table kafka.__consumer_offsets__).");
+
+    /**
      * Compaction style for Fluss's kv, which is same to rocksdb's, but help use avoid including
      * rocksdb dependency when only need include this common module.
      */

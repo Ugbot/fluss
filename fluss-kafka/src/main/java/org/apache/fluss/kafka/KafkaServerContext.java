@@ -18,6 +18,7 @@
 package org.apache.fluss.kafka;
 
 import org.apache.fluss.annotation.Internal;
+import org.apache.fluss.config.Configuration;
 import org.apache.fluss.rpc.gateway.CoordinatorGateway;
 import org.apache.fluss.server.coordinator.MetadataManager;
 import org.apache.fluss.server.metadata.TabletServerMetadataCache;
@@ -25,6 +26,8 @@ import org.apache.fluss.server.replica.ReplicaManager;
 import org.apache.fluss.server.zk.ZooKeeperClient;
 
 import javax.annotation.Nullable;
+
+import java.util.OptionalInt;
 
 import static org.apache.fluss.utils.Preconditions.checkNotNull;
 
@@ -42,6 +45,13 @@ public final class KafkaServerContext {
     private final @Nullable ZooKeeperClient zooKeeperClient;
     private final String clusterId;
     private final String kafkaDatabase;
+    private final Configuration serverConf;
+
+    /**
+     * When this context is attached to a real tablet server, the numeric id of that server. {@link
+     * Integer#MIN_VALUE} signals "not available" (e.g. testing-gateway-backed handlers).
+     */
+    private final int ownServerId;
 
     public KafkaServerContext(
             @Nullable TabletServerMetadataCache metadataCache,
@@ -51,6 +61,28 @@ public final class KafkaServerContext {
             @Nullable ZooKeeperClient zooKeeperClient,
             String clusterId,
             String kafkaDatabase) {
+        this(
+                metadataCache,
+                metadataManager,
+                coordinatorGateway,
+                replicaManager,
+                zooKeeperClient,
+                clusterId,
+                kafkaDatabase,
+                Integer.MIN_VALUE,
+                new Configuration());
+    }
+
+    public KafkaServerContext(
+            @Nullable TabletServerMetadataCache metadataCache,
+            @Nullable MetadataManager metadataManager,
+            @Nullable CoordinatorGateway coordinatorGateway,
+            @Nullable ReplicaManager replicaManager,
+            @Nullable ZooKeeperClient zooKeeperClient,
+            String clusterId,
+            String kafkaDatabase,
+            int ownServerId,
+            Configuration serverConf) {
         this.metadataCache = metadataCache;
         this.metadataManager = metadataManager;
         this.coordinatorGateway = coordinatorGateway;
@@ -58,6 +90,8 @@ public final class KafkaServerContext {
         this.zooKeeperClient = zooKeeperClient;
         this.clusterId = checkNotNull(clusterId, "clusterId");
         this.kafkaDatabase = checkNotNull(kafkaDatabase, "kafkaDatabase");
+        this.ownServerId = ownServerId;
+        this.serverConf = checkNotNull(serverConf, "serverConf");
     }
 
     public TabletServerMetadataCache metadataCache() {
@@ -117,5 +151,21 @@ public final class KafkaServerContext {
 
     public boolean hasReplicaManager() {
         return replicaManager != null;
+    }
+
+    /**
+     * Returns this tablet server's own id if the Kafka handler is attached to a real tablet server,
+     * empty otherwise (e.g. when the plugin is wired against a testing gateway).
+     */
+    public OptionalInt ownServerId() {
+        if (ownServerId == Integer.MIN_VALUE) {
+            return OptionalInt.empty();
+        }
+        return OptionalInt.of(ownServerId);
+    }
+
+    /** Returns the full server-side configuration the plugin was started with. */
+    public Configuration serverConf() {
+        return serverConf;
     }
 }

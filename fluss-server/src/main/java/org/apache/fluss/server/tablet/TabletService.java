@@ -135,6 +135,7 @@ import static org.apache.fluss.server.utils.ServerRpcMessageUtils.toPrefixLookup
 public final class TabletService extends RpcServiceBase implements TabletServerGateway {
 
     private final String serviceName;
+    private final int serverId;
     private final ReplicaManager replicaManager;
     private final TabletServerMetadataCache metadataCache;
     private final TabletServerMetadataProvider metadataFunctionProvider;
@@ -183,6 +184,7 @@ public final class TabletService extends RpcServiceBase implements TabletServerG
                 dynamicConfigManager,
                 ioExecutor);
         this.serviceName = "server-" + serverId;
+        this.serverId = serverId;
         this.replicaManager = replicaManager;
         this.metadataCache = metadataCache;
         this.metadataFunctionProvider =
@@ -231,6 +233,15 @@ public final class TabletService extends RpcServiceBase implements TabletServerG
      */
     public org.apache.fluss.server.zk.ZooKeeperClient getZooKeeperClient() {
         return zkClient;
+    }
+
+    /**
+     * Exposes this tablet server's own numeric id. Used by non-Fluss protocol plugins (e.g. the
+     * Kafka handler) to look up their own {@link org.apache.fluss.cluster.ServerNode} in {@link
+     * TabletServerMetadataCache} for client-style bootstrap.
+     */
+    public int getServerId() {
+        return serverId;
     }
 
     @Override

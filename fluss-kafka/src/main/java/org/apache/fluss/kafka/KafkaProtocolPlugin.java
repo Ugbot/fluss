@@ -103,7 +103,9 @@ public class KafkaProtocolPlugin implements NetworkProtocolPlugin {
                     ts.getReplicaManager(),
                     ts.getZooKeeperClient(),
                     clusterId,
-                    kafkaDatabase);
+                    kafkaDatabase,
+                    ts.getServerId(),
+                    conf);
         }
         // Test-only gateway services (e.g. TestingTabletGatewayService) land here.
         LOG.warn(

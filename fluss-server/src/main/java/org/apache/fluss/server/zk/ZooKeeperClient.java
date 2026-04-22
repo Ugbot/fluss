@@ -222,9 +222,9 @@ public class ZooKeeperClient implements AutoCloseable {
     }
 
     /**
-     * Idempotently write {@code data} at {@code path}, creating any missing parent znodes. Used
-     * by non-Fluss protocol plugins (e.g. the Kafka consumer-offsets store) for small metadata
-     * writes that don't warrant their own domain-specific znode type.
+     * Idempotently write {@code data} at {@code path}, creating any missing parent znodes. Used by
+     * non-Fluss protocol plugins (e.g. the Kafka consumer-offsets store) for small metadata writes
+     * that don't warrant their own domain-specific znode type.
      */
     public void writeData(String path, byte[] data) throws Exception {
         try {

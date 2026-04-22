@@ -17,15 +17,19 @@
 
 package org.apache.fluss.kafka;
 
+import org.apache.fluss.client.Connection;
+import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.kafka.admin.KafkaAdminTranscoder;
 import org.apache.fluss.kafka.catalog.CustomPropertiesTopicsCatalog;
 import org.apache.fluss.kafka.catalog.KafkaTopicsCatalog;
 import org.apache.fluss.kafka.fetch.KafkaFetchTranscoder;
 import org.apache.fluss.kafka.fetch.KafkaListOffsetsTranscoder;
+import org.apache.fluss.kafka.group.FlussPkOffsetStore;
 import org.apache.fluss.kafka.group.InMemoryOffsetStore;
 import org.apache.fluss.kafka.group.KafkaGroupRegistry;
 import org.apache.fluss.kafka.group.KafkaGroupTranscoder;
 import org.apache.fluss.kafka.group.OffsetStore;
+import org.apache.fluss.kafka.group.OffsetStoreConnections;
 import org.apache.fluss.kafka.group.ZkOffsetStore;
 import org.apache.fluss.kafka.metadata.KafkaMetadataBuilder;
 import org.apache.fluss.kafka.produce.KafkaProduceTranscoder;
@@ -41,7 +45,6 @@ import org.apache.kafka.common.message.DescribeGroupsResponseData;
 import org.apache.kafka.common.message.FindCoordinatorResponseData;
 import org.apache.kafka.common.message.HeartbeatResponseData;
 import org.apache.kafka.common.message.InitProducerIdResponseData;
-import org.apache.kafka.common.message.JoinGroupResponseData;
 import org.apache.kafka.common.message.LeaveGroupResponseData;
 import org.apache.kafka.common.message.ListGroupsResponseData;
 import org.apache.kafka.common.message.ListOffsetsResponseData;
@@ -49,7 +52,6 @@ import org.apache.kafka.common.message.MetadataResponseData;
 import org.apache.kafka.common.message.OffsetCommitResponseData;
 import org.apache.kafka.common.message.OffsetFetchResponseData;
 import org.apache.kafka.common.message.ProduceResponseData;
-import org.apache.kafka.common.message.SyncGroupResponseData;
 import org.apache.kafka.common.protocol.ApiKeys;
 import org.apache.kafka.common.protocol.Errors;
 import org.apache.kafka.common.record.RecordBatch;
@@ -92,6 +94,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.EnumSet;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /** Kafka protocol implementation for request handler. */
 public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
@@ -133,14 +139,48 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
             new java.util.concurrent.atomic.AtomicLong(1L);
 
     /**
-     * Consumer-group offset store. Backed by ZooKeeper when available (survives tablet-server
-     * restarts); falls back to in-memory when the plugin is wired against a testing gateway. Phase
-     * 2E+ migrates this to a Fluss PK table {@code kafka.__consumer_offsets__}.
+     * Consumer-group offset store. Selected by {@link ConfigOptions#KAFKA_OFFSETS_STORE}:
+     *
+     * <ul>
+     *   <li>{@code zk} (default) → {@link ZkOffsetStore}: ZooKeeper-backed, survives tablet-server
+     *       restarts.
+     *   <li>{@code fluss_pk_table} → {@link FlussPkOffsetStore}: persists to the Fluss PK table
+     *       {@code kafka.__consumer_offsets__} (design 0004 §1).
+     * </ul>
+     *
+     * <p>Falls back to {@link InMemoryOffsetStore} when neither the configured durable store can be
+     * opened nor ZooKeeper is present.
      */
     private final OffsetStore groupOffsets;
 
-    /** In-memory Phase 2D group registry: membership + generation per groupId. */
+    /**
+     * Non-null iff {@link #groupOffsets} is the {@link FlussPkOffsetStore}. Owned by this handler
+     * and closed in {@link #close()}.
+     */
+    @javax.annotation.Nullable private final Connection offsetsConnection;
+
+    /** In-memory group registry: membership + generation per groupId. */
     private final KafkaGroupRegistry groupRegistry = new KafkaGroupRegistry();
+
+    /**
+     * Periodic reaper that expires consumer-group members whose heartbeat is older than their
+     * session timeout. Runs on a single daemon thread so it never blocks JVM exit.
+     */
+    private static final AtomicInteger REAPER_COUNTER = new AtomicInteger();
+
+    private static final long SESSION_REAPER_PERIOD_MS = 1_000L;
+
+    private final ScheduledExecutorService sessionReaper =
+            Executors.newSingleThreadScheduledExecutor(
+                    r -> {
+                        Thread t =
+                                new Thread(
+                                        r,
+                                        "fluss-kafka-session-reaper-"
+                                                + REAPER_COUNTER.incrementAndGet());
+                        t.setDaemon(true);
+                        return t;
+                    });
 
     /**
      * APIs we advertise in ApiVersions. Restricted to the classic set needed for a producer or
@@ -192,15 +232,94 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
     public KafkaRequestHandler(TabletServerGateway gateway, KafkaServerContext context) {
         this.gateway = gateway;
         this.context = context;
-        this.groupOffsets =
-                context.hasZooKeeperClient()
-                        ? new ZkOffsetStore(context.zooKeeperClient())
-                        : new InMemoryOffsetStore();
+        String storeKind = context.serverConf().get(ConfigOptions.KAFKA_OFFSETS_STORE);
+        OffsetStore store = null;
+        Connection connection = null;
+        if ("fluss_pk_table".equalsIgnoreCase(storeKind)) {
+            if (!context.hasServerState() || !context.ownServerId().isPresent()) {
+                LOG.warn(
+                        "{}={} requested but no TabletServer state is available; "
+                                + "falling back to {}=zk behaviour.",
+                        ConfigOptions.KAFKA_OFFSETS_STORE.key(),
+                        storeKind,
+                        ConfigOptions.KAFKA_OFFSETS_STORE.key());
+            } else {
+                try {
+                    connection =
+                            OffsetStoreConnections.open(
+                                    context.metadataCache(),
+                                    context.ownServerId().getAsInt(),
+                                    context.serverConf());
+                    store = new FlussPkOffsetStore(connection, context.kafkaDatabase());
+                    LOG.info(
+                            "Kafka consumer-offset store: Fluss PK table {}.",
+                            context.kafkaDatabase() + ".__consumer_offsets__");
+                } catch (Exception e) {
+                    LOG.warn(
+                            "Failed to open Fluss client Connection for FlussPkOffsetStore; "
+                                    + "falling back to ZkOffsetStore.",
+                            e);
+                    if (connection != null) {
+                        try {
+                            connection.close();
+                        } catch (Exception ignore) {
+                            // best-effort cleanup
+                        }
+                    }
+                    connection = null;
+                    store = null;
+                }
+            }
+        }
+        if (store == null) {
+            store =
+                    context.hasZooKeeperClient()
+                            ? new ZkOffsetStore(context.zooKeeperClient())
+                            : new InMemoryOffsetStore();
+        }
+        this.groupOffsets = store;
+        this.offsetsConnection = connection;
+        sessionReaper.scheduleWithFixedDelay(
+                this::reapExpiredGroupMembers,
+                SESSION_REAPER_PERIOD_MS,
+                SESSION_REAPER_PERIOD_MS,
+                TimeUnit.MILLISECONDS);
+    }
+
+    private void reapExpiredGroupMembers() {
+        try {
+            int reaped = groupRegistry.reapExpired(System.currentTimeMillis());
+            if (reaped > 0) {
+                LOG.info("Reaped {} expired Kafka consumer-group member(s)", reaped);
+            }
+        } catch (Throwable t) {
+            LOG.warn("Session reaper tick threw; continuing", t);
+        }
     }
 
     @Override
     public RequestType requestType() {
         return RequestType.KAFKA;
+    }
+
+    @Override
+    public void close() {
+        // Stop the reaper first so it doesn't touch the Connection during shutdown.
+        sessionReaper.shutdownNow();
+        if (groupOffsets instanceof AutoCloseable) {
+            try {
+                ((AutoCloseable) groupOffsets).close();
+            } catch (Exception e) {
+                LOG.warn("Failed to close offset store", e);
+            }
+        }
+        if (offsetsConnection != null) {
+            try {
+                offsetsConnection.close();
+            } catch (Exception e) {
+                LOG.warn("Failed to close Fluss client Connection for offsets store", e);
+            }
+        }
     }
 
     @Override
@@ -484,8 +603,17 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
             KafkaGroupTranscoder transcoder =
                     new KafkaGroupTranscoder(
                             context, groupOffsets, groupRegistry, request.listenerName());
-            JoinGroupResponseData data = transcoder.joinGroup(req.data());
-            request.complete(new JoinGroupResponse(data, request.apiVersion()));
+            transcoder
+                    .joinGroup(req.data())
+                    .whenComplete(
+                            (data, err) -> {
+                                if (err != null) {
+                                    LOG.error("JoinGroup handler failed", err);
+                                    request.fail(err);
+                                    return;
+                                }
+                                request.complete(new JoinGroupResponse(data, request.apiVersion()));
+                            });
         } catch (Throwable t) {
             LOG.error("JoinGroup handler threw", t);
             request.fail(t);
@@ -504,8 +632,17 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
             KafkaGroupTranscoder transcoder =
                     new KafkaGroupTranscoder(
                             context, groupOffsets, groupRegistry, request.listenerName());
-            SyncGroupResponseData data = transcoder.syncGroup(req.data());
-            request.complete(new SyncGroupResponse(data));
+            transcoder
+                    .syncGroup(req.data())
+                    .whenComplete(
+                            (data, err) -> {
+                                if (err != null) {
+                                    LOG.error("SyncGroup handler failed", err);
+                                    request.fail(err);
+                                    return;
+                                }
+                                request.complete(new SyncGroupResponse(data));
+                            });
         } catch (Throwable t) {
             LOG.error("SyncGroup handler threw", t);
             request.fail(t);

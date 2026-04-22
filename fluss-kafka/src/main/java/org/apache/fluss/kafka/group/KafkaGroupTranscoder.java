@@ -67,6 +67,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 
 /**
  * Transcoders for Kafka consumer-group coordination APIs. Phase 2D supports the minimum a Kafka
@@ -388,10 +389,7 @@ public final class KafkaGroupTranscoder {
 
     // --------------------------- JoinGroup ---------------------------------
 
-    public JoinGroupResponseData joinGroup(JoinGroupRequestData request) {
-        JoinGroupResponseData response = new JoinGroupResponseData();
-        response.setThrottleTimeMs(0);
-
+    public CompletableFuture<JoinGroupResponseData> joinGroup(JoinGroupRequestData request) {
         Map<String, byte[]> protocols = new HashMap<>();
         if (request.protocols() != null) {
             for (JoinGroupRequestProtocol p : request.protocols()) {
@@ -400,52 +398,58 @@ public final class KafkaGroupTranscoder {
         }
 
         KafkaGroupRegistry.GroupState state = registry.getOrCreate(request.groupId());
-        KafkaGroupRegistry.JoinOutcome outcome =
-                state.join(
+        int sessionTimeoutMs = Math.max(request.sessionTimeoutMs(), 1);
+        long now = System.currentTimeMillis();
+        return state.join(
                         request.memberId(),
                         request.protocolType(),
                         protocols,
-                        request.groupInstanceId());
-
-        response.setErrorCode(Errors.NONE.code())
-                .setGenerationId(outcome.generation())
-                .setMemberId(outcome.memberId())
-                .setLeader(outcome.leaderMemberId() == null ? "" : outcome.leaderMemberId())
-                .setProtocolType(state.protocolType() == null ? "consumer" : state.protocolType())
-                .setProtocolName(outcome.protocolName() == null ? "" : outcome.protocolName())
-                .setSkipAssignment(false);
-
-        // Only the leader's JoinGroup response carries the member list (so it can run the
-        // assignor). Followers get an empty list.
-        if (outcome.memberId().equals(outcome.leaderMemberId())) {
-            List<JoinGroupResponseMember> members = new java.util.ArrayList<>();
-            byte[] metadata = protocols.get(outcome.protocolName());
-            members.add(
-                    new JoinGroupResponseMember()
-                            .setMemberId(outcome.memberId())
-                            .setGroupInstanceId(request.groupInstanceId())
-                            .setMetadata(metadata == null ? new byte[0] : metadata));
-            response.setMembers(members);
-        } else {
-            response.setMembers(Collections.emptyList());
-        }
-        return response;
+                        request.groupInstanceId(),
+                        sessionTimeoutMs,
+                        now)
+                .thenApply(
+                        outcome -> {
+                            JoinGroupResponseData response = new JoinGroupResponseData();
+                            response.setThrottleTimeMs(0)
+                                    .setErrorCode(Errors.NONE.code())
+                                    .setGenerationId(outcome.generation())
+                                    .setMemberId(outcome.memberId())
+                                    .setLeader(
+                                            outcome.leaderMemberId() == null
+                                                    ? ""
+                                                    : outcome.leaderMemberId())
+                                    .setProtocolType(
+                                            state.protocolType() == null
+                                                    ? "consumer"
+                                                    : state.protocolType())
+                                    .setProtocolName(
+                                            outcome.protocolName() == null
+                                                    ? ""
+                                                    : outcome.protocolName())
+                                    .setSkipAssignment(false);
+                            List<JoinGroupResponseMember> members = new java.util.ArrayList<>();
+                            for (KafkaGroupRegistry.MemberMetadata m : outcome.members()) {
+                                members.add(
+                                        new JoinGroupResponseMember()
+                                                .setMemberId(m.memberId())
+                                                .setGroupInstanceId(m.groupInstanceId())
+                                                .setMetadata(m.metadata()));
+                            }
+                            response.setMembers(members);
+                            return response;
+                        });
     }
 
     // --------------------------- SyncGroup ---------------------------------
 
-    public SyncGroupResponseData syncGroup(SyncGroupRequestData request) {
-        SyncGroupResponseData response = new SyncGroupResponseData();
-        response.setThrottleTimeMs(0);
-
+    public CompletableFuture<SyncGroupResponseData> syncGroup(SyncGroupRequestData request) {
         KafkaGroupRegistry.GroupState state = registry.get(request.groupId());
-        if (state == null || !state.hasMember(request.memberId())) {
-            return response.setErrorCode(Errors.UNKNOWN_MEMBER_ID.code())
-                    .setAssignment(new byte[0]);
-        }
-        if (request.generationId() != state.generation()) {
-            return response.setErrorCode(Errors.ILLEGAL_GENERATION.code())
-                    .setAssignment(new byte[0]);
+        if (state == null) {
+            SyncGroupResponseData response = new SyncGroupResponseData();
+            return CompletableFuture.completedFuture(
+                    response.setThrottleTimeMs(0)
+                            .setErrorCode(Errors.UNKNOWN_MEMBER_ID.code())
+                            .setAssignment(new byte[0]));
         }
 
         Map<String, byte[]> assignments = null;
@@ -457,11 +461,30 @@ public final class KafkaGroupTranscoder {
             }
         }
 
-        byte[] payload = state.sync(request.memberId(), request.memberId(), assignments);
-        return response.setErrorCode(Errors.NONE.code())
-                .setProtocolType(state.protocolType())
-                .setProtocolName(state.protocolName())
-                .setAssignment(payload);
+        return state.sync(request.memberId(), request.generationId(), assignments)
+                .thenApply(
+                        result -> {
+                            SyncGroupResponseData response = new SyncGroupResponseData();
+                            response.setThrottleTimeMs(0);
+                            switch (result.code()) {
+                                case OK:
+                                    return response.setErrorCode(Errors.NONE.code())
+                                            .setProtocolType(state.protocolType())
+                                            .setProtocolName(state.protocolName())
+                                            .setAssignment(result.assignment());
+                                case UNKNOWN_MEMBER:
+                                    return response.setErrorCode(Errors.UNKNOWN_MEMBER_ID.code())
+                                            .setAssignment(new byte[0]);
+                                case ILLEGAL_GENERATION:
+                                    return response.setErrorCode(Errors.ILLEGAL_GENERATION.code())
+                                            .setAssignment(new byte[0]);
+                                case REBALANCE_IN_PROGRESS:
+                                default:
+                                    return response.setErrorCode(
+                                                    Errors.REBALANCE_IN_PROGRESS.code())
+                                            .setAssignment(new byte[0]);
+                            }
+                        });
     }
 
     // --------------------------- Heartbeat ---------------------------------
@@ -471,13 +494,23 @@ public final class KafkaGroupTranscoder {
         response.setThrottleTimeMs(0);
 
         KafkaGroupRegistry.GroupState state = registry.get(request.groupId());
-        if (state == null || !state.hasMember(request.memberId())) {
+        if (state == null) {
             return response.setErrorCode(Errors.UNKNOWN_MEMBER_ID.code());
         }
-        if (request.generationId() != state.generation()) {
-            return response.setErrorCode(Errors.ILLEGAL_GENERATION.code());
+        KafkaGroupRegistry.HeartbeatResult result =
+                state.heartbeat(
+                        request.memberId(), request.generationId(), System.currentTimeMillis());
+        switch (result) {
+            case OK:
+                return response.setErrorCode(Errors.NONE.code());
+            case UNKNOWN_MEMBER:
+                return response.setErrorCode(Errors.UNKNOWN_MEMBER_ID.code());
+            case ILLEGAL_GENERATION:
+                return response.setErrorCode(Errors.ILLEGAL_GENERATION.code());
+            case REBALANCE_IN_PROGRESS:
+            default:
+                return response.setErrorCode(Errors.REBALANCE_IN_PROGRESS.code());
         }
-        return response.setErrorCode(Errors.NONE.code());
     }
 
     // --------------------------- LeaveGroup --------------------------------
