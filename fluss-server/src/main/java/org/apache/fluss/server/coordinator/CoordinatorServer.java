@@ -153,6 +153,15 @@ public class CoordinatorServer extends ServerBase {
     @GuardedBy("lock")
     private KvSnapshotLeaseManager kvSnapshotLeaseManager;
 
+    /**
+     * Schema Registry HTTP listener, only non-null on the elected leader when {@code
+     * kafka.schema-registry.enabled=true}. Wired via reflection to keep {@code fluss-server} free
+     * of a compile-time dep on {@code fluss-kafka}.
+     */
+    @GuardedBy("lock")
+    @Nullable
+    private AutoCloseable schemaRegistryHttpServer;
+
     public CoordinatorServer(Configuration conf) {
         this(conf, SystemClock.getInstance());
     }
@@ -327,6 +336,37 @@ public class CoordinatorServer extends ServerBase {
             coordinatorEventProcessor.startup();
 
             createDefaultDatabase();
+
+            startSchemaRegistryHttpServerIfEnabled();
+        }
+    }
+
+    /**
+     * Start the Kafka Schema Registry HTTP listener via reflection. Keeping the call reflective
+     * avoids a {@code fluss-server → fluss-kafka} Maven cycle (fluss-kafka already depends on
+     * fluss-server). No-op when {@code kafka.enabled=false} or {@code
+     * kafka.schema-registry.enabled=false}.
+     */
+    private void startSchemaRegistryHttpServerIfEnabled() {
+        try {
+            Class<?> bootstrap = Class.forName("org.apache.fluss.kafka.sr.SchemaRegistryBootstrap");
+            Object instance =
+                    bootstrap
+                            .getMethod(
+                                    "start",
+                                    Configuration.class,
+                                    ZooKeeperClient.class,
+                                    MetadataManager.class)
+                            .invoke(null, conf, zkClient, metadataManager);
+            if (instance instanceof AutoCloseable) {
+                schemaRegistryHttpServer = (AutoCloseable) instance;
+                LOG.info("Kafka Schema Registry HTTP listener started.");
+            }
+        } catch (ClassNotFoundException noKafka) {
+            LOG.debug(
+                    "fluss-kafka is not on the classpath; skipping Schema Registry HTTP listener.");
+        } catch (Throwable t) {
+            LOG.warn("Failed to start Kafka Schema Registry HTTP listener; continuing", t);
         }
     }
 
@@ -352,6 +392,15 @@ public class CoordinatorServer extends ServerBase {
             }
 
             // Clean up leader-specific resources in reverse order of initialization
+            try {
+                if (schemaRegistryHttpServer != null) {
+                    schemaRegistryHttpServer.close();
+                    schemaRegistryHttpServer = null;
+                }
+            } catch (Throwable t) {
+                LOG.warn("Failed to close Schema Registry HTTP listener", t);
+            }
+
             try {
                 if (coordinatorEventProcessor != null) {
                     coordinatorEventProcessor.shutdown();

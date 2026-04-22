@@ -2113,6 +2113,42 @@ public class ConfigOptions {
                                     + "(persist to the Fluss PK table kafka.__consumer_offsets__).");
 
     /**
+     * Whether the Confluent-compatible Schema Registry HTTP endpoint is started on the coordinator
+     * leader. Phase A1 scaffolding: implements ping, GET /subjects, POST /subjects/{s}/versions,
+     * and GET /schemas/ids/{id}. Avro-only, TopicNameStrategy value subjects only (design 0002).
+     */
+    public static final ConfigOption<Boolean> KAFKA_SCHEMA_REGISTRY_ENABLED =
+            key("kafka.schema-registry.enabled")
+                    .booleanType()
+                    .defaultValue(false)
+                    .withDescription(
+                            "Whether to start the Confluent-compatible Schema Registry HTTP endpoint "
+                                    + "on the coordinator leader. Requires kafka.enabled=true.");
+
+    /**
+     * Bind host for the Schema Registry HTTP listener. {@code 0.0.0.0} by default so the endpoint
+     * is reachable from outside the host.
+     */
+    public static final ConfigOption<String> KAFKA_SCHEMA_REGISTRY_HOST =
+            key("kafka.schema-registry.host")
+                    .stringType()
+                    .defaultValue("0.0.0.0")
+                    .withDescription(
+                            "Bind host for the Schema Registry HTTP listener on the coordinator leader.");
+
+    /**
+     * Bind port for the Schema Registry HTTP listener. {@code 0} binds to a random free port
+     * (useful for tests); {@code 8081} matches the Confluent default.
+     */
+    public static final ConfigOption<Integer> KAFKA_SCHEMA_REGISTRY_PORT =
+            key("kafka.schema-registry.port")
+                    .intType()
+                    .defaultValue(8081)
+                    .withDescription(
+                            "Bind port for the Schema Registry HTTP listener on the coordinator leader. "
+                                    + "Use 0 to bind to a random free port.");
+
+    /**
      * Compaction style for Fluss's kv, which is same to rocksdb's, but help use avoid including
      * rocksdb dependency when only need include this common module.
      */
