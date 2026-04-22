@@ -28,7 +28,6 @@ import org.apache.fluss.metadata.TablePath;
 import org.apache.fluss.server.coordinator.MetadataManager;
 import org.apache.fluss.server.metadata.BucketMetadata;
 import org.apache.fluss.server.metadata.TabletServerMetadataCache;
-import org.apache.fluss.server.zk.data.PartitionRegistration;
 
 import org.apache.kafka.common.Uuid;
 import org.apache.kafka.common.message.DescribeClusterResponseData;
@@ -194,9 +193,9 @@ public final class KafkaMetadataBuilder {
                 continue;
             }
             if (table.isPartitioned()) {
-                Map<String, PartitionRegistration> partitions;
+                Map<String, Long> partitions;
                 try {
-                    partitions = manager.listPartitions(path);
+                    partitions = manager.listPartitionIds(path);
                 } catch (TableNotExistException removed) {
                     continue;
                 }
@@ -285,10 +284,7 @@ public final class KafkaMetadataBuilder {
     private Long resolvePartitionId(
             MetadataManager manager, KafkaTopicMapping.ResolvedTopic resolved) {
         try {
-            Map<String, PartitionRegistration> partitions =
-                    manager.listPartitions(resolved.tablePath());
-            PartitionRegistration reg = partitions.get(resolved.partitionName());
-            return reg == null ? null : reg.getPartitionId();
+            return manager.listPartitionIds(resolved.tablePath()).get(resolved.partitionName());
         } catch (TableNotExistException removed) {
             return null;
         }
