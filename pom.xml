@@ -67,6 +67,7 @@
         <module>fluss-lake</module>
         <module>fluss-catalog</module>
         <module>fluss-kafka</module>
+        <module>fluss-iceberg-rest</module>
         <module>fluss-docgen</module>
         <module>tools/ci/fluss-ci-tools</module>
     </modules>

@@ -37,11 +37,12 @@ import java.util.List;
 /**
  * {@link CoordinatorLeaderBootstrap} that wires up the Fluss catalog service on the elected
  * coordinator leader. Starts whenever any consumer of the catalog is enabled — currently the Kafka
- * Schema Registry ({@link ConfigOptions#KAFKA_SCHEMA_REGISTRY_ENABLED}). Future projections
- * (Iceberg REST, Flink multi-format catalog) will extend this gate.
+ * Schema Registry ({@link ConfigOptions#KAFKA_SCHEMA_REGISTRY_ENABLED}) and the Iceberg REST
+ * Catalog ({@link ConfigOptions#ICEBERG_REST_ENABLED}). Future projections (Flink multi-format
+ * catalog, …) will extend this gate.
  *
- * <p>Runs at priority 10 so it registers the service before the higher-priority Schema Registry
- * bootstrap looks for it.
+ * <p>Runs at priority 10 so it registers the service before the higher-priority projection
+ * bootstraps (Kafka SR, Iceberg REST) look for it via {@link CatalogServices#current()}.
  */
 @Internal
 public final class FlussCatalogBootstrap implements CoordinatorLeaderBootstrap {
@@ -99,8 +100,11 @@ public final class FlussCatalogBootstrap implements CoordinatorLeaderBootstrap {
 
     /** The catalog starts when any of its consumers is enabled. */
     private static boolean catalogRequired(Configuration conf) {
-        return conf.getBoolean(ConfigOptions.KAFKA_ENABLED)
-                && conf.getBoolean(ConfigOptions.KAFKA_SCHEMA_REGISTRY_ENABLED);
+        boolean srEnabled =
+                conf.getBoolean(ConfigOptions.KAFKA_ENABLED)
+                        && conf.getBoolean(ConfigOptions.KAFKA_SCHEMA_REGISTRY_ENABLED);
+        boolean icebergRestEnabled = conf.getBoolean(ConfigOptions.ICEBERG_REST_ENABLED);
+        return srEnabled || icebergRestEnabled;
     }
 
     private static List<String> buildBootstrap(

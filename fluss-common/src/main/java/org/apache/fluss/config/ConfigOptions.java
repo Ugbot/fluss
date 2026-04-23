@@ -2167,6 +2167,45 @@ public class ConfigOptions {
                                     + "every request as ANONYMOUS.");
 
     /**
+     * Whether the Iceberg REST Catalog HTTP endpoint is started on the coordinator leader. Second
+     * projection over the Fluss catalog service, alongside the Kafka Schema Registry. Phase E
+     * preview: implements {@code GET /v1/config}, {@code GET /v1/namespaces}, {@code POST
+     * /v1/namespaces} only.
+     */
+    public static final ConfigOption<Boolean> ICEBERG_REST_ENABLED =
+            key("fluss.iceberg-rest.enabled")
+                    .booleanType()
+                    .defaultValue(false)
+                    .withDescription(
+                            "Whether to start the Iceberg REST Catalog HTTP endpoint on the "
+                                    + "coordinator leader. Starts the shared Fluss catalog service "
+                                    + "if not already running.");
+
+    /**
+     * Bind host for the Iceberg REST Catalog HTTP listener. {@code 0.0.0.0} by default so the
+     * endpoint is reachable from outside the host.
+     */
+    public static final ConfigOption<String> ICEBERG_REST_HOST =
+            key("fluss.iceberg-rest.host")
+                    .stringType()
+                    .defaultValue("0.0.0.0")
+                    .withDescription(
+                            "Bind host for the Iceberg REST Catalog HTTP listener on the "
+                                    + "coordinator leader.");
+
+    /**
+     * Bind port for the Iceberg REST Catalog HTTP listener. {@code 0} binds to a random free port
+     * (useful for tests); {@code 8181} matches the Iceberg reference implementation default.
+     */
+    public static final ConfigOption<Integer> ICEBERG_REST_PORT =
+            key("fluss.iceberg-rest.port")
+                    .intType()
+                    .defaultValue(8181)
+                    .withDescription(
+                            "Bind port for the Iceberg REST Catalog HTTP listener on the "
+                                    + "coordinator leader. Use 0 to bind to a random free port.");
+
+    /**
      * Compaction style for Fluss's kv, which is same to rocksdb's, but help use avoid including
      * rocksdb dependency when only need include this common module.
      */
