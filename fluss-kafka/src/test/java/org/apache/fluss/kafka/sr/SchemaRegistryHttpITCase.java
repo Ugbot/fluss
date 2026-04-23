@@ -128,14 +128,14 @@ class SchemaRegistryHttpITCase {
         assertThat(secondRegister.statusCode()).isEqualTo(200);
         assertThat(MAPPER.readTree(secondRegister.body()).get("id").asInt()).isEqualTo(firstId);
 
-        // POST with a new schema text — Phase A1 keeps a single slot per table (tableId,
-        // version=1, format), so the Confluent id is stable by design. The stored schema text
-        // is the latest submission.
+        // POST with a new schema text — the catalog appends a new version and mints a fresh
+        // Confluent id (deterministic on tableId + version + format). That's the correct
+        // Confluent-SR shape: each distinct submission gets its own id.
         String v2Body = "{\"schemaType\":\"AVRO\",\"schema\":" + escape(SCHEMA_ORDER_V2) + "}";
         HttpResponse<String> rebind = http("POST", "/subjects/" + subject + "/versions", v2Body);
         assertThat(rebind.statusCode()).isEqualTo(200);
         int secondId = MAPPER.readTree(rebind.body()).get("id").asInt();
-        assertThat(secondId).isEqualTo(firstId);
+        assertThat(secondId).isNotEqualTo(firstId);
 
         // GET /subjects contains subject.
         HttpResponse<String> list = http("GET", "/subjects", null);

@@ -349,16 +349,29 @@ public class CoordinatorServer extends ServerBase {
      * skipped so a single misbehaving bolt-on cannot take the leader down.
      */
     private void startLeaderBoltsViaServiceLoader() {
+        java.util.List<CoordinatorLeaderBootstrap> sorted = new ArrayList<>();
         for (CoordinatorLeaderBootstrap bootstrap :
                 ServiceLoader.load(
                         CoordinatorLeaderBootstrap.class,
                         CoordinatorLeaderBootstrap.class.getClassLoader())) {
+            sorted.add(bootstrap);
+        }
+        sorted.sort(java.util.Comparator.comparingInt(CoordinatorLeaderBootstrap::priority));
+        for (CoordinatorLeaderBootstrap bootstrap : sorted) {
             try {
                 AutoCloseable instance =
-                        bootstrap.start(conf, zkClient, metadataManager, metadataCache);
+                        bootstrap.start(
+                                conf,
+                                zkClient,
+                                metadataManager,
+                                metadataCache,
+                                rpcServer.getBindEndpoints());
                 if (instance != null) {
                     leaderBolts.add(instance);
-                    LOG.info("Leader bolt-on '{}' started.", bootstrap.name());
+                    LOG.info(
+                            "Leader bolt-on '{}' started (priority {}).",
+                            bootstrap.name(),
+                            bootstrap.priority());
                 }
             } catch (Throwable t) {
                 LOG.warn(

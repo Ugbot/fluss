@@ -18,10 +18,13 @@
 package org.apache.fluss.server.coordinator.spi;
 
 import org.apache.fluss.annotation.PublicEvolving;
+import org.apache.fluss.cluster.Endpoint;
 import org.apache.fluss.config.Configuration;
 import org.apache.fluss.server.coordinator.MetadataManager;
 import org.apache.fluss.server.metadata.ServerMetadataCache;
 import org.apache.fluss.server.zk.ZooKeeperClient;
+
+import java.util.List;
 
 /**
  * Service-loader SPI for bolt-on services that need to run on the elected coordinator leader — the
@@ -52,11 +55,24 @@ public interface CoordinatorLeaderBootstrap {
     String name();
 
     /**
+     * Startup ordering hint — lower values start first, higher values last (default 100).
+     * Catalog-style services that register themselves into the process should return a low number
+     * so projections that consume them (SR, Iceberg REST) see them already up. Shutdown happens in
+     * reverse.
+     */
+    default int priority() {
+        return 100;
+    }
+
+    /**
      * Start the bolt-on service.
      *
      * @param metadataCache coordinator-side {@link ServerMetadataCache} so bolt-ons that need to
      *     open a Fluss client {@code Connection} (catalog service, future Iceberg REST endpoint)
      *     can discover alive tablet-server FLUSS-listener endpoints.
+     * @param coordinatorBindEndpoints the RPC endpoints this coordinator is bound on. Useful as a
+     *     fallback bootstrap target when the cache has not yet picked up tablet-server
+     *     registrations (first leader election after cluster start).
      * @return a closeable whose {@code close()} tears down every resource the service acquired, or
      *     {@code null} if the service is disabled by configuration.
      */
@@ -64,6 +80,7 @@ public interface CoordinatorLeaderBootstrap {
             Configuration conf,
             ZooKeeperClient zk,
             MetadataManager metadataManager,
-            ServerMetadataCache metadataCache)
+            ServerMetadataCache metadataCache,
+            List<Endpoint> coordinatorBindEndpoints)
             throws Exception;
 }

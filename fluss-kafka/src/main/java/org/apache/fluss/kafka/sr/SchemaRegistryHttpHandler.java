@@ -74,6 +74,14 @@ public final class SchemaRegistryHttpHandler extends SimpleChannelInboundHandler
         try {
             response = dispatch(request);
         } catch (SchemaRegistryException sre) {
+            if (LOG.isDebugEnabled()) {
+                LOG.debug(
+                        "SR {} {} → {} ({})",
+                        request.method(),
+                        request.uri(),
+                        toHttpStatus(sre.kind()),
+                        sre.getMessage());
+            }
             response = errorResponse(toHttpStatus(sre.kind()), sre.getMessage());
         } catch (Throwable t) {
             LOG.error("Unexpected error serving SR request {}", request.uri(), t);
@@ -144,7 +152,7 @@ public final class SchemaRegistryHttpHandler extends SimpleChannelInboundHandler
             JsonNode body = MAPPER.readTree(readUtf8(request));
             String schemaType =
                     body.hasNonNull("schemaType") ? body.get("schemaType").asText() : "AVRO";
-            if (!SrTableProperties.FORMAT_AVRO.equalsIgnoreCase(schemaType)) {
+            if (!"AVRO".equalsIgnoreCase(schemaType)) {
                 throw new SchemaRegistryException(
                         SchemaRegistryException.Kind.UNSUPPORTED,
                         "schemaType '" + schemaType + "' is not supported in Phase A1 (only AVRO)");

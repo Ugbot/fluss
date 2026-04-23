@@ -44,7 +44,6 @@ import javax.annotation.Nullable;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -70,13 +69,19 @@ public final class FlussCatalogService implements CatalogService, AutoCloseable 
     private static final int CONFLUENT_ID_PROBE_LIMIT = 8;
     private static final Duration SCAN_POLL_TIMEOUT = Duration.ofSeconds(5);
 
-    private final Connection connection;
+    /**
+     * Lazy-opened Fluss client {@link Connection}. The bootstrap that owns this catalog passes a
+     * supplier that opens the connection on first use — critical because the catalog is
+     * instantiated from inside {@code CoordinatorServer#initCoordinatorLeader}, at which point the
+     * coordinator has not yet announced itself as leader and its own metadata RPCs reject client
+     * calls with {@code NotCoordinatorLeaderException}.
+     */
+    private final java.util.function.Supplier<Connection> connectionSupplier;
 
-    /** Lazy-init table handles keyed by {@link Handle}. */
-    private final EnumMap<Handle, Table> tables = new EnumMap<>(Handle.class);
+    private volatile Connection connection;
+    private final Object connectionLock = new Object();
 
     private final Object bootstrapLock = new Object();
-    private volatile boolean bootstrapped = false;
 
     private enum Handle {
         NAMESPACES,
@@ -89,7 +94,24 @@ public final class FlussCatalogService implements CatalogService, AutoCloseable 
     }
 
     public FlussCatalogService(Connection connection) {
-        this.connection = connection;
+        this(() -> connection);
+    }
+
+    public FlussCatalogService(java.util.function.Supplier<Connection> connectionSupplier) {
+        this.connectionSupplier = connectionSupplier;
+    }
+
+    private Connection connection() {
+        Connection c = connection;
+        if (c != null) {
+            return c;
+        }
+        synchronized (connectionLock) {
+            if (connection == null) {
+                connection = connectionSupplier.get();
+            }
+            return connection;
+        }
     }
 
     // =================================================================
@@ -464,17 +486,15 @@ public final class FlussCatalogService implements CatalogService, AutoCloseable 
 
     @Override
     public void close() {
-        for (Table t : tables.values()) {
-            if (t == null) {
-                continue;
-            }
+        Connection c = connection;
+        if (c != null) {
             try {
-                t.close();
+                c.close();
             } catch (Exception e) {
-                LOG.warn("Failed to close catalog table {}", t, e);
+                LOG.warn("Failed to close catalog Fluss client Connection", e);
             }
+            connection = null;
         }
-        tables.clear();
     }
 
     // =================================================================
@@ -482,14 +502,100 @@ public final class FlussCatalogService implements CatalogService, AutoCloseable 
     // =================================================================
 
     private Table table(Handle handle) throws Exception {
-        Table t = tables.get(handle);
-        if (t != null) {
+        synchronized (bootstrapLock) {
+            // Always re-verify the database + table exist. Cheap when they do (ignoreIfExists
+            // no-ops) and essential when an external actor (tests, administrative drops) has
+            // deleted them.
+            ensureDatabase();
+            SystemTables.Table def = tableFor(handle);
+            Admin admin = connection().getAdmin();
+            boolean freshlyCreated = false;
+            try {
+                admin.createTable(def.tablePath(), def.descriptor(), true)
+                        .get(TIMEOUT_SECONDS, TimeUnit.SECONDS);
+                freshlyCreated = true;
+            } catch (ExecutionException ee) {
+                Throwable cause = ee.getCause();
+                if (!(cause instanceof TableAlreadyExistException)) {
+                    throw unwrap(ee);
+                }
+            }
+            Table t = connection().getTable(def.tablePath());
+            if (freshlyCreated) {
+                waitUntilReady(t, handle);
+            }
             return t;
         }
-        ensureBootstrapped();
-        t = connection.getTable(tableFor(handle).tablePath());
-        tables.put(handle, t);
-        return t;
+    }
+
+    /**
+     * After {@code createTable} returns the table is registered in ZK but bucket leadership can
+     * take a beat to propagate through the Fluss client's metadata cache. We poll with a sentinel
+     * lookup until it either succeeds or returns an empty result (both mean "bucket reachable"),
+     * retrying on {@code NotLeaderOrFollowerException} and similar transient client errors.
+     */
+    private void waitUntilReady(Table t, Handle handle) throws Exception {
+        Lookuper lookuper = t.newLookup().createLookuper();
+        InternalRow key = readinessKey(handle);
+        long deadlineMillis =
+                System.currentTimeMillis() + TimeUnit.SECONDS.toMillis(TIMEOUT_SECONDS);
+        Exception last = null;
+        while (System.currentTimeMillis() < deadlineMillis) {
+            try {
+                lookuper.lookup(key).get(2, TimeUnit.SECONDS);
+                return;
+            } catch (ExecutionException ee) {
+                last = ee;
+            } catch (Exception other) {
+                last = other;
+            }
+            try {
+                Thread.sleep(100);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw interrupted;
+            }
+        }
+        throw new CatalogException(
+                CatalogException.Kind.INTERNAL,
+                "Catalog table " + handle + " did not become ready within " + TIMEOUT_SECONDS + "s",
+                last);
+    }
+
+    /** Sentinel PK per handle — never written, only used to probe readiness. */
+    private InternalRow readinessKey(Handle handle) {
+        switch (handle) {
+            case ID_RESERVATIONS:
+                {
+                    GenericRow r = new GenericRow(1);
+                    r.setField(0, 0);
+                    return r;
+                }
+            default:
+                {
+                    GenericRow r = new GenericRow(1);
+                    r.setField(0, BinaryString.fromString("__readiness__"));
+                    return r;
+                }
+        }
+    }
+
+    /**
+     * Always attempt to (re-)create the {@code _catalog} database. {@code ignoreIfExists} makes the
+     * no-op case cheap, and the always-attempt path handles external cleanup (tests dropping
+     * databases between runs, administrative drops) without us needing stateful recovery.
+     */
+    private void ensureDatabase() throws Exception {
+        Admin admin = connection().getAdmin();
+        try {
+            admin.createDatabase(SystemTables.DATABASE, DatabaseDescriptor.EMPTY, true)
+                    .get(TIMEOUT_SECONDS, TimeUnit.SECONDS);
+        } catch (ExecutionException ee) {
+            Throwable cause = ee.getCause();
+            if (!(cause instanceof DatabaseAlreadyExistException)) {
+                throw unwrap(ee);
+            }
+        }
     }
 
     private SystemTables.Table tableFor(Handle handle) {
@@ -510,39 +616,6 @@ public final class FlussCatalogService implements CatalogService, AutoCloseable 
                 return SystemTables.ID_RESERVATIONS;
             default:
                 throw new IllegalStateException("Unknown handle: " + handle);
-        }
-    }
-
-    private void ensureBootstrapped() throws Exception {
-        if (bootstrapped) {
-            return;
-        }
-        synchronized (bootstrapLock) {
-            if (bootstrapped) {
-                return;
-            }
-            Admin admin = connection.getAdmin();
-            try {
-                admin.createDatabase(SystemTables.DATABASE, DatabaseDescriptor.EMPTY, true)
-                        .get(TIMEOUT_SECONDS, TimeUnit.SECONDS);
-            } catch (ExecutionException ee) {
-                Throwable cause = ee.getCause();
-                if (!(cause instanceof DatabaseAlreadyExistException)) {
-                    throw unwrap(ee);
-                }
-            }
-            for (SystemTables.Table t : SystemTables.all()) {
-                try {
-                    admin.createTable(t.tablePath(), t.descriptor(), true)
-                            .get(TIMEOUT_SECONDS, TimeUnit.SECONDS);
-                } catch (ExecutionException ee) {
-                    Throwable cause = ee.getCause();
-                    if (!(cause instanceof TableAlreadyExistException)) {
-                        throw unwrap(ee);
-                    }
-                }
-            }
-            bootstrapped = true;
         }
     }
 
@@ -788,12 +861,22 @@ public final class FlussCatalogService implements CatalogService, AutoCloseable 
         return out;
     }
 
-    private Optional<SchemaVersionEntity> getSchemaBySchemaId(String schemaId) throws Exception {
+    @Override
+    public Optional<SchemaVersionEntity> getSchemaBySchemaId(String schemaId) throws Exception {
         Lookuper lookuper = table(Handle.SCHEMAS).newLookup().createLookuper();
         GenericRow key = new GenericRow(1);
         key.setField(0, BinaryString.fromString(schemaId));
         InternalRow found = awaitLookup(lookuper, key);
         return Optional.ofNullable(found).map(FlussCatalogService::decodeSchema);
+    }
+
+    @Override
+    public Optional<CatalogTableEntity> getTableById(String tableId) throws Exception {
+        Lookuper lookuper = table(Handle.TABLES).newLookup().createLookuper();
+        GenericRow key = new GenericRow(1);
+        key.setField(0, BinaryString.fromString(tableId));
+        InternalRow found = awaitLookup(lookuper, key);
+        return Optional.ofNullable(found).map(FlussCatalogService::decodeTable);
     }
 
     private static SchemaVersionEntity decodeSchema(InternalRow row) {

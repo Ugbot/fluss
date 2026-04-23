@@ -18,8 +18,8 @@
 package org.apache.fluss.catalog;
 
 import org.apache.fluss.annotation.Internal;
-import org.apache.fluss.client.Connection;
 import org.apache.fluss.client.ConnectionFactory;
+import org.apache.fluss.cluster.Endpoint;
 import org.apache.fluss.cluster.ServerNode;
 import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.config.Configuration;
@@ -36,12 +36,12 @@ import java.util.List;
 
 /**
  * {@link CoordinatorLeaderBootstrap} that wires up the Fluss catalog service on the elected
- * coordinator leader. Gated by {@link ConfigOptions#CATALOG_SERVICE_ENABLED}; no-op when the
- * feature flag is off.
+ * coordinator leader. Starts whenever any consumer of the catalog is enabled — currently the Kafka
+ * Schema Registry ({@link ConfigOptions#KAFKA_SCHEMA_REGISTRY_ENABLED}). Future projections
+ * (Iceberg REST, Flink multi-format catalog) will extend this gate.
  *
- * <p>On start: opens a Fluss client {@link Connection} against the FLUSS-listener endpoints of
- * alive tablet servers, constructs a {@link FlussCatalogService}, and registers it as the ambient
- * instance consumed by in-process projections (Kafka SR service looks it up here).
+ * <p>Runs at priority 10 so it registers the service before the higher-priority Schema Registry
+ * bootstrap looks for it.
  */
 @Internal
 public final class FlussCatalogBootstrap implements CoordinatorLeaderBootstrap {
@@ -57,42 +57,73 @@ public final class FlussCatalogBootstrap implements CoordinatorLeaderBootstrap {
     }
 
     @Override
+    public int priority() {
+        return 10;
+    }
+
+    @Override
     public AutoCloseable start(
             Configuration conf,
             ZooKeeperClient zk,
             MetadataManager metadataManager,
-            ServerMetadataCache metadataCache)
+            ServerMetadataCache metadataCache,
+            List<Endpoint> coordinatorBindEndpoints)
             throws Exception {
-        if (!conf.getBoolean(ConfigOptions.CATALOG_SERVICE_ENABLED)) {
+        if (!catalogRequired(conf)) {
             return null;
         }
-        List<String> bootstrap = buildBootstrap(metadataCache);
+        List<String> bootstrap = buildBootstrap(metadataCache, coordinatorBindEndpoints);
         if (bootstrap.isEmpty()) {
             LOG.warn(
-                    "No alive tablet server on FLUSS listener; catalog service cannot start. "
+                    "No FLUSS listener available for catalog bootstrap; catalog service cannot start. "
                             + "Will retry on next leader election cycle.");
             return null;
         }
         Configuration clientConf = new Configuration(conf);
         clientConf.set(ConfigOptions.BOOTSTRAP_SERVERS, bootstrap);
-        Connection connection = ConnectionFactory.createConnection(clientConf);
-        FlussCatalogService service = new FlussCatalogService(connection);
+        // Open the Connection lazily — this bootstrap runs from inside
+        // initCoordinatorLeader before the coordinator has announced leadership, so eager
+        // client init would hit NotCoordinatorLeaderException. First real SR request triggers
+        // a Connection at a point where the coordinator is serving metadata normally.
+        FlussCatalogService service =
+                new FlussCatalogService(() -> ConnectionFactory.createConnection(clientConf));
         CatalogServices.set(service);
-        LOG.info("Fluss catalog service started (bootstrap={})", bootstrap);
+        LOG.info(
+                "Fluss catalog service registered (lazy bootstrap={}); connection opens on first use.",
+                bootstrap);
         return () -> {
             CatalogServices.clear();
-            try {
-                service.close();
-            } finally {
-                connection.close();
-            }
+            service.close();
         };
     }
 
-    private static List<String> buildBootstrap(ServerMetadataCache cache) {
+    /** The catalog starts when any of its consumers is enabled. */
+    private static boolean catalogRequired(Configuration conf) {
+        return conf.getBoolean(ConfigOptions.KAFKA_ENABLED)
+                && conf.getBoolean(ConfigOptions.KAFKA_SCHEMA_REGISTRY_ENABLED);
+    }
+
+    private static List<String> buildBootstrap(
+            ServerMetadataCache cache, List<Endpoint> coordinatorBindEndpoints) {
         List<String> out = new ArrayList<>();
+        // Prefer tablet-server FLUSS endpoints — they host the PK tables directly.
         for (ServerNode node : cache.getAllAliveTabletServers(FLUSS_LISTENER).values()) {
             out.add(node.host() + ":" + node.port());
+        }
+        if (out.isEmpty()) {
+            // Fall back to this coordinator's own FLUSS endpoint. The Fluss client will
+            // bootstrap cluster metadata from here and discover tablet servers before the first
+            // data RPC. Matters at leader bootstrap when tablet-server registrations may not
+            // yet be visible to the cache.
+            for (Endpoint e : coordinatorBindEndpoints) {
+                if (FLUSS_LISTENER.equals(e.getListenerName())) {
+                    String host = e.getHost();
+                    if (host == null || host.isEmpty() || "0.0.0.0".equals(host)) {
+                        host = "localhost";
+                    }
+                    out.add(host + ":" + e.getPort());
+                }
+            }
         }
         return out;
     }

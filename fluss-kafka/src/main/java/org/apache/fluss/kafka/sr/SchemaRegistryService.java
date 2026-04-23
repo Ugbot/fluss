@@ -18,173 +18,194 @@
 package org.apache.fluss.kafka.sr;
 
 import org.apache.fluss.annotation.Internal;
+import org.apache.fluss.catalog.CatalogException;
+import org.apache.fluss.catalog.CatalogService;
+import org.apache.fluss.catalog.entities.KafkaSubjectBinding;
+import org.apache.fluss.catalog.entities.SchemaVersionEntity;
 import org.apache.fluss.exception.TableNotExistException;
-import org.apache.fluss.metadata.TableInfo;
 import org.apache.fluss.metadata.TablePath;
-import org.apache.fluss.security.acl.FlussPrincipal;
 import org.apache.fluss.server.coordinator.MetadataManager;
-import org.apache.fluss.server.entity.TablePropertyChanges;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
-import java.util.Map;
 import java.util.Optional;
 
 /**
- * Orchestrates the Phase A1 Schema Registry endpoints against Fluss table metadata. Stateless
- * beyond its collaborators — every call re-reads the underlying {@link MetadataManager}.
+ * Projection over {@link CatalogService} that speaks the Confluent Schema Registry REST shape.
+ *
+ * <p>Every SR operation is a read / write against the catalog entity tables in the reserved {@code
+ * _catalog} database:
+ *
+ * <ul>
+ *   <li><b>register</b> → {@code bindKafkaSubject} + {@code registerSchema}.
+ *   <li><b>schemaById</b> → {@code getSchemaById}.
+ *   <li><b>listSubjects</b> → {@code listKafkaSubjects}.
+ *   <li><b>latestForSubject</b> → {@code resolveKafkaSubject} + {@code listSchemaVersions}.
+ * </ul>
+ *
+ * <p>Confluent ids are deterministic on {@code (catalog table id, version, format)}; schema history
+ * is append-only. There is no per-topic custom-property storage.
+ *
+ * <p>The only non-catalog dependency is {@link MetadataManager}, used to verify that the Fluss
+ * Kafka data table ({@code <kafkaDatabase>.<topic>}) exists before we let a subject bind — keeping
+ * the "can't bind a subject to a topic that doesn't exist" error in the SR layer.
  */
 @Internal
 public final class SchemaRegistryService {
 
+    private static final Logger LOG = LoggerFactory.getLogger(SchemaRegistryService.class);
+
+    private static final String FORMAT_AVRO = "AVRO";
+    private static final String KEY_OR_VALUE_VALUE = "value";
+    private static final String NAMING_STRATEGY = "TopicNameStrategy";
+
     private final MetadataManager metadataManager;
-    private final ConfluentIdAllocator idAllocator;
+    private final CatalogService catalog;
     private final String kafkaDatabase;
 
     public SchemaRegistryService(
-            MetadataManager metadataManager,
-            ConfluentIdAllocator idAllocator,
-            String kafkaDatabase) {
+            MetadataManager metadataManager, CatalogService catalog, String kafkaDatabase) {
         this.metadataManager = metadataManager;
-        this.idAllocator = idAllocator;
+        this.catalog = catalog;
         this.kafkaDatabase = kafkaDatabase;
     }
 
-    /** Global default compatibility — hardcoded to BACKWARD for Phase A1 per design 0002. */
+    /** Global default compatibility — hardcoded to BACKWARD per design 0002. */
     public String defaultCompatibility() {
         return "BACKWARD";
     }
 
-    /**
-     * Register (or idempotently re-register) the Avro schema bound to {@code subject}.
-     *
-     * @return the Confluent global id — stable for identical {@code (subject, schema)} submissions.
-     */
     public int register(String subject, String avroSchema) {
         if (avroSchema == null || avroSchema.isEmpty()) {
             throw new SchemaRegistryException(
                     SchemaRegistryException.Kind.INVALID_INPUT, "schema body is required");
         }
         String topic = SubjectResolver.topicFromValueSubject(subject);
-        TableInfo tableInfo = loadTable(topic, subject);
-
-        Map<String, String> customProps = tableInfo.getCustomProperties().toMap();
-        String existingSubject = customProps.get(SrTableProperties.SUBJECT);
-        String existingSchema = customProps.get(SrTableProperties.AVRO_SCHEMA);
-        String existingId = customProps.get(SrTableProperties.CONFLUENT_ID);
-        if (subject.equals(existingSubject)
-                && avroSchema.equals(existingSchema)
-                && existingId != null) {
-            return Integer.parseInt(existingId);
+        // Fail fast if the Kafka data table doesn't exist — keeps the 404 clean.
+        requireKafkaTable(topic, subject);
+        try {
+            // Idempotent fast path: if the subject is already bound and the latest schema text
+            // matches, return the existing Confluent id without appending a new version. This
+            // avoids relying on catalog-side scan consistency for read-after-write semantics.
+            Optional<RegisteredSchema> latest = latestForSubject(subject);
+            if (LOG.isDebugEnabled()) {
+                LOG.debug(
+                        "register subject={} latestPresent={} latestMatches={}",
+                        subject,
+                        latest.isPresent(),
+                        latest.isPresent() && avroSchema.equals(latest.get().schema()));
+            }
+            if (latest.isPresent() && avroSchema.equals(latest.get().schema())) {
+                return latest.get().id();
+            }
+            ensureCatalogEntities(topic);
+            SchemaVersionEntity version =
+                    catalog.registerSchema(
+                            kafkaDatabase, topic, FORMAT_AVRO, avroSchema, /* registeredBy */ null);
+            catalog.bindKafkaSubject(
+                    subject, kafkaDatabase, topic, KEY_OR_VALUE_VALUE, NAMING_STRATEGY);
+            return version.confluentId();
+        } catch (Exception e) {
+            throw translate(e);
         }
-
-        int schemaVersion = 1; // Phase A1: one version per table.
-        int id =
-                idAllocator.allocate(
-                        tableInfo.getTableId(), schemaVersion, SrTableProperties.FORMAT_AVRO);
-
-        TablePropertyChanges.Builder changes = TablePropertyChanges.builder();
-        changes.setCustomProperty(SrTableProperties.SUBJECT, subject);
-        changes.setCustomProperty(SrTableProperties.FORMAT, SrTableProperties.FORMAT_AVRO);
-        changes.setCustomProperty(SrTableProperties.AVRO_SCHEMA, avroSchema);
-        changes.setCustomProperty(
-                SrTableProperties.SCHEMA_VERSION, Integer.toString(schemaVersion));
-        changes.setCustomProperty(SrTableProperties.CONFLUENT_ID, Integer.toString(id));
-        metadataManager.alterTableProperties(
-                tableInfo.getTablePath(),
-                Collections.emptyList(),
-                changes.build(),
-                false,
-                FlussPrincipal.ANONYMOUS);
-        return id;
     }
 
-    /** Look up a schema by its Confluent id, following the reservation pointer into a table. */
     public Optional<RegisteredSchema> schemaById(int id) {
-        Optional<ConfluentIdAllocator.Reservation> reservation = idAllocator.lookup(id);
-        if (!reservation.isPresent()) {
-            return Optional.empty();
+        try {
+            return catalog.getSchemaById(id)
+                    .map(
+                            s ->
+                                    new RegisteredSchema(
+                                            s.confluentId(),
+                                            /* subject unused by GET /schemas/ids */ "",
+                                            s.version(),
+                                            s.format(),
+                                            s.schemaText()));
+        } catch (Exception e) {
+            throw translate(e);
         }
-        // Phase A1 rule: a reservation always points to exactly one table in the kafka database.
-        // Linear scan of that database is acceptable for the MVP; Phase A2 adds a
-        // tableId→tablePath index.
-        for (String tableName : metadataManager.listTables(kafkaDatabase)) {
-            TableInfo ti;
-            try {
-                ti = metadataManager.getTable(new TablePath(kafkaDatabase, tableName));
-            } catch (TableNotExistException gone) {
-                continue;
+    }
+
+    public List<String> listSubjects() {
+        try {
+            List<String> out = new ArrayList<>();
+            for (KafkaSubjectBinding b : catalog.listKafkaSubjects()) {
+                out.add(b.subject());
             }
-            if (ti.getTableId() != reservation.get().tableId()) {
-                continue;
+            Collections.sort(out);
+            return out;
+        } catch (Exception e) {
+            throw translate(e);
+        }
+    }
+
+    public Optional<RegisteredSchema> latestForSubject(String subject) {
+        try {
+            // PK-lookup chain: binding → table.currentSchemaId → schema. Every hop is a Fluss
+            // PK lookup (read-after-write consistent); no scans involved.
+            Optional<KafkaSubjectBinding> binding = catalog.resolveKafkaSubject(subject);
+            if (!binding.isPresent()) {
+                return Optional.empty();
             }
-            Map<String, String> custom = ti.getCustomProperties().toMap();
-            String storedSchema = custom.get(SrTableProperties.AVRO_SCHEMA);
-            String storedSubject = custom.get(SrTableProperties.SUBJECT);
-            if (storedSchema == null || storedSubject == null) {
-                continue;
+            Optional<org.apache.fluss.catalog.entities.CatalogTableEntity> table =
+                    catalog.getTableById(binding.get().tableId());
+            if (!table.isPresent() || table.get().currentSchemaId() == null) {
+                return Optional.empty();
             }
+            Optional<SchemaVersionEntity> schema =
+                    catalog.getSchemaBySchemaId(table.get().currentSchemaId());
+            if (!schema.isPresent()) {
+                return Optional.empty();
+            }
+            SchemaVersionEntity s = schema.get();
             return Optional.of(
                     new RegisteredSchema(
-                            id,
-                            storedSubject,
-                            reservation.get().schemaVersion(),
-                            reservation.get().format(),
-                            storedSchema));
+                            s.confluentId(), subject, s.version(), s.format(), s.schemaText()));
+        } catch (Exception e) {
+            throw translate(e);
         }
-        return Optional.empty();
     }
 
-    /** Names of every Kafka-bound table that carries an SR subject binding. */
-    public List<String> listSubjects() {
-        List<String> tableNames = metadataManager.listTables(kafkaDatabase);
-        List<String> subjects = new ArrayList<>(tableNames.size());
-        for (String tableName : tableNames) {
+    /**
+     * Ensure the catalog has a namespace named {@link #kafkaDatabase} and a {@code
+     * KAFKA_PASSTHROUGH}-format table entity for {@code topic}. Idempotent — swallows {@code
+     * ALREADY_EXISTS}.
+     */
+    private void ensureCatalogEntities(String topic) throws Exception {
+        if (!catalog.getNamespace(kafkaDatabase).isPresent()) {
             try {
-                TableInfo ti = metadataManager.getTable(new TablePath(kafkaDatabase, tableName));
-                String subject = ti.getCustomProperties().toMap().get(SrTableProperties.SUBJECT);
-                if (subject != null) {
-                    subjects.add(subject);
+                catalog.createNamespace(
+                        null, kafkaDatabase, "Kafka-compat data tables (Fluss topic store)");
+            } catch (CatalogException ce) {
+                if (ce.kind() != CatalogException.Kind.ALREADY_EXISTS) {
+                    throw ce;
                 }
-            } catch (TableNotExistException gone) {
-                // race with delete; skip
             }
         }
-        Collections.sort(subjects);
-        return subjects;
+        if (!catalog.getTable(kafkaDatabase, topic).isPresent()) {
+            try {
+                catalog.createTable(
+                        kafkaDatabase,
+                        topic,
+                        "KAFKA_PASSTHROUGH",
+                        kafkaDatabase + "." + topic,
+                        null);
+            } catch (CatalogException ce) {
+                if (ce.kind() != CatalogException.Kind.ALREADY_EXISTS) {
+                    throw ce;
+                }
+            }
+        }
     }
 
-    /** Latest-version view for Phase A1 (there is only one version per subject). */
-    public Optional<RegisteredSchema> latestForSubject(String subject) {
-        String topic = SubjectResolver.topicFromValueSubject(subject);
-        TableInfo ti;
-        try {
-            ti = metadataManager.getTable(new TablePath(kafkaDatabase, topic));
-        } catch (TableNotExistException gone) {
-            return Optional.empty();
-        }
-        Map<String, String> custom = ti.getCustomProperties().toMap();
-        String storedSubject = custom.get(SrTableProperties.SUBJECT);
-        String storedSchema = custom.get(SrTableProperties.AVRO_SCHEMA);
-        String storedId = custom.get(SrTableProperties.CONFLUENT_ID);
-        String storedVersion = custom.get(SrTableProperties.SCHEMA_VERSION);
-        if (storedSubject == null || storedSchema == null || storedId == null) {
-            return Optional.empty();
-        }
-        return Optional.of(
-                new RegisteredSchema(
-                        Integer.parseInt(storedId),
-                        storedSubject,
-                        storedVersion == null ? 1 : Integer.parseInt(storedVersion),
-                        SrTableProperties.FORMAT_AVRO,
-                        storedSchema));
-    }
-
-    private TableInfo loadTable(String topic, String subject) {
+    private void requireKafkaTable(String topic, String subject) {
         TablePath path = new TablePath(kafkaDatabase, topic);
         try {
-            return metadataManager.getTable(path);
+            metadataManager.getTable(path);
         } catch (TableNotExistException gone) {
             throw new SchemaRegistryException(
                     SchemaRegistryException.Kind.NOT_FOUND,
@@ -192,8 +213,39 @@ public final class SchemaRegistryService {
                             + subject
                             + " requires a pre-existing Kafka topic ("
                             + path
-                            + "); auto-create arrives in Phase A2.");
+                            + "). Create the topic first (e.g. via Kafka Admin "
+                            + "CreateTopics).");
         }
+    }
+
+    private static RuntimeException translate(Exception e) {
+        if (e instanceof SchemaRegistryException) {
+            return (SchemaRegistryException) e;
+        }
+        if (e instanceof CatalogException) {
+            CatalogException ce = (CatalogException) e;
+            switch (ce.kind()) {
+                case INVALID_INPUT:
+                    return new SchemaRegistryException(
+                            SchemaRegistryException.Kind.INVALID_INPUT, ce.getMessage(), ce);
+                case NOT_FOUND:
+                    return new SchemaRegistryException(
+                            SchemaRegistryException.Kind.NOT_FOUND, ce.getMessage(), ce);
+                case ALREADY_EXISTS:
+                case CONFLICT:
+                    return new SchemaRegistryException(
+                            SchemaRegistryException.Kind.CONFLICT, ce.getMessage(), ce);
+                case UNSUPPORTED:
+                    return new SchemaRegistryException(
+                            SchemaRegistryException.Kind.UNSUPPORTED, ce.getMessage(), ce);
+                case INTERNAL:
+                default:
+                    return new SchemaRegistryException(
+                            SchemaRegistryException.Kind.INTERNAL, ce.getMessage(), ce);
+            }
+        }
+        return new SchemaRegistryException(
+                SchemaRegistryException.Kind.INTERNAL, e.getMessage(), e);
     }
 
     /** Immutable snapshot of one registered schema. */

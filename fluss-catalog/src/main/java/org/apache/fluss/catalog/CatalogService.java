@@ -94,6 +94,12 @@ public interface CatalogService {
 
     Optional<SchemaVersionEntity> getSchemaById(int confluentId) throws Exception;
 
+    /** PK-lookup by schema id. Read-after-write consistent, unlike scans. */
+    Optional<SchemaVersionEntity> getSchemaBySchemaId(String schemaId) throws Exception;
+
+    /** PK-lookup by the internal catalog table id. Read-after-write consistent. */
+    Optional<CatalogTableEntity> getTableById(String tableId) throws Exception;
+
     List<SchemaVersionEntity> listSchemaVersions(String namespace, String tableName)
             throws Exception;
 

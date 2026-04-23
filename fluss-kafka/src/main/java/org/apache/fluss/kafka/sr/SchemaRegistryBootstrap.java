@@ -18,6 +18,9 @@
 package org.apache.fluss.kafka.sr;
 
 import org.apache.fluss.annotation.Internal;
+import org.apache.fluss.catalog.CatalogService;
+import org.apache.fluss.catalog.CatalogServices;
+import org.apache.fluss.cluster.Endpoint;
 import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.config.Configuration;
 import org.apache.fluss.server.coordinator.MetadataManager;
@@ -25,13 +28,12 @@ import org.apache.fluss.server.coordinator.spi.CoordinatorLeaderBootstrap;
 import org.apache.fluss.server.metadata.ServerMetadataCache;
 import org.apache.fluss.server.zk.ZooKeeperClient;
 
+import java.util.List;
+
 /**
  * {@link CoordinatorLeaderBootstrap} implementation that stands up the Kafka Schema Registry HTTP
- * listener on the elected coordinator leader. Discovered via {@link java.util.ServiceLoader}
- * through {@code META-INF/services/...CoordinatorLeaderBootstrap} in this module's JAR.
- *
- * <p>Returns {@code null} from {@link #start} when either {@code kafka.enabled=false} or {@code
- * kafka.schema-registry.enabled=false}.
+ * listener on the elected coordinator leader. Requires the {@link CatalogService} to be running
+ * (started by {@code FlussCatalogBootstrap} at a lower priority); fails fast if absent.
  */
 @Internal
 public final class SchemaRegistryBootstrap implements CoordinatorLeaderBootstrap {
@@ -42,22 +44,38 @@ public final class SchemaRegistryBootstrap implements CoordinatorLeaderBootstrap
     }
 
     @Override
+    public int priority() {
+        // Run after FlussCatalogBootstrap (priority 10) so the catalog is already registered.
+        return 100;
+    }
+
+    @Override
     public AutoCloseable start(
             Configuration conf,
             ZooKeeperClient zkClient,
             MetadataManager metadataManager,
-            ServerMetadataCache metadataCache)
+            ServerMetadataCache metadataCache,
+            List<Endpoint> coordinatorBindEndpoints)
             throws Exception {
         if (!conf.getBoolean(ConfigOptions.KAFKA_ENABLED)
                 || !conf.getBoolean(ConfigOptions.KAFKA_SCHEMA_REGISTRY_ENABLED)) {
             return null;
         }
+        CatalogService catalog =
+                CatalogServices.current()
+                        .orElseThrow(
+                                () ->
+                                        new IllegalStateException(
+                                                "Kafka Schema Registry is enabled but the Fluss "
+                                                        + "catalog service is not running. Ensure "
+                                                        + "FlussCatalogBootstrap is on the "
+                                                        + "classpath and not self-gated off."));
+
         String host = conf.get(ConfigOptions.KAFKA_SCHEMA_REGISTRY_HOST);
         int port = conf.get(ConfigOptions.KAFKA_SCHEMA_REGISTRY_PORT);
         String kafkaDatabase = conf.get(ConfigOptions.KAFKA_DATABASE);
-        ConfluentIdAllocator allocator = new ConfluentIdAllocator(zkClient);
         SchemaRegistryService service =
-                new SchemaRegistryService(metadataManager, allocator, kafkaDatabase);
+                new SchemaRegistryService(metadataManager, catalog, kafkaDatabase);
         SchemaRegistryHttpServer server = new SchemaRegistryHttpServer(host, port, service);
         server.start();
         return server;
