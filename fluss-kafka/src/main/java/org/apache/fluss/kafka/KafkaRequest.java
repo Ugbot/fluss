@@ -19,6 +19,7 @@ package org.apache.fluss.kafka;
 
 import org.apache.fluss.rpc.netty.server.RpcRequest;
 import org.apache.fluss.rpc.protocol.RequestType;
+import org.apache.fluss.security.acl.FlussPrincipal;
 import org.apache.fluss.shaded.netty4.io.netty.buffer.ByteBuf;
 import org.apache.fluss.shaded.netty4.io.netty.channel.ChannelHandlerContext;
 import org.apache.fluss.shaded.netty4.io.netty.util.ReferenceCountUtil;
@@ -52,6 +53,7 @@ public class KafkaRequest implements RpcRequest {
     private final CompletableFuture<AbstractResponse> future;
     private final String listenerName;
     private volatile boolean cancelled = false;
+    private volatile FlussPrincipal principal = FlussPrincipal.ANONYMOUS;
 
     protected KafkaRequest(
             ApiKeys apiKey,
@@ -133,6 +135,18 @@ public class KafkaRequest implements RpcRequest {
 
     public boolean cancelled() {
         return cancelled;
+    }
+
+    /**
+     * Principal attached to this request by the decoder. Defaults to {@link
+     * FlussPrincipal#ANONYMOUS} on PLAINTEXT listeners or before SASL completes.
+     */
+    public FlussPrincipal principal() {
+        return principal;
+    }
+
+    void setPrincipal(FlussPrincipal principal) {
+        this.principal = principal == null ? FlussPrincipal.ANONYMOUS : principal;
     }
 
     public ByteBuf responseBuffer() {

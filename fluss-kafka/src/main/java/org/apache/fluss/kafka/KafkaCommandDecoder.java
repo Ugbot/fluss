@@ -17,7 +17,10 @@
 
 package org.apache.fluss.kafka;
 
+import org.apache.fluss.kafka.auth.KafkaListenerAuthConfig;
+import org.apache.fluss.kafka.auth.KafkaSaslTranscoder;
 import org.apache.fluss.rpc.netty.server.RequestChannel;
+import org.apache.fluss.security.acl.FlussPrincipal;
 import org.apache.fluss.shaded.netty4.io.netty.buffer.ByteBuf;
 import org.apache.fluss.shaded.netty4.io.netty.channel.ChannelHandlerContext;
 import org.apache.fluss.shaded.netty4.io.netty.channel.SimpleChannelInboundHandler;
@@ -26,6 +29,7 @@ import org.apache.fluss.shaded.netty4.io.netty.handler.timeout.IdleStateEvent;
 import org.apache.fluss.shaded.netty4.io.netty.util.ReferenceCountUtil;
 import org.apache.fluss.utils.MathUtils;
 
+import org.apache.kafka.common.errors.IllegalSaslStateException;
 import org.apache.kafka.common.errors.LeaderNotAvailableException;
 import org.apache.kafka.common.protocol.ApiKeys;
 import org.apache.kafka.common.requests.AbstractRequest;
@@ -34,6 +38,8 @@ import org.apache.kafka.common.requests.ApiVersionsRequest;
 import org.apache.kafka.common.requests.ProduceRequest;
 import org.apache.kafka.common.requests.RequestAndSize;
 import org.apache.kafka.common.requests.RequestHeader;
+import org.apache.kafka.common.requests.SaslAuthenticateRequest;
+import org.apache.kafka.common.requests.SaslHandshakeRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -43,12 +49,22 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+import static org.apache.fluss.utils.Preconditions.checkNotNull;
 import static org.apache.kafka.common.protocol.ApiKeys.API_VERSIONS;
 import static org.apache.kafka.common.protocol.ApiKeys.PRODUCE;
+import static org.apache.kafka.common.protocol.ApiKeys.SASL_AUTHENTICATE;
+import static org.apache.kafka.common.protocol.ApiKeys.SASL_HANDSHAKE;
 
 /**
  * A decoder that decodes the incoming ByteBuf into Kafka requests and sends them to the
  * corresponding RequestChannel.
+ *
+ * <p>On a {@link KafkaListenerAuthConfig.Protocol#SASL_PLAINTEXT SASL listener}, the decoder also
+ * drives the per-connection SASL state machine via {@link KafkaSaslTranscoder}: {@code
+ * SASL_HANDSHAKE} / {@code SASL_AUTHENTICATE} frames are translated onto Fluss's {@link
+ * org.apache.fluss.security.auth.ServerAuthenticator} SPI and responded to inline (never dispatched
+ * to the handler). Any non-SASL, non-ApiVersions API received before the handshake completes is
+ * answered with {@code ILLEGAL_SASL_STATE}.
  */
 public class KafkaCommandDecoder extends SimpleChannelInboundHandler<ByteBuf> {
     private static final Logger LOG = LoggerFactory.getLogger(KafkaCommandDecoder.class);
@@ -56,6 +72,7 @@ public class KafkaCommandDecoder extends SimpleChannelInboundHandler<ByteBuf> {
     private final RequestChannel[] requestChannels;
     private final int numChannels;
     private final String listenerName;
+    private final KafkaListenerAuthConfig authConfig;
 
     // Need to use a Queue to store the inflight responses, because Kafka clients require the
     // responses to be sent in order.
@@ -66,11 +83,21 @@ public class KafkaCommandDecoder extends SimpleChannelInboundHandler<ByteBuf> {
     protected volatile ChannelHandlerContext ctx;
     protected SocketAddress remoteAddress;
 
-    public KafkaCommandDecoder(RequestChannel[] requestChannels, String listenerName) {
+    /**
+     * SASL state machine for this connection. {@code null} on PLAINTEXT listeners; lazily created
+     * on the first inbound frame when the listener requires SASL.
+     */
+    private KafkaSaslTranscoder saslTranscoder;
+
+    public KafkaCommandDecoder(
+            RequestChannel[] requestChannels,
+            String listenerName,
+            KafkaListenerAuthConfig authConfig) {
         super(false);
         this.requestChannels = requestChannels;
         this.numChannels = requestChannels.length;
         this.listenerName = listenerName;
+        this.authConfig = checkNotNull(authConfig, "authConfig");
     }
 
     @Override
@@ -79,6 +106,46 @@ public class KafkaCommandDecoder extends SimpleChannelInboundHandler<ByteBuf> {
         boolean needRelease = false;
         try {
             KafkaRequest request = parseRequest(ctx, future, buffer, listenerName);
+            ApiKeys apiKey = request.apiKey();
+
+            if (authConfig.requiresSasl()) {
+                if (saslTranscoder == null) {
+                    saslTranscoder =
+                            new KafkaSaslTranscoder(
+                                    authConfig,
+                                    listenerName,
+                                    remoteAddress == null ? "unknown" : remoteAddress.toString());
+                }
+
+                if (apiKey == SASL_HANDSHAKE) {
+                    SaslHandshakeRequest hs = request.request();
+                    AbstractResponse resp = saslTranscoder.handleSaslHandshake(hs);
+                    completeInline(request, resp);
+                    needRelease = false;
+                    return;
+                }
+                if (apiKey == SASL_AUTHENTICATE) {
+                    SaslAuthenticateRequest ar = request.request();
+                    AbstractResponse resp = saslTranscoder.handleSaslAuthenticate(ar);
+                    completeInline(request, resp);
+                    needRelease = false;
+                    return;
+                }
+                if (apiKey != API_VERSIONS && saslTranscoder.isSaslRequiredButNotDone()) {
+                    AbstractRequest aReq = request.request();
+                    AbstractResponse err =
+                            aReq.getErrorResponse(
+                                    new IllegalSaslStateException(
+                                            "Expected SASL handshake before API " + apiKey));
+                    completeInline(request, err);
+                    needRelease = false;
+                    return;
+                }
+                request.setPrincipal(saslTranscoder.principal());
+            } else {
+                request.setPrincipal(FlussPrincipal.ANONYMOUS);
+            }
+
             inflightResponses.addLast(request);
             future.whenCompleteAsync((r, t) -> sendResponse(ctx), ctx.executor());
             int channelIndex =
@@ -101,6 +168,17 @@ public class KafkaCommandDecoder extends SimpleChannelInboundHandler<ByteBuf> {
         }
     }
 
+    /**
+     * Complete {@code request} inline (without dispatching to the handler) and schedule response
+     * flushing on the channel executor. Used for SASL requests and for errors raised in the
+     * decoder.
+     */
+    private void completeInline(KafkaRequest request, AbstractResponse response) {
+        inflightResponses.addLast(request);
+        request.future().whenCompleteAsync((r, t) -> sendResponse(ctx), ctx.executor());
+        request.complete(response);
+    }
+
     @Override
     public void channelActive(ChannelHandlerContext ctx) throws Exception {
         super.channelActive(ctx);
@@ -115,6 +193,10 @@ public class KafkaCommandDecoder extends SimpleChannelInboundHandler<ByteBuf> {
     public void channelInactive(ChannelHandlerContext ctx) throws Exception {
         super.channelInactive(ctx);
         LOG.info("Connection closed from {}", ctx.channel().remoteAddress());
+        if (saslTranscoder != null) {
+            saslTranscoder.close();
+            saslTranscoder = null;
+        }
         // TODO Channel metrics
     }
 

@@ -17,12 +17,15 @@
 
 package org.apache.fluss.kafka;
 
+import org.apache.fluss.kafka.auth.KafkaListenerAuthConfig;
 import org.apache.fluss.rpc.netty.NettyChannelInitializer;
 import org.apache.fluss.rpc.netty.server.RequestChannel;
 import org.apache.fluss.shaded.netty4.io.netty.channel.ChannelInitializer;
 import org.apache.fluss.shaded.netty4.io.netty.channel.socket.SocketChannel;
 import org.apache.fluss.shaded.netty4.io.netty.handler.codec.LengthFieldPrepender;
 import org.apache.fluss.shaded.netty4.io.netty.handler.flow.FlowControlHandler;
+
+import static org.apache.fluss.utils.Preconditions.checkNotNull;
 
 /**
  * A {@link ChannelInitializer} for initializing {@link SocketChannel} instances that will be used
@@ -35,18 +38,21 @@ public class KafkaChannelInitializer extends NettyChannelInitializer {
     private final int maxRequestSize;
     private final LengthFieldPrepender prepender = new LengthFieldPrepender(4);
     private final boolean preferHeap;
+    private final KafkaListenerAuthConfig authConfig;
 
     public KafkaChannelInitializer(
             RequestChannel[] requestChannels,
             String listenerName,
             long maxIdleTimeSeconds,
             int maxRequestSize,
-            boolean preferHeap) {
+            boolean preferHeap,
+            KafkaListenerAuthConfig authConfig) {
         super(maxIdleTimeSeconds);
         this.requestChannels = requestChannels;
         this.listenerName = listenerName;
         this.maxRequestSize = maxRequestSize;
         this.preferHeap = preferHeap;
+        this.authConfig = checkNotNull(authConfig, "authConfig");
     }
 
     @Override
@@ -56,6 +62,6 @@ public class KafkaChannelInitializer extends NettyChannelInitializer {
         ch.pipeline().addLast(prepender);
         addFrameDecoder(ch, maxRequestSize, 4, preferHeap);
         ch.pipeline().addLast("flowController", new FlowControlHandler());
-        ch.pipeline().addLast(new KafkaCommandDecoder(requestChannels, listenerName));
+        ch.pipeline().addLast(new KafkaCommandDecoder(requestChannels, listenerName, authConfig));
     }
 }

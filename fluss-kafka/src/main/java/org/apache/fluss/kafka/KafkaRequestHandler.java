@@ -169,7 +169,12 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
                     ApiKeys.CREATE_PARTITIONS,
                     ApiKeys.DESCRIBE_CONFIGS,
                     ApiKeys.ALTER_CONFIGS,
-                    ApiKeys.INCREMENTAL_ALTER_CONFIGS);
+                    ApiKeys.INCREMENTAL_ALTER_CONFIGS,
+                    // SASL APIs are intercepted in KafkaCommandDecoder and never reach the handler,
+                    // but we list them here so ApiVersions advertises their true implementation
+                    // status to clients that consult IMPLEMENTED_APIS.
+                    ApiKeys.SASL_HANDSHAKE,
+                    ApiKeys.SASL_AUTHENTICATE);
 
     private static final java.util.concurrent.atomic.AtomicLong STUB_PRODUCER_ID =
             new java.util.concurrent.atomic.AtomicLong(1L);

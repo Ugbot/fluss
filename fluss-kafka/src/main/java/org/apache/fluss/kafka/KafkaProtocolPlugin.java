@@ -21,6 +21,7 @@ import org.apache.fluss.cluster.Endpoint;
 import org.apache.fluss.cluster.ServerType;
 import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.config.Configuration;
+import org.apache.fluss.kafka.auth.KafkaListenerAuthConfig;
 import org.apache.fluss.rpc.RpcGatewayService;
 import org.apache.fluss.rpc.gateway.TabletServerGateway;
 import org.apache.fluss.rpc.netty.server.RequestChannel;
@@ -65,12 +66,19 @@ public class KafkaProtocolPlugin implements NetworkProtocolPlugin {
     @Override
     public ChannelHandler createChannelHandler(
             RequestChannel[] requestChannels, String listenerName) {
+        KafkaListenerAuthConfig authConfig = KafkaListenerAuthConfig.resolve(conf, listenerName);
+        LOG.info(
+                "Kafka listener '{}' auth posture: {} (enabled mechanisms={})",
+                listenerName,
+                authConfig.protocol(),
+                authConfig.enabledMechanisms());
         return new KafkaChannelInitializer(
                 requestChannels,
                 listenerName,
                 conf.get(ConfigOptions.KAFKA_CONNECTION_MAX_IDLE_TIME).getSeconds(),
                 (int) conf.get(ConfigOptions.NETTY_SERVER_MAX_REQUEST_SIZE).getBytes(),
-                conf.getBoolean(ConfigOptions.NETTY_CLIENT_ALLOCATOR_HEAP_BUFFER_FIRST));
+                conf.getBoolean(ConfigOptions.NETTY_CLIENT_ALLOCATOR_HEAP_BUFFER_FIRST),
+                authConfig);
     }
 
     @Override
