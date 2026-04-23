@@ -21,6 +21,7 @@ import org.apache.fluss.client.Connection;
 import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.kafka.admin.KafkaAdminTranscoder;
 import org.apache.fluss.kafka.admin.KafkaConfigsTranscoder;
+import org.apache.fluss.kafka.admin.KafkaCreatePartitionsTranscoder;
 import org.apache.fluss.kafka.admin.KafkaDeleteRecordsTranscoder;
 import org.apache.fluss.kafka.catalog.CustomPropertiesTopicsCatalog;
 import org.apache.fluss.kafka.catalog.KafkaTopicsCatalog;
@@ -42,6 +43,7 @@ import org.apache.fluss.rpc.protocol.RequestType;
 
 import org.apache.kafka.common.message.AlterConfigsResponseData;
 import org.apache.kafka.common.message.ApiVersionsResponseData;
+import org.apache.kafka.common.message.CreatePartitionsResponseData;
 import org.apache.kafka.common.message.CreateTopicsResponseData;
 import org.apache.kafka.common.message.DeleteGroupsResponseData;
 import org.apache.kafka.common.message.DeleteRecordsResponseData;
@@ -70,6 +72,8 @@ import org.apache.kafka.common.requests.AbstractResponse;
 import org.apache.kafka.common.requests.AlterConfigsRequest;
 import org.apache.kafka.common.requests.AlterConfigsResponse;
 import org.apache.kafka.common.requests.ApiVersionsResponse;
+import org.apache.kafka.common.requests.CreatePartitionsRequest;
+import org.apache.kafka.common.requests.CreatePartitionsResponse;
 import org.apache.kafka.common.requests.CreateTopicsRequest;
 import org.apache.kafka.common.requests.CreateTopicsResponse;
 import org.apache.kafka.common.requests.DeleteGroupsRequest;
@@ -162,6 +166,7 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
                     ApiKeys.OFFSET_DELETE,
                     ApiKeys.DELETE_RECORDS,
                     ApiKeys.OFFSET_FOR_LEADER_EPOCH,
+                    ApiKeys.CREATE_PARTITIONS,
                     ApiKeys.DESCRIBE_CONFIGS,
                     ApiKeys.ALTER_CONFIGS,
                     ApiKeys.INCREMENTAL_ALTER_CONFIGS);
@@ -423,6 +428,9 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
                 break;
             case OFFSET_FOR_LEADER_EPOCH:
                 handleOffsetForLeaderEpochRequest(request);
+                break;
+            case CREATE_PARTITIONS:
+                handleCreatePartitionsRequest(request);
                 break;
             case DESCRIBE_CONFIGS:
                 handleDescribeConfigsRequest(request);
@@ -857,6 +865,26 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
             request.complete(new OffsetsForLeaderEpochResponse(data));
         } catch (Throwable t) {
             LOG.error("OffsetForLeaderEpoch handler threw", t);
+            request.fail(t);
+        }
+    }
+
+    void handleCreatePartitionsRequest(KafkaRequest request) {
+        if (!context.hasServerState()) {
+            request.fail(
+                    Errors.BROKER_NOT_AVAILABLE.exception(
+                            "Kafka CreatePartitions requires a running server; the plugin is not"
+                                    + " wired."));
+            return;
+        }
+        try {
+            CreatePartitionsRequest req = request.request();
+            KafkaCreatePartitionsTranscoder transcoder =
+                    new KafkaCreatePartitionsTranscoder(newCatalog(), context.metadataManager());
+            CreatePartitionsResponseData data = transcoder.createPartitions(req.data());
+            request.complete(new CreatePartitionsResponse(data));
+        } catch (Throwable t) {
+            LOG.error("CreatePartitions handler threw", t);
             request.fail(t);
         }
     }
