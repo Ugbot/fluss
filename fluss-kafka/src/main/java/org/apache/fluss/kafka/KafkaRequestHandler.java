@@ -26,6 +26,7 @@ import org.apache.fluss.kafka.catalog.CustomPropertiesTopicsCatalog;
 import org.apache.fluss.kafka.catalog.KafkaTopicsCatalog;
 import org.apache.fluss.kafka.fetch.KafkaFetchTranscoder;
 import org.apache.fluss.kafka.fetch.KafkaListOffsetsTranscoder;
+import org.apache.fluss.kafka.fetch.KafkaOffsetForLeaderEpochTranscoder;
 import org.apache.fluss.kafka.group.FlussPkOffsetStore;
 import org.apache.fluss.kafka.group.InMemoryOffsetStore;
 import org.apache.fluss.kafka.group.KafkaGroupRegistry;
@@ -59,6 +60,7 @@ import org.apache.kafka.common.message.MetadataResponseData;
 import org.apache.kafka.common.message.OffsetCommitResponseData;
 import org.apache.kafka.common.message.OffsetDeleteResponseData;
 import org.apache.kafka.common.message.OffsetFetchResponseData;
+import org.apache.kafka.common.message.OffsetForLeaderEpochResponseData;
 import org.apache.kafka.common.message.ProduceResponseData;
 import org.apache.kafka.common.protocol.ApiKeys;
 import org.apache.kafka.common.protocol.Errors;
@@ -106,6 +108,8 @@ import org.apache.kafka.common.requests.OffsetDeleteRequest;
 import org.apache.kafka.common.requests.OffsetDeleteResponse;
 import org.apache.kafka.common.requests.OffsetFetchRequest;
 import org.apache.kafka.common.requests.OffsetFetchResponse;
+import org.apache.kafka.common.requests.OffsetsForLeaderEpochRequest;
+import org.apache.kafka.common.requests.OffsetsForLeaderEpochResponse;
 import org.apache.kafka.common.requests.ProduceRequest;
 import org.apache.kafka.common.requests.ProduceResponse;
 import org.apache.kafka.common.requests.SyncGroupRequest;
@@ -157,6 +161,7 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
                     ApiKeys.DELETE_GROUPS,
                     ApiKeys.OFFSET_DELETE,
                     ApiKeys.DELETE_RECORDS,
+                    ApiKeys.OFFSET_FOR_LEADER_EPOCH,
                     ApiKeys.DESCRIBE_CONFIGS,
                     ApiKeys.ALTER_CONFIGS,
                     ApiKeys.INCREMENTAL_ALTER_CONFIGS);
@@ -415,6 +420,9 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
                 break;
             case DELETE_RECORDS:
                 handleDeleteRecordsRequest(request);
+                break;
+            case OFFSET_FOR_LEADER_EPOCH:
+                handleOffsetForLeaderEpochRequest(request);
                 break;
             case DESCRIBE_CONFIGS:
                 handleDescribeConfigsRequest(request);
@@ -829,6 +837,26 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
             request.complete(new ListOffsetsResponse(data));
         } catch (Throwable t) {
             LOG.error("ListOffsets handler threw", t);
+            request.fail(t);
+        }
+    }
+
+    void handleOffsetForLeaderEpochRequest(KafkaRequest request) {
+        if (!context.hasServerState() || !context.hasReplicaManager()) {
+            request.fail(
+                    Errors.BROKER_NOT_AVAILABLE.exception(
+                            "Kafka OffsetForLeaderEpoch requires a tablet server; the plugin is"
+                                    + " not wired."));
+            return;
+        }
+        try {
+            OffsetsForLeaderEpochRequest req = request.request();
+            KafkaOffsetForLeaderEpochTranscoder transcoder =
+                    new KafkaOffsetForLeaderEpochTranscoder(newCatalog(), context.replicaManager());
+            OffsetForLeaderEpochResponseData data = transcoder.offsetForLeaderEpoch(req.data());
+            request.complete(new OffsetsForLeaderEpochResponse(data));
+        } catch (Throwable t) {
+            LOG.error("OffsetForLeaderEpoch handler threw", t);
             request.fail(t);
         }
     }

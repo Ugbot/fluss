@@ -34,13 +34,19 @@ public final class ReplicaSnapshot {
     private final long localLogEndOffset;
     private final long logHighWatermark;
     private final int leaderEpoch;
+    private final boolean isLeader;
 
     public ReplicaSnapshot(
-            long logStartOffset, long localLogEndOffset, long logHighWatermark, int leaderEpoch) {
+            long logStartOffset,
+            long localLogEndOffset,
+            long logHighWatermark,
+            int leaderEpoch,
+            boolean isLeader) {
         this.logStartOffset = logStartOffset;
         this.localLogEndOffset = localLogEndOffset;
         this.logHighWatermark = logHighWatermark;
         this.leaderEpoch = leaderEpoch;
+        this.isLeader = isLeader;
     }
 
     /** Earliest offset still retained locally (== Kafka's log-start-offset). */
@@ -61,5 +67,13 @@ public final class ReplicaSnapshot {
     /** Current leader epoch — monotonic across failovers. */
     public int leaderEpoch() {
         return leaderEpoch;
+    }
+
+    /**
+     * Whether the local server is the leader for this bucket. Bolt-ons that must enforce
+     * leader-only semantics (e.g. Kafka's {@code OFFSET_FOR_LEADER_EPOCH}) should gate on this.
+     */
+    public boolean isLeader() {
+        return isLeader;
     }
 }

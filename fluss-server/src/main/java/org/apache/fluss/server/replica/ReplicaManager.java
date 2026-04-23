@@ -2036,7 +2036,8 @@ public class ReplicaManager implements ServerReconfigurable {
                         replica.getLogStartOffset(),
                         replica.getLocalLogEndOffset(),
                         replica.getLogHighWatermark(),
-                        replica.getLeaderEpoch()));
+                        replica.getLeaderEpoch(),
+                        replica.isLeader()));
     }
 
     private boolean isRequiredAcksInvalid(int requiredAcks) {
