@@ -91,6 +91,7 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -561,27 +562,6 @@ public class FlinkTableSource
                 }
             }
             partitionFilters = converted.isEmpty() ? null : PredicateBuilder.and(converted);
-
-            // lake source is not null
-            if (lakeSource != null) {
-                List<Predicate> lakePredicates = new ArrayList<>();
-                for (ResolvedExpression filter : filters) {
-                    Optional<Predicate> predicateOptional =
-                            convertToFlussPredicate(tableOutputType, filter);
-                    predicateOptional.ifPresent(lakePredicates::add);
-                }
-
-                if (!lakePredicates.isEmpty()) {
-                    final LakeSource.FilterPushDownResult filterPushDownResult =
-                            lakeSource.withFilters(lakePredicates);
-                    if (filterPushDownResult.acceptedPredicates().size() != lakePredicates.size()) {
-                        LOG.info(
-                                "LakeSource rejected some partition filters. Falling back to Flink-side filtering.");
-                        // Flink will apply all filters to preserve correctness
-                        return Result.of(Collections.emptyList(), filters);
-                    }
-                }
-            }
         }
 
         if (acceptedFilters.isEmpty() && remainingFilters.isEmpty()) {
@@ -592,6 +572,13 @@ public class FlinkTableSource
             Result recordBatchResult = pushdownRecordBatchFilter(remainingFilters);
             acceptedFilters.addAll(recordBatchResult.getAcceptedFilters());
         }
+
+        if (lakeSource != null) {
+            // Lake pushdown only contributes extra accepted filters; see
+            // pushdownLakeFilters(...) for why remainingFilters must stay unchanged.
+            pushdownLakeFilters(filters, acceptedFilters);
+        }
+
         // FLINK-38635 We cannot determine whether this source will ultimately be used as a
         // scan source or a lookup source. If used as a lookup source, the accepted filters
         // (partition filters, record batch filters) are not enforced in the lookup path.
@@ -639,6 +626,36 @@ public class FlinkTableSource
             this.logRecordBatchFilter = null;
         }
         return Result.of(acceptedFilters, remainingFilters);
+    }
+
+    private void pushdownLakeFilters(
+            List<ResolvedExpression> filters, List<ResolvedExpression> acceptedFilters) {
+        List<Predicate> lakePredicates = new ArrayList<>();
+        List<ResolvedExpression> convertedFilters = new ArrayList<>();
+        for (ResolvedExpression filter : filters) {
+            Optional<Predicate> predicateOptional =
+                    convertToFlussPredicate(tableOutputType, filter);
+            if (predicateOptional.isPresent()) {
+                lakePredicates.add(predicateOptional.get());
+                convertedFilters.add(filter);
+            }
+        }
+
+        if (lakePredicates.isEmpty()) {
+            return;
+        }
+
+        LakeSource.FilterPushDownResult filterPushDownResult =
+                checkNotNull(lakeSource).withFilters(lakePredicates);
+        Set<Predicate> acceptedLakePredicates =
+                Collections.newSetFromMap(new IdentityHashMap<Predicate, Boolean>());
+        acceptedLakePredicates.addAll(filterPushDownResult.acceptedPredicates());
+        for (int i = 0; i < lakePredicates.size(); i++) {
+            if (acceptedLakePredicates.contains(lakePredicates.get(i))
+                    && !acceptedFilters.contains(convertedFilters.get(i))) {
+                acceptedFilters.add(convertedFilters.get(i));
+            }
+        }
     }
 
     /**
