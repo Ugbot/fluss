@@ -70,6 +70,15 @@ public final class KafkaGroupRegistry {
     }
 
     /**
+     * Forget all in-memory state for {@code groupId} (coordinator membership, generation, pending
+     * assignments). Callers must have already verified the group has no live members; used by
+     * {@code DELETE_GROUPS} so that a subsequent rejoin starts at generation 0.
+     */
+    public void remove(String groupId) {
+        groups.remove(groupId);
+    }
+
+    /**
      * Reap expired members across every group. Returns the total number of members removed so
      * callers (tests, logging) can observe progress.
      */

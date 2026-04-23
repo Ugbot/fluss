@@ -21,6 +21,10 @@ import org.apache.fluss.annotation.Internal;
 import org.apache.fluss.cluster.ServerNode;
 import org.apache.fluss.kafka.KafkaServerContext;
 
+import org.apache.kafka.common.message.DeleteGroupsRequestData;
+import org.apache.kafka.common.message.DeleteGroupsResponseData;
+import org.apache.kafka.common.message.DeleteGroupsResponseData.DeletableGroupResult;
+import org.apache.kafka.common.message.DeleteGroupsResponseData.DeletableGroupResultCollection;
 import org.apache.kafka.common.message.DescribeGroupsRequestData;
 import org.apache.kafka.common.message.DescribeGroupsResponseData;
 import org.apache.kafka.common.message.DescribeGroupsResponseData.DescribedGroup;
@@ -46,6 +50,14 @@ import org.apache.kafka.common.message.OffsetCommitRequestData.OffsetCommitReque
 import org.apache.kafka.common.message.OffsetCommitResponseData;
 import org.apache.kafka.common.message.OffsetCommitResponseData.OffsetCommitResponsePartition;
 import org.apache.kafka.common.message.OffsetCommitResponseData.OffsetCommitResponseTopic;
+import org.apache.kafka.common.message.OffsetDeleteRequestData;
+import org.apache.kafka.common.message.OffsetDeleteRequestData.OffsetDeleteRequestPartition;
+import org.apache.kafka.common.message.OffsetDeleteRequestData.OffsetDeleteRequestTopic;
+import org.apache.kafka.common.message.OffsetDeleteResponseData;
+import org.apache.kafka.common.message.OffsetDeleteResponseData.OffsetDeleteResponsePartition;
+import org.apache.kafka.common.message.OffsetDeleteResponseData.OffsetDeleteResponsePartitionCollection;
+import org.apache.kafka.common.message.OffsetDeleteResponseData.OffsetDeleteResponseTopic;
+import org.apache.kafka.common.message.OffsetDeleteResponseData.OffsetDeleteResponseTopicCollection;
 import org.apache.kafka.common.message.OffsetFetchRequestData;
 import org.apache.kafka.common.message.OffsetFetchRequestData.OffsetFetchRequestGroup;
 import org.apache.kafka.common.message.OffsetFetchRequestData.OffsetFetchRequestTopic;
@@ -384,6 +396,119 @@ public final class KafkaGroupTranscoder {
             }
             response.groups().add(dg);
         }
+        return response;
+    }
+
+    // --------------------------- DeleteGroups ------------------------------
+
+    /**
+     * Delete consumer groups: drop in-memory coordinator state and erase all committed offsets for
+     * each requested groupId. A group that still has live members is refused with {@code
+     * NON_EMPTY_GROUP}; an unknown group (no members and no committed offsets) is refused with
+     * {@code GROUP_ID_NOT_FOUND}. The {@link KafkaGroupRegistry.GroupState} for a deleted group is
+     * evicted so that a subsequent rejoin starts at generation 0.
+     */
+    public DeleteGroupsResponseData deleteGroups(DeleteGroupsRequestData request) {
+        DeleteGroupsResponseData response = new DeleteGroupsResponseData();
+        response.setThrottleTimeMs(0);
+        DeletableGroupResultCollection results = new DeletableGroupResultCollection();
+
+        List<String> groupNames =
+                request.groupsNames() == null ? Collections.emptyList() : request.groupsNames();
+        for (String groupId : groupNames) {
+            DeletableGroupResult result = new DeletableGroupResult().setGroupId(groupId);
+
+            KafkaGroupRegistry.GroupState state = registry.get(groupId);
+            if (state != null && state.memberCount() > 0) {
+                result.setErrorCode(Errors.NON_EMPTY_GROUP.code());
+                results.add(result);
+                continue;
+            }
+
+            boolean hadOffsets;
+            try {
+                hadOffsets = offsets.groupExists(groupId);
+            } catch (Exception e) {
+                result.setErrorCode(org.apache.fluss.kafka.KafkaErrors.toKafka(e).code());
+                results.add(result);
+                continue;
+            }
+            if (state == null && !hadOffsets) {
+                result.setErrorCode(Errors.GROUP_ID_NOT_FOUND.code());
+                results.add(result);
+                continue;
+            }
+
+            try {
+                offsets.deleteGroup(groupId);
+            } catch (Exception e) {
+                result.setErrorCode(org.apache.fluss.kafka.KafkaErrors.toKafka(e).code());
+                results.add(result);
+                continue;
+            }
+            // Evict in-memory coordinator state so generation resets on rejoin.
+            registry.remove(groupId);
+            result.setErrorCode(Errors.NONE.code());
+            results.add(result);
+        }
+        response.setResults(results);
+        return response;
+    }
+
+    // --------------------------- OffsetDelete ------------------------------
+
+    /**
+     * Delete committed offsets for the listed (topic, partition) pairs under a group. Per-partition
+     * response codes mirror Kafka: {@code NONE} on success, a translated store error otherwise. If
+     * the group has live members, the whole request is refused at the top level with {@code
+     * NON_EMPTY_GROUP}; unknown groups return {@code GROUP_ID_NOT_FOUND}.
+     */
+    public OffsetDeleteResponseData offsetDelete(OffsetDeleteRequestData request) {
+        OffsetDeleteResponseData response = new OffsetDeleteResponseData();
+        response.setThrottleTimeMs(0);
+
+        String groupId = request.groupId();
+        KafkaGroupRegistry.GroupState state = registry.get(groupId);
+        if (state != null && state.memberCount() > 0) {
+            return response.setErrorCode(Errors.NON_EMPTY_GROUP.code());
+        }
+
+        boolean groupKnown;
+        try {
+            groupKnown = state != null || offsets.groupExists(groupId);
+        } catch (Exception e) {
+            return response.setErrorCode(org.apache.fluss.kafka.KafkaErrors.toKafka(e).code());
+        }
+        if (!groupKnown) {
+            return response.setErrorCode(Errors.GROUP_ID_NOT_FOUND.code());
+        }
+
+        response.setErrorCode(Errors.NONE.code());
+        OffsetDeleteResponseTopicCollection topicsResp = new OffsetDeleteResponseTopicCollection();
+        OffsetDeleteRequestData.OffsetDeleteRequestTopicCollection topics = request.topics();
+        if (topics != null) {
+            for (OffsetDeleteRequestTopic topic : topics) {
+                OffsetDeleteResponseTopic topicResp =
+                        new OffsetDeleteResponseTopic().setName(topic.name());
+                OffsetDeleteResponsePartitionCollection partsResp =
+                        new OffsetDeleteResponsePartitionCollection();
+                for (OffsetDeleteRequestPartition p : topic.partitions()) {
+                    OffsetDeleteResponsePartition partResp =
+                            new OffsetDeleteResponsePartition()
+                                    .setPartitionIndex(p.partitionIndex());
+                    try {
+                        offsets.delete(groupId, topic.name(), p.partitionIndex());
+                        partResp.setErrorCode(Errors.NONE.code());
+                    } catch (Exception e) {
+                        partResp.setErrorCode(org.apache.fluss.kafka.KafkaErrors.toKafka(e).code());
+                    }
+                    partsResp.add(partResp);
+                }
+                topicResp.setPartitions(partsResp);
+                topicsResp.add(topicResp);
+            }
+        }
+        response.setTopics(topicsResp);
         return response;
     }
 
