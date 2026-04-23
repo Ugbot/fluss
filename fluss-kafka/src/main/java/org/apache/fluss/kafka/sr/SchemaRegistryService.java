@@ -20,7 +20,9 @@ package org.apache.fluss.kafka.sr;
 import org.apache.fluss.annotation.Internal;
 import org.apache.fluss.catalog.CatalogException;
 import org.apache.fluss.catalog.CatalogService;
+import org.apache.fluss.catalog.entities.GrantEntity;
 import org.apache.fluss.catalog.entities.KafkaSubjectBinding;
+import org.apache.fluss.catalog.entities.PrincipalEntity;
 import org.apache.fluss.catalog.entities.SchemaVersionEntity;
 import org.apache.fluss.exception.TableNotExistException;
 import org.apache.fluss.metadata.TablePath;
@@ -66,12 +68,22 @@ public final class SchemaRegistryService {
     private final MetadataManager metadataManager;
     private final CatalogService catalog;
     private final String kafkaDatabase;
+    private final boolean rbacEnforced;
 
     public SchemaRegistryService(
             MetadataManager metadataManager, CatalogService catalog, String kafkaDatabase) {
+        this(metadataManager, catalog, kafkaDatabase, false);
+    }
+
+    public SchemaRegistryService(
+            MetadataManager metadataManager,
+            CatalogService catalog,
+            String kafkaDatabase,
+            boolean rbacEnforced) {
         this.metadataManager = metadataManager;
         this.catalog = catalog;
         this.kafkaDatabase = kafkaDatabase;
+        this.rbacEnforced = rbacEnforced;
     }
 
     /** Global default compatibility — hardcoded to BACKWARD per design 0002. */
@@ -79,7 +91,49 @@ public final class SchemaRegistryService {
         return "BACKWARD";
     }
 
+    /**
+     * Resolve the caller principal. Until authentication (SASL, HTTP forwarded-headers) lands every
+     * request is {@link PrincipalEntity#ANONYMOUS}. A single point to rewire once auth arrives —
+     * none of the call sites need to change.
+     */
+    private String callerPrincipal() {
+        return PrincipalEntity.ANONYMOUS;
+    }
+
+    /**
+     * Verify the caller holds {@code privilege} on the catalog wildcard. No-op when {@code
+     * kafka.schema-registry.rbac.enforced=false} (the default); flipping it on without principal
+     * extraction locks the SR down until an operator creates matching grants.
+     */
+    private void authorize(String privilege) {
+        if (!rbacEnforced) {
+            return;
+        }
+        try {
+            boolean allowed =
+                    catalog.checkPrivilege(
+                            callerPrincipal(),
+                            GrantEntity.KIND_CATALOG,
+                            GrantEntity.CATALOG_WILDCARD,
+                            privilege);
+            if (!allowed) {
+                throw new SchemaRegistryException(
+                        SchemaRegistryException.Kind.UNSUPPORTED,
+                        "principal '"
+                                + callerPrincipal()
+                                + "' is not granted "
+                                + privilege
+                                + " on the catalog");
+            }
+        } catch (SchemaRegistryException sre) {
+            throw sre;
+        } catch (Exception e) {
+            throw translate(e);
+        }
+    }
+
     public int register(String subject, String avroSchema) {
+        authorize(GrantEntity.PRIVILEGE_WRITE);
         if (avroSchema == null || avroSchema.isEmpty()) {
             throw new SchemaRegistryException(
                     SchemaRegistryException.Kind.INVALID_INPUT, "schema body is required");
@@ -115,6 +169,7 @@ public final class SchemaRegistryService {
     }
 
     public Optional<RegisteredSchema> schemaById(int id) {
+        authorize(GrantEntity.PRIVILEGE_READ);
         try {
             return catalog.getSchemaById(id)
                     .map(
@@ -131,6 +186,7 @@ public final class SchemaRegistryService {
     }
 
     public List<String> listSubjects() {
+        authorize(GrantEntity.PRIVILEGE_READ);
         try {
             List<String> out = new ArrayList<>();
             for (KafkaSubjectBinding b : catalog.listKafkaSubjects()) {
@@ -144,6 +200,7 @@ public final class SchemaRegistryService {
     }
 
     public Optional<RegisteredSchema> latestForSubject(String subject) {
+        authorize(GrantEntity.PRIVILEGE_READ);
         try {
             // PK-lookup chain: binding → table.currentSchemaId → schema. Every hop is a Fluss
             // PK lookup (read-after-write consistent); no scans involved.

@@ -2150,6 +2150,23 @@ public class ConfigOptions {
                                     + "Use 0 to bind to a random free port.");
 
     /**
+     * Whether the Schema Registry enforces catalog RBAC ({@code checkPrivilege}) on every HTTP
+     * request. Off by default — once enabled, the caller must have {@code WRITE} on the catalog
+     * wildcard to register schemas and {@code READ} to fetch them. Stays off until SASL / a real
+     * principal-extraction mechanism lands; under an anonymous-only listener, turning it on locks
+     * out all callers until an operator creates matching grants.
+     */
+    public static final ConfigOption<Boolean> KAFKA_SCHEMA_REGISTRY_RBAC_ENFORCED =
+            key("kafka.schema-registry.rbac.enforced")
+                    .booleanType()
+                    .defaultValue(false)
+                    .withDescription(
+                            "Whether the Schema Registry enforces catalog RBAC (checkPrivilege) on "
+                                    + "every HTTP request. Requires a principal-extraction path "
+                                    + "(SASL, forwarded-header, etc.); until then the SR treats "
+                                    + "every request as ANONYMOUS.");
+
+    /**
      * Compaction style for Fluss's kv, which is same to rocksdb's, but help use avoid including
      * rocksdb dependency when only need include this common module.
      */

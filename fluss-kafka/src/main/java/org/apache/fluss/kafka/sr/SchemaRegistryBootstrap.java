@@ -74,8 +74,9 @@ public final class SchemaRegistryBootstrap implements CoordinatorLeaderBootstrap
         String host = conf.get(ConfigOptions.KAFKA_SCHEMA_REGISTRY_HOST);
         int port = conf.get(ConfigOptions.KAFKA_SCHEMA_REGISTRY_PORT);
         String kafkaDatabase = conf.get(ConfigOptions.KAFKA_DATABASE);
+        boolean rbacEnforced = conf.getBoolean(ConfigOptions.KAFKA_SCHEMA_REGISTRY_RBAC_ENFORCED);
         SchemaRegistryService service =
-                new SchemaRegistryService(metadataManager, catalog, kafkaDatabase);
+                new SchemaRegistryService(metadataManager, catalog, kafkaDatabase, rbacEnforced);
         SchemaRegistryHttpServer server = new SchemaRegistryHttpServer(host, port, service);
         server.start();
         return server;
