@@ -19,8 +19,10 @@ package org.apache.fluss.catalog;
 
 import org.apache.fluss.annotation.PublicEvolving;
 import org.apache.fluss.catalog.entities.CatalogTableEntity;
+import org.apache.fluss.catalog.entities.GrantEntity;
 import org.apache.fluss.catalog.entities.KafkaSubjectBinding;
 import org.apache.fluss.catalog.entities.NamespaceEntity;
+import org.apache.fluss.catalog.entities.PrincipalEntity;
 import org.apache.fluss.catalog.entities.SchemaVersionEntity;
 
 import javax.annotation.Nullable;
@@ -121,14 +123,51 @@ public interface CatalogService {
 
     List<KafkaSubjectBinding> listKafkaSubjects() throws Exception;
 
-    // --------------------------- RBAC (Phase C.2) --------------------- //
+    // --------------------------- Principals --------------------------- //
 
-    /** No-op stubs in Phase C.1; wired in Phase C.2. Signature reserved so callers stabilise. */
-    void grant(String principal, String entityFqn, String privilege) throws Exception;
+    /**
+     * Create a principal record if it doesn't already exist; return the stored entity either way.
+     * Projections call this to lazily materialise the principal they're acting as (typically the
+     * HTTP caller identity or Fluss's {@link org.apache.fluss.security.acl.FlussPrincipal}).
+     */
+    PrincipalEntity ensurePrincipal(String name, String type) throws Exception;
 
-    void revoke(String principal, String entityFqn, String privilege) throws Exception;
+    Optional<PrincipalEntity> getPrincipal(String name) throws Exception;
 
-    List<String> listGrants(String principal) throws Exception;
+    List<PrincipalEntity> listPrincipals() throws Exception;
 
-    boolean checkPrivilege(String principal, String entityFqn, String privilege) throws Exception;
+    // --------------------------- Grants ------------------------------- //
+
+    /**
+     * Grant {@code privilege} to {@code principalName} on the given entity. {@code entityKind} is
+     * one of {@link GrantEntity#KIND_CATALOG} / {@code NAMESPACE} / {@code TABLE} / {@code SCHEMA};
+     * for {@code CATALOG}, {@code entityId} must be {@link GrantEntity#CATALOG_WILDCARD}.
+     * Idempotent on {@code (principal, entityKind, entityId, privilege)}.
+     */
+    GrantEntity grant(
+            String principalName,
+            String entityKind,
+            String entityId,
+            String privilege,
+            String grantedBy)
+            throws Exception;
+
+    /** Revoke a previously-granted privilege. No-op if the grant is missing. */
+    void revoke(String principalName, String entityKind, String entityId, String privilege)
+            throws Exception;
+
+    /** Return every grant currently held by {@code principalName}. */
+    List<GrantEntity> listGrantsForPrincipal(String principalName) throws Exception;
+
+    /**
+     * Authorisation check: does {@code principalName} hold {@code privilege} on {@code (entityKind,
+     * entityId)} — directly or via a {@code CATALOG} wildcard grant?
+     *
+     * <p>Convenience for SR and other projections: namespace/table id resolution lives in the
+     * projection; this entry-point takes the resolved kind+id only. Principals that don't exist in
+     * {@code _principals} yield {@code false}.
+     */
+    boolean checkPrivilege(
+            String principalName, String entityKind, String entityId, String privilege)
+            throws Exception;
 }

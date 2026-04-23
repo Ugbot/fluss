@@ -18,8 +18,10 @@
 package org.apache.fluss.catalog;
 
 import org.apache.fluss.catalog.entities.CatalogTableEntity;
+import org.apache.fluss.catalog.entities.GrantEntity;
 import org.apache.fluss.catalog.entities.KafkaSubjectBinding;
 import org.apache.fluss.catalog.entities.NamespaceEntity;
+import org.apache.fluss.catalog.entities.PrincipalEntity;
 import org.apache.fluss.catalog.entities.SchemaVersionEntity;
 import org.apache.fluss.client.Connection;
 import org.apache.fluss.client.ConnectionFactory;
@@ -178,14 +180,110 @@ class FlussCatalogServiceITCase {
     }
 
     @Test
-    void rbacStubsPhaseC1() throws Exception {
+    void rbacGrantAndCheck() throws Exception {
         String ns = "ns" + suffix();
-        catalog.createNamespace(null, ns, null);
-        // Phase C.1: allow-all + throw on mutate.
-        assertThat(catalog.checkPrivilege("anyone", ns + ".anything", "SELECT")).isTrue();
-        assertThat(catalog.listGrants("anyone")).isEmpty();
-        assertThatThrownBy(() -> catalog.grant("alice", ns, "SELECT"))
-                .isInstanceOf(CatalogException.class);
+        NamespaceEntity nsEntity = catalog.createNamespace(null, ns, null);
+
+        // Unknown principal → no privilege.
+        assertThat(
+                        catalog.checkPrivilege(
+                                "alice",
+                                GrantEntity.KIND_NAMESPACE,
+                                nsEntity.namespaceId(),
+                                GrantEntity.PRIVILEGE_WRITE))
+                .isFalse();
+
+        // Grant WRITE on the specific namespace — idempotent.
+        GrantEntity first =
+                catalog.grant(
+                        "alice",
+                        GrantEntity.KIND_NAMESPACE,
+                        nsEntity.namespaceId(),
+                        GrantEntity.PRIVILEGE_WRITE,
+                        "admin");
+        GrantEntity second =
+                catalog.grant(
+                        "alice",
+                        GrantEntity.KIND_NAMESPACE,
+                        nsEntity.namespaceId(),
+                        GrantEntity.PRIVILEGE_WRITE,
+                        "admin");
+        assertThat(first.grantId()).isEqualTo(second.grantId());
+
+        assertThat(
+                        catalog.checkPrivilege(
+                                "alice",
+                                GrantEntity.KIND_NAMESPACE,
+                                nsEntity.namespaceId(),
+                                GrantEntity.PRIVILEGE_WRITE))
+                .isTrue();
+        // Different privilege — denied.
+        assertThat(
+                        catalog.checkPrivilege(
+                                "alice",
+                                GrantEntity.KIND_NAMESPACE,
+                                nsEntity.namespaceId(),
+                                GrantEntity.PRIVILEGE_DROP))
+                .isFalse();
+
+        // Principal entity materialised.
+        Optional<PrincipalEntity> alice = catalog.getPrincipal("alice");
+        assertThat(alice).isPresent();
+        assertThat(alice.get().name()).isEqualTo("alice");
+
+        // Revoke and re-check.
+        catalog.revoke(
+                "alice",
+                GrantEntity.KIND_NAMESPACE,
+                nsEntity.namespaceId(),
+                GrantEntity.PRIVILEGE_WRITE);
+        assertThat(
+                        catalog.checkPrivilege(
+                                "alice",
+                                GrantEntity.KIND_NAMESPACE,
+                                nsEntity.namespaceId(),
+                                GrantEntity.PRIVILEGE_WRITE))
+                .isFalse();
+    }
+
+    @Test
+    void rbacCatalogWildcardGrant() throws Exception {
+        String ns = "ns" + suffix();
+        NamespaceEntity nsEntity = catalog.createNamespace(null, ns, null);
+
+        // Catalog-wide READ for bob.
+        catalog.grant(
+                "bob",
+                GrantEntity.KIND_CATALOG,
+                GrantEntity.CATALOG_WILDCARD,
+                GrantEntity.PRIVILEGE_READ,
+                "admin");
+        // Applies to any specific entity.
+        assertThat(
+                        catalog.checkPrivilege(
+                                "bob",
+                                GrantEntity.KIND_NAMESPACE,
+                                nsEntity.namespaceId(),
+                                GrantEntity.PRIVILEGE_READ))
+                .isTrue();
+        assertThat(
+                        catalog.checkPrivilege(
+                                "bob",
+                                GrantEntity.KIND_TABLE,
+                                "some-random-table-uuid",
+                                GrantEntity.PRIVILEGE_READ))
+                .isTrue();
+        // Still scoped to the READ privilege — WRITE is not granted.
+        assertThat(
+                        catalog.checkPrivilege(
+                                "bob",
+                                GrantEntity.KIND_NAMESPACE,
+                                nsEntity.namespaceId(),
+                                GrantEntity.PRIVILEGE_WRITE))
+                .isFalse();
+
+        assertThat(catalog.listGrantsForPrincipal("bob")).hasSize(1);
+        assertThat(catalog.listGrantsForPrincipal("nobody")).isEmpty();
     }
 
     private static String suffix() {

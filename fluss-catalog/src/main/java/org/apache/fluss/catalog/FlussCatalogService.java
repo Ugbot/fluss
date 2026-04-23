@@ -19,8 +19,10 @@ package org.apache.fluss.catalog;
 
 import org.apache.fluss.annotation.Internal;
 import org.apache.fluss.catalog.entities.CatalogTableEntity;
+import org.apache.fluss.catalog.entities.GrantEntity;
 import org.apache.fluss.catalog.entities.KafkaSubjectBinding;
 import org.apache.fluss.catalog.entities.NamespaceEntity;
+import org.apache.fluss.catalog.entities.PrincipalEntity;
 import org.apache.fluss.catalog.entities.SchemaVersionEntity;
 import org.apache.fluss.client.Connection;
 import org.apache.fluss.client.admin.Admin;
@@ -456,28 +458,181 @@ public final class FlussCatalogService implements CatalogService, AutoCloseable 
     }
 
     // =================================================================
-    // RBAC (Phase C.2 — no-op stubs)
+    // Principals
     // =================================================================
 
     @Override
-    public void grant(String principal, String entityFqn, String privilege) {
-        throw unsupported("grant");
+    public PrincipalEntity ensurePrincipal(String name, String type) throws Exception {
+        requireNonEmpty("name", name);
+        Optional<PrincipalEntity> existing = getPrincipal(name);
+        if (existing.isPresent()) {
+            return existing.get();
+        }
+        PrincipalEntity entity =
+                new PrincipalEntity(
+                        UUID.randomUUID().toString(),
+                        name,
+                        type == null ? PrincipalEntity.TYPE_USER : type,
+                        System.currentTimeMillis());
+        GenericRow row = new GenericRow(4);
+        row.setField(0, BinaryString.fromString(entity.principalId()));
+        row.setField(1, BinaryString.fromString(entity.name()));
+        row.setField(2, BinaryString.fromString(entity.type()));
+        row.setField(3, TimestampLtz.fromEpochMillis(entity.createdAtMillis()));
+        upsert(Handle.PRINCIPALS, row);
+        return entity;
     }
 
     @Override
-    public void revoke(String principal, String entityFqn, String privilege) {
-        throw unsupported("revoke");
+    public Optional<PrincipalEntity> getPrincipal(String name) throws Exception {
+        for (PrincipalEntity p : scanAllPrincipals()) {
+            if (p.name().equals(name)) {
+                return Optional.of(p);
+            }
+        }
+        return Optional.empty();
     }
 
     @Override
-    public List<String> listGrants(String principal) {
-        return Collections.emptyList();
+    public List<PrincipalEntity> listPrincipals() throws Exception {
+        return scanAllPrincipals();
+    }
+
+    // =================================================================
+    // Grants
+    // =================================================================
+
+    @Override
+    public GrantEntity grant(
+            String principalName,
+            String entityKind,
+            String entityId,
+            String privilege,
+            String grantedBy)
+            throws Exception {
+        requireNonEmpty("principalName", principalName);
+        requireNonEmpty("entityKind", entityKind);
+        requireNonEmpty("entityId", entityId);
+        requireNonEmpty("privilege", privilege);
+        PrincipalEntity principal = ensurePrincipal(principalName, PrincipalEntity.TYPE_USER);
+        // Idempotent on (principal, entityKind, entityId, privilege).
+        for (GrantEntity g : scanAllGrants()) {
+            if (g.principalId().equals(principal.principalId())
+                    && g.entityKind().equals(entityKind)
+                    && g.entityId().equals(entityId)
+                    && g.privilege().equals(privilege)) {
+                return g;
+            }
+        }
+        GrantEntity entity =
+                new GrantEntity(
+                        UUID.randomUUID().toString(),
+                        principal.principalId(),
+                        entityKind,
+                        entityId,
+                        privilege,
+                        grantedBy,
+                        System.currentTimeMillis());
+        GenericRow row = new GenericRow(7);
+        row.setField(0, BinaryString.fromString(entity.grantId()));
+        row.setField(1, BinaryString.fromString(entity.principalId()));
+        row.setField(2, BinaryString.fromString(entity.entityKind()));
+        row.setField(3, BinaryString.fromString(entity.entityId()));
+        row.setField(4, BinaryString.fromString(entity.privilege()));
+        row.setField(5, grantedBy == null ? null : BinaryString.fromString(grantedBy));
+        row.setField(6, TimestampLtz.fromEpochMillis(entity.grantedAtMillis()));
+        upsert(Handle.GRANTS, row);
+        return entity;
     }
 
     @Override
-    public boolean checkPrivilege(String principal, String entityFqn, String privilege) {
-        // Allow-all until Phase C.2 wires enforcement.
-        return true;
+    public void revoke(String principalName, String entityKind, String entityId, String privilege)
+            throws Exception {
+        Optional<PrincipalEntity> principal = getPrincipal(principalName);
+        if (!principal.isPresent()) {
+            return;
+        }
+        for (GrantEntity g : scanAllGrants()) {
+            if (g.principalId().equals(principal.get().principalId())
+                    && g.entityKind().equals(entityKind)
+                    && g.entityId().equals(entityId)
+                    && g.privilege().equals(privilege)) {
+                delete(Handle.GRANTS, deletePlaceholder(Handle.GRANTS, g.grantId()));
+                return;
+            }
+        }
+    }
+
+    @Override
+    public List<GrantEntity> listGrantsForPrincipal(String principalName) throws Exception {
+        Optional<PrincipalEntity> principal = getPrincipal(principalName);
+        if (!principal.isPresent()) {
+            return Collections.emptyList();
+        }
+        List<GrantEntity> out = new ArrayList<>();
+        for (GrantEntity g : scanAllGrants()) {
+            if (g.principalId().equals(principal.get().principalId())) {
+                out.add(g);
+            }
+        }
+        return out;
+    }
+
+    @Override
+    public boolean checkPrivilege(
+            String principalName, String entityKind, String entityId, String privilege)
+            throws Exception {
+        Optional<PrincipalEntity> principal = getPrincipal(principalName);
+        if (!principal.isPresent()) {
+            return false;
+        }
+        String pid = principal.get().principalId();
+        for (GrantEntity g : scanAllGrants()) {
+            if (!g.principalId().equals(pid) || !g.privilege().equals(privilege)) {
+                continue;
+            }
+            // Direct match on the specific entity.
+            if (g.entityKind().equals(entityKind) && g.entityId().equals(entityId)) {
+                return true;
+            }
+            // Catalog-wide wildcard.
+            if (GrantEntity.KIND_CATALOG.equals(g.entityKind())
+                    && GrantEntity.CATALOG_WILDCARD.equals(g.entityId())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private List<PrincipalEntity> scanAllPrincipals() throws Exception {
+        List<PrincipalEntity> out = new ArrayList<>();
+        scan(
+                Handle.PRINCIPALS,
+                row ->
+                        out.add(
+                                new PrincipalEntity(
+                                        row.getString(0).toString(),
+                                        row.getString(1).toString(),
+                                        row.getString(2).toString(),
+                                        row.getTimestampLtz(3, 3).toEpochMicros() / 1000)));
+        return out;
+    }
+
+    private List<GrantEntity> scanAllGrants() throws Exception {
+        List<GrantEntity> out = new ArrayList<>();
+        scan(
+                Handle.GRANTS,
+                row ->
+                        out.add(
+                                new GrantEntity(
+                                        row.getString(0).toString(),
+                                        row.getString(1).toString(),
+                                        row.getString(2).toString(),
+                                        row.getString(3).toString(),
+                                        row.getString(4).toString(),
+                                        row.isNullAt(5) ? null : row.getString(5).toString(),
+                                        row.getTimestampLtz(6, 3).toEpochMicros() / 1000)));
+        return out;
     }
 
     // =================================================================
@@ -967,11 +1122,6 @@ public final class FlussCatalogService implements CatalogService, AutoCloseable 
         if (value == null || value.isEmpty()) {
             throw new CatalogException(CatalogException.Kind.INVALID_INPUT, field + " is required");
         }
-    }
-
-    private static CatalogException unsupported(String operation) {
-        return new CatalogException(
-                CatalogException.Kind.UNSUPPORTED, operation + " is not yet wired (Phase C.2)");
     }
 
     private static CatalogException internal(String operation, Throwable t) {
