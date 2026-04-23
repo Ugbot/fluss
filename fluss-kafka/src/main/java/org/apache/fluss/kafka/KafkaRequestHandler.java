@@ -20,6 +20,8 @@ package org.apache.fluss.kafka;
 import org.apache.fluss.client.Connection;
 import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.kafka.admin.KafkaAdminTranscoder;
+import org.apache.fluss.kafka.admin.KafkaConfigsTranscoder;
+import org.apache.fluss.kafka.admin.KafkaDeleteRecordsTranscoder;
 import org.apache.fluss.kafka.catalog.CustomPropertiesTopicsCatalog;
 import org.apache.fluss.kafka.catalog.KafkaTopicsCatalog;
 import org.apache.fluss.kafka.fetch.KafkaFetchTranscoder;
@@ -37,19 +39,25 @@ import org.apache.fluss.rpc.gateway.TabletServerGateway;
 import org.apache.fluss.rpc.netty.server.RequestHandler;
 import org.apache.fluss.rpc.protocol.RequestType;
 
+import org.apache.kafka.common.message.AlterConfigsResponseData;
 import org.apache.kafka.common.message.ApiVersionsResponseData;
 import org.apache.kafka.common.message.CreateTopicsResponseData;
+import org.apache.kafka.common.message.DeleteGroupsResponseData;
+import org.apache.kafka.common.message.DeleteRecordsResponseData;
 import org.apache.kafka.common.message.DeleteTopicsResponseData;
 import org.apache.kafka.common.message.DescribeClusterResponseData;
+import org.apache.kafka.common.message.DescribeConfigsResponseData;
 import org.apache.kafka.common.message.DescribeGroupsResponseData;
 import org.apache.kafka.common.message.FindCoordinatorResponseData;
 import org.apache.kafka.common.message.HeartbeatResponseData;
+import org.apache.kafka.common.message.IncrementalAlterConfigsResponseData;
 import org.apache.kafka.common.message.InitProducerIdResponseData;
 import org.apache.kafka.common.message.LeaveGroupResponseData;
 import org.apache.kafka.common.message.ListGroupsResponseData;
 import org.apache.kafka.common.message.ListOffsetsResponseData;
 import org.apache.kafka.common.message.MetadataResponseData;
 import org.apache.kafka.common.message.OffsetCommitResponseData;
+import org.apache.kafka.common.message.OffsetDeleteResponseData;
 import org.apache.kafka.common.message.OffsetFetchResponseData;
 import org.apache.kafka.common.message.ProduceResponseData;
 import org.apache.kafka.common.protocol.ApiKeys;
@@ -57,12 +65,20 @@ import org.apache.kafka.common.protocol.Errors;
 import org.apache.kafka.common.record.RecordBatch;
 import org.apache.kafka.common.requests.AbstractRequest;
 import org.apache.kafka.common.requests.AbstractResponse;
+import org.apache.kafka.common.requests.AlterConfigsRequest;
+import org.apache.kafka.common.requests.AlterConfigsResponse;
 import org.apache.kafka.common.requests.ApiVersionsResponse;
 import org.apache.kafka.common.requests.CreateTopicsRequest;
 import org.apache.kafka.common.requests.CreateTopicsResponse;
+import org.apache.kafka.common.requests.DeleteGroupsRequest;
+import org.apache.kafka.common.requests.DeleteGroupsResponse;
+import org.apache.kafka.common.requests.DeleteRecordsRequest;
+import org.apache.kafka.common.requests.DeleteRecordsResponse;
 import org.apache.kafka.common.requests.DeleteTopicsRequest;
 import org.apache.kafka.common.requests.DeleteTopicsResponse;
 import org.apache.kafka.common.requests.DescribeClusterResponse;
+import org.apache.kafka.common.requests.DescribeConfigsRequest;
+import org.apache.kafka.common.requests.DescribeConfigsResponse;
 import org.apache.kafka.common.requests.DescribeGroupsRequest;
 import org.apache.kafka.common.requests.DescribeGroupsResponse;
 import org.apache.kafka.common.requests.FetchRequest;
@@ -71,6 +87,8 @@ import org.apache.kafka.common.requests.FindCoordinatorRequest;
 import org.apache.kafka.common.requests.FindCoordinatorResponse;
 import org.apache.kafka.common.requests.HeartbeatRequest;
 import org.apache.kafka.common.requests.HeartbeatResponse;
+import org.apache.kafka.common.requests.IncrementalAlterConfigsRequest;
+import org.apache.kafka.common.requests.IncrementalAlterConfigsResponse;
 import org.apache.kafka.common.requests.InitProducerIdResponse;
 import org.apache.kafka.common.requests.JoinGroupRequest;
 import org.apache.kafka.common.requests.JoinGroupResponse;
@@ -84,6 +102,8 @@ import org.apache.kafka.common.requests.MetadataRequest;
 import org.apache.kafka.common.requests.MetadataResponse;
 import org.apache.kafka.common.requests.OffsetCommitRequest;
 import org.apache.kafka.common.requests.OffsetCommitResponse;
+import org.apache.kafka.common.requests.OffsetDeleteRequest;
+import org.apache.kafka.common.requests.OffsetDeleteResponse;
 import org.apache.kafka.common.requests.OffsetFetchRequest;
 import org.apache.kafka.common.requests.OffsetFetchResponse;
 import org.apache.kafka.common.requests.ProduceRequest;
@@ -133,7 +153,13 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
                     ApiKeys.JOIN_GROUP,
                     ApiKeys.SYNC_GROUP,
                     ApiKeys.HEARTBEAT,
-                    ApiKeys.LEAVE_GROUP);
+                    ApiKeys.LEAVE_GROUP,
+                    ApiKeys.DELETE_GROUPS,
+                    ApiKeys.OFFSET_DELETE,
+                    ApiKeys.DELETE_RECORDS,
+                    ApiKeys.DESCRIBE_CONFIGS,
+                    ApiKeys.ALTER_CONFIGS,
+                    ApiKeys.INCREMENTAL_ALTER_CONFIGS);
 
     private static final java.util.concurrent.atomic.AtomicLong STUB_PRODUCER_ID =
             new java.util.concurrent.atomic.AtomicLong(1L);
@@ -217,6 +243,7 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
                     ApiKeys.TXN_OFFSET_COMMIT,
                     ApiKeys.DESCRIBE_CONFIGS,
                     ApiKeys.ALTER_CONFIGS,
+                    ApiKeys.INCREMENTAL_ALTER_CONFIGS,
                     ApiKeys.SASL_AUTHENTICATE,
                     ApiKeys.CREATE_PARTITIONS,
                     ApiKeys.DELETE_GROUPS,
@@ -379,6 +406,24 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
                 break;
             case LEAVE_GROUP:
                 handleLeaveGroupRequest(request);
+                break;
+            case DELETE_GROUPS:
+                handleDeleteGroupsRequest(request);
+                break;
+            case OFFSET_DELETE:
+                handleOffsetDeleteRequest(request);
+                break;
+            case DELETE_RECORDS:
+                handleDeleteRecordsRequest(request);
+                break;
+            case DESCRIBE_CONFIGS:
+                handleDescribeConfigsRequest(request);
+                break;
+            case ALTER_CONFIGS:
+                handleAlterConfigsRequest(request);
+                break;
+            case INCREMENTAL_ALTER_CONFIGS:
+                handleIncrementalAlterConfigsRequest(request);
                 break;
             default:
                 handleUnsupportedRequest(request);
@@ -709,6 +754,46 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
         }
     }
 
+    void handleDeleteGroupsRequest(KafkaRequest request) {
+        if (!context.hasServerState()) {
+            request.fail(
+                    Errors.BROKER_NOT_AVAILABLE.exception(
+                            "Kafka DeleteGroups requires server state."));
+            return;
+        }
+        try {
+            DeleteGroupsRequest req = request.request();
+            KafkaGroupTranscoder transcoder =
+                    new KafkaGroupTranscoder(
+                            context, groupOffsets, groupRegistry, request.listenerName());
+            DeleteGroupsResponseData data = transcoder.deleteGroups(req.data());
+            request.complete(new DeleteGroupsResponse(data));
+        } catch (Throwable t) {
+            LOG.error("DeleteGroups handler threw", t);
+            request.fail(t);
+        }
+    }
+
+    void handleOffsetDeleteRequest(KafkaRequest request) {
+        if (!context.hasServerState()) {
+            request.fail(
+                    Errors.BROKER_NOT_AVAILABLE.exception(
+                            "Kafka OffsetDelete requires server state."));
+            return;
+        }
+        try {
+            OffsetDeleteRequest req = request.request();
+            KafkaGroupTranscoder transcoder =
+                    new KafkaGroupTranscoder(
+                            context, groupOffsets, groupRegistry, request.listenerName());
+            OffsetDeleteResponseData data = transcoder.offsetDelete(req.data());
+            request.complete(new OffsetDeleteResponse(data));
+        } catch (Throwable t) {
+            LOG.error("OffsetDelete handler threw", t);
+            request.fail(t);
+        }
+    }
+
     void handleDescribeGroupsRequest(KafkaRequest request) {
         if (!context.hasServerState()) {
             request.fail(
@@ -746,6 +831,88 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
             LOG.error("ListOffsets handler threw", t);
             request.fail(t);
         }
+    }
+
+    void handleDeleteRecordsRequest(KafkaRequest request) {
+        if (!context.hasServerState() || !context.hasReplicaManager()) {
+            request.fail(
+                    Errors.BROKER_NOT_AVAILABLE.exception(
+                            "Kafka DeleteRecords requires a tablet server; the plugin is not wired."));
+            return;
+        }
+        try {
+            DeleteRecordsRequest req = request.request();
+            KafkaDeleteRecordsTranscoder transcoder =
+                    new KafkaDeleteRecordsTranscoder(newCatalog(), context.replicaManager());
+            DeleteRecordsResponseData data = transcoder.deleteRecords(req.data());
+            request.complete(new DeleteRecordsResponse(data));
+        } catch (Throwable t) {
+            LOG.error("DeleteRecords handler threw", t);
+            request.fail(t);
+        }
+    }
+
+    void handleDescribeConfigsRequest(KafkaRequest request) {
+        if (!context.hasServerState()) {
+            request.fail(
+                    Errors.BROKER_NOT_AVAILABLE.exception(
+                            "Kafka DescribeConfigs requires a tablet server; the plugin is not"
+                                    + " wired."));
+            return;
+        }
+        try {
+            DescribeConfigsRequest req = request.request();
+            KafkaConfigsTranscoder transcoder = newConfigsTranscoder();
+            DescribeConfigsResponseData data = transcoder.describeConfigs(req.data());
+            request.complete(new DescribeConfigsResponse(data));
+        } catch (Throwable t) {
+            LOG.error("DescribeConfigs handler threw", t);
+            request.fail(t);
+        }
+    }
+
+    void handleAlterConfigsRequest(KafkaRequest request) {
+        if (!context.hasServerState()) {
+            request.fail(
+                    Errors.BROKER_NOT_AVAILABLE.exception(
+                            "Kafka AlterConfigs requires a tablet server; the plugin is not"
+                                    + " wired."));
+            return;
+        }
+        try {
+            AlterConfigsRequest req = request.request();
+            KafkaConfigsTranscoder transcoder = newConfigsTranscoder();
+            AlterConfigsResponseData data = transcoder.alterConfigs(req.data());
+            request.complete(new AlterConfigsResponse(data));
+        } catch (Throwable t) {
+            LOG.error("AlterConfigs handler threw", t);
+            request.fail(t);
+        }
+    }
+
+    void handleIncrementalAlterConfigsRequest(KafkaRequest request) {
+        if (!context.hasServerState()) {
+            request.fail(
+                    Errors.BROKER_NOT_AVAILABLE.exception(
+                            "Kafka IncrementalAlterConfigs requires a tablet server; the plugin"
+                                    + " is not wired."));
+            return;
+        }
+        try {
+            IncrementalAlterConfigsRequest req = request.request();
+            KafkaConfigsTranscoder transcoder = newConfigsTranscoder();
+            IncrementalAlterConfigsResponseData data =
+                    transcoder.incrementalAlterConfigs(req.data());
+            request.complete(new IncrementalAlterConfigsResponse(data));
+        } catch (Throwable t) {
+            LOG.error("IncrementalAlterConfigs handler threw", t);
+            request.fail(t);
+        }
+    }
+
+    private KafkaConfigsTranscoder newConfigsTranscoder() {
+        return new KafkaConfigsTranscoder(
+                context.metadataManager(), newCatalog(), context.kafkaDatabase());
     }
 
     void handleFetchRequest(KafkaRequest request) {
