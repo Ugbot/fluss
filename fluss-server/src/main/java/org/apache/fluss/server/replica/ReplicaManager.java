@@ -1999,6 +1999,27 @@ public class ReplicaManager implements ServerReconfigurable {
     }
 
     /**
+     * Advance the log-start offset of the replica for {@code tableBucket} to {@code newStartOffset}
+     * and trim any segments that fall entirely below it. Backs protocol bolt-ons that need Kafka's
+     * {@code DeleteRecords} semantics (trim a partition up to, but not including, an offset).
+     *
+     * <p>Requires local leadership: throws {@link NotLeaderOrFollowerException} when this server is
+     * not the leader. Throws {@link UnknownTableOrBucketException} when the bucket is unknown and
+     * {@link LogOffsetOutOfRangeException} when {@code newStartOffset} is beyond the
+     * high-watermark.
+     *
+     * <p>Marked {@code @PublicEvolving} as part of the Phase-B surface cleanup: this is the stable
+     * entry point bolt-ons should use; the underlying {@link LogTablet} machinery may evolve.
+     *
+     * @return the log-start offset in effect after the call (the low-watermark returned to Kafka
+     *     clients)
+     */
+    @org.apache.fluss.annotation.PublicEvolving
+    public long deleteRecords(TableBucket tableBucket, long newStartOffset) {
+        return getReplicaOrException(tableBucket).maybeIncreaseLogStartOffset(newStartOffset);
+    }
+
+    /**
      * Stable, read-only view of a replica's log metadata — the subset protocol bolt-ons (Kafka's
      * {@code LIST_OFFSETS}, {@code METADATA}) need. Returns {@link java.util.Optional#empty()} when
      * the bucket is not hosted locally.

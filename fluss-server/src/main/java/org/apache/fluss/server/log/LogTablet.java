@@ -618,6 +618,52 @@ public final class LogTablet {
                 highWatermark);
     }
 
+    /**
+     * Advance the local log-start offset to {@code newStartOffset} and drop any full segments that
+     * fall entirely below the new start. This implements Kafka's {@code DeleteRecords} semantics:
+     * the visible log-start offset moves forward (even mid-segment) and storage is reclaimed for
+     * any segment whose next-segment base offset is {@code <= newStartOffset}.
+     *
+     * <p>No-op when {@code newStartOffset} is not strictly greater than the current local log-start
+     * offset. Throws {@link LogOffsetOutOfRangeException} when the requested offset is beyond the
+     * high-watermark, mirroring the Kafka broker contract.
+     *
+     * @param newStartOffset the target log-start offset, bounded above by the high-watermark
+     * @return the log-start offset in effect after the call (the "low-watermark" exposed to
+     *     clients)
+     */
+    public long maybeIncreaseLogStartOffset(long newStartOffset) {
+        synchronized (lock) {
+            long currentStart = localLog.getLocalLogStartOffset();
+            if (newStartOffset <= currentStart) {
+                return logStartOffset();
+            }
+            long highWatermark = getHighWatermark();
+            if (newStartOffset > highWatermark) {
+                throw new LogOffsetOutOfRangeException(
+                        "Cannot advance log-start offset of bucket "
+                                + getTableBucket()
+                                + " to "
+                                + newStartOffset
+                                + " because it is beyond the high-watermark "
+                                + highWatermark);
+            }
+            localLog.maybeIncreaseLocalLogStartOffset(newStartOffset);
+            try {
+                // Drop whole segments whose next-segment base offset is <= newStartOffset.
+                deleteOldSegments(newStartOffset, SegmentDeletionReason.LOG_DELETION);
+            } catch (IOException e) {
+                throw new LogStorageException(
+                        "Failed to delete old segments for bucket "
+                                + getTableBucket()
+                                + " while advancing log-start offset to "
+                                + newStartOffset,
+                        e);
+            }
+            return logStartOffset();
+        }
+    }
+
     private void deleteSegments(long cleanUpToOffset) {
         // cache to local variables
         long localLogStartOffset = localLog.getLocalLogStartOffset();

@@ -1506,6 +1506,28 @@ public final class Replica {
         inReadLock(leaderIsrUpdateLock, () -> logManager.truncateTo(tableBucket, offset));
     }
 
+    /**
+     * Advance the log-start offset of this bucket to {@code newStartOffset} and trim any segments
+     * that fall entirely below it. Implements the broker-side of Kafka's {@code DeleteRecords} API.
+     * Requires local leadership.
+     *
+     * @return the log-start offset in effect after the call (the low-watermark)
+     */
+    public long maybeIncreaseLogStartOffset(long newStartOffset) {
+        return inReadLock(
+                leaderIsrUpdateLock,
+                () -> {
+                    if (!isLeader()) {
+                        throw new NotLeaderOrFollowerException(
+                                "Replica for "
+                                        + tableBucket
+                                        + " is not the leader on server "
+                                        + localTabletServerId);
+                    }
+                    return logTablet.maybeIncreaseLogStartOffset(newStartOffset);
+                });
+    }
+
     /** Delete all data in the local log of this bucket and start the log at the new offset. */
     public void truncateFullyAndStartAt(long newOffset) {
         inReadLock(

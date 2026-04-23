@@ -146,6 +146,19 @@ public final class LocalLog {
         return localLogStartOffset;
     }
 
+    /**
+     * Advance the local log-start offset to {@code newStartOffset} if it is strictly greater than
+     * the current value. Callers must hold the {@code LogTablet} lock and are responsible for
+     * ensuring {@code newStartOffset} is bounded above by the high-watermark. This does not delete
+     * any segment files on its own — segments whose data is wholly below the new start are trimmed
+     * by the caller via {@link #removeAndDeleteSegments}.
+     */
+    void maybeIncreaseLocalLogStartOffset(long newStartOffset) {
+        if (newStartOffset > localLogStartOffset) {
+            localLogStartOffset = newStartOffset;
+        }
+    }
+
     public long getLocalMaxTimestamp() {
         return localMaxTimestamp;
     }
