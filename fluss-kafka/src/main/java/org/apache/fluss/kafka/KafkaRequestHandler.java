@@ -54,10 +54,12 @@ import org.apache.kafka.common.message.AlterClientQuotasRequestData;
 import org.apache.kafka.common.message.AlterClientQuotasResponseData;
 import org.apache.kafka.common.message.AlterConfigsResponseData;
 import org.apache.kafka.common.message.ApiVersionsResponseData;
+import org.apache.kafka.common.message.CreatePartitionsRequestData;
 import org.apache.kafka.common.message.CreatePartitionsResponseData;
 import org.apache.kafka.common.message.CreateTopicsRequestData;
 import org.apache.kafka.common.message.CreateTopicsResponseData;
 import org.apache.kafka.common.message.DeleteGroupsResponseData;
+import org.apache.kafka.common.message.DeleteRecordsRequestData;
 import org.apache.kafka.common.message.DeleteRecordsResponseData;
 import org.apache.kafka.common.message.DeleteTopicsRequestData;
 import org.apache.kafka.common.message.DeleteTopicsResponseData;
@@ -74,11 +76,13 @@ import org.apache.kafka.common.message.IncrementalAlterConfigsResponseData;
 import org.apache.kafka.common.message.InitProducerIdResponseData;
 import org.apache.kafka.common.message.LeaveGroupResponseData;
 import org.apache.kafka.common.message.ListGroupsResponseData;
+import org.apache.kafka.common.message.ListOffsetsRequestData;
 import org.apache.kafka.common.message.ListOffsetsResponseData;
 import org.apache.kafka.common.message.MetadataResponseData;
 import org.apache.kafka.common.message.OffsetCommitResponseData;
 import org.apache.kafka.common.message.OffsetDeleteResponseData;
 import org.apache.kafka.common.message.OffsetFetchResponseData;
+import org.apache.kafka.common.message.OffsetForLeaderEpochRequestData;
 import org.apache.kafka.common.message.OffsetForLeaderEpochResponseData;
 import org.apache.kafka.common.message.ProduceRequestData;
 import org.apache.kafka.common.message.ProduceResponseData;
@@ -1065,10 +1069,45 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
         }
         try {
             ListOffsetsRequest req = request.request();
+            ListOffsetsRequestData data = req.data();
+            java.util.List<String> topics = new java.util.ArrayList<>();
+            for (ListOffsetsRequestData.ListOffsetsTopic t : data.topics()) {
+                topics.add(t.name());
+            }
+            Map<String, Boolean> allowed =
+                    AuthzHelper.authorizeTopicBatch(
+                            context.authorizer(),
+                            AuthzHelper.sessionOf(request),
+                            OperationType.DESCRIBE,
+                            topics,
+                            context.kafkaDatabase());
+            ListOffsetsRequestData filtered = data.duplicate();
+            filtered.topics().clear();
+            for (ListOffsetsRequestData.ListOffsetsTopic t : data.topics()) {
+                if (allowed.getOrDefault(t.name(), Boolean.TRUE)) {
+                    filtered.topics().add(t.duplicate());
+                }
+            }
             KafkaListOffsetsTranscoder transcoder =
                     new KafkaListOffsetsTranscoder(newCatalog(), context.replicaManager());
-            ListOffsetsResponseData data = transcoder.listOffsets(req.data());
-            request.complete(new ListOffsetsResponse(data));
+            ListOffsetsResponseData result = transcoder.listOffsets(filtered);
+            short authzErr = Errors.TOPIC_AUTHORIZATION_FAILED.code();
+            for (ListOffsetsRequestData.ListOffsetsTopic t : data.topics()) {
+                if (allowed.getOrDefault(t.name(), Boolean.TRUE)) {
+                    continue;
+                }
+                ListOffsetsResponseData.ListOffsetsTopicResponse topic =
+                        new ListOffsetsResponseData.ListOffsetsTopicResponse().setName(t.name());
+                for (ListOffsetsRequestData.ListOffsetsPartition p : t.partitions()) {
+                    topic.partitions()
+                            .add(
+                                    new ListOffsetsResponseData.ListOffsetsPartitionResponse()
+                                            .setPartitionIndex(p.partitionIndex())
+                                            .setErrorCode(authzErr));
+                }
+                result.topics().add(topic);
+            }
+            request.complete(new ListOffsetsResponse(result));
         } catch (Throwable t) {
             LOG.error("ListOffsets handler threw", t);
             request.fail(t);
@@ -1085,10 +1124,46 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
         }
         try {
             OffsetsForLeaderEpochRequest req = request.request();
+            OffsetForLeaderEpochRequestData data = req.data();
+            java.util.List<String> topics = new java.util.ArrayList<>();
+            for (OffsetForLeaderEpochRequestData.OffsetForLeaderTopic t : data.topics()) {
+                topics.add(t.topic());
+            }
+            Map<String, Boolean> allowed =
+                    AuthzHelper.authorizeTopicBatch(
+                            context.authorizer(),
+                            AuthzHelper.sessionOf(request),
+                            OperationType.DESCRIBE,
+                            topics,
+                            context.kafkaDatabase());
+            OffsetForLeaderEpochRequestData filtered = data.duplicate();
+            filtered.topics().clear();
+            for (OffsetForLeaderEpochRequestData.OffsetForLeaderTopic t : data.topics()) {
+                if (allowed.getOrDefault(t.topic(), Boolean.TRUE)) {
+                    filtered.topics().add(t.duplicate());
+                }
+            }
             KafkaOffsetForLeaderEpochTranscoder transcoder =
                     new KafkaOffsetForLeaderEpochTranscoder(newCatalog(), context.replicaManager());
-            OffsetForLeaderEpochResponseData data = transcoder.offsetForLeaderEpoch(req.data());
-            request.complete(new OffsetsForLeaderEpochResponse(data));
+            OffsetForLeaderEpochResponseData result = transcoder.offsetForLeaderEpoch(filtered);
+            short authzErr = Errors.TOPIC_AUTHORIZATION_FAILED.code();
+            for (OffsetForLeaderEpochRequestData.OffsetForLeaderTopic t : data.topics()) {
+                if (allowed.getOrDefault(t.topic(), Boolean.TRUE)) {
+                    continue;
+                }
+                OffsetForLeaderEpochResponseData.OffsetForLeaderTopicResult topic =
+                        new OffsetForLeaderEpochResponseData.OffsetForLeaderTopicResult()
+                                .setTopic(t.topic());
+                for (OffsetForLeaderEpochRequestData.OffsetForLeaderPartition p : t.partitions()) {
+                    topic.partitions()
+                            .add(
+                                    new OffsetForLeaderEpochResponseData.EpochEndOffset()
+                                            .setPartition(p.partition())
+                                            .setErrorCode(authzErr));
+                }
+                result.topics().add(topic);
+            }
+            request.complete(new OffsetsForLeaderEpochResponse(result));
         } catch (Throwable t) {
             LOG.error("OffsetForLeaderEpoch handler threw", t);
             request.fail(t);
@@ -1105,10 +1180,40 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
         }
         try {
             CreatePartitionsRequest req = request.request();
+            CreatePartitionsRequestData data = req.data();
+            java.util.List<String> topics = new java.util.ArrayList<>();
+            for (CreatePartitionsRequestData.CreatePartitionsTopic t : data.topics()) {
+                topics.add(t.name());
+            }
+            Map<String, Boolean> allowed =
+                    AuthzHelper.authorizeTopicBatch(
+                            context.authorizer(),
+                            AuthzHelper.sessionOf(request),
+                            OperationType.ALTER,
+                            topics,
+                            context.kafkaDatabase());
+            CreatePartitionsRequestData filtered = data.duplicate();
+            filtered.topics().clear();
+            for (CreatePartitionsRequestData.CreatePartitionsTopic t : data.topics()) {
+                if (allowed.getOrDefault(t.name(), Boolean.TRUE)) {
+                    filtered.topics().add(t.duplicate());
+                }
+            }
             KafkaCreatePartitionsTranscoder transcoder =
                     new KafkaCreatePartitionsTranscoder(newCatalog(), context.metadataManager());
-            CreatePartitionsResponseData data = transcoder.createPartitions(req.data());
-            request.complete(new CreatePartitionsResponse(data));
+            CreatePartitionsResponseData result = transcoder.createPartitions(filtered);
+            short authzErr = Errors.TOPIC_AUTHORIZATION_FAILED.code();
+            for (CreatePartitionsRequestData.CreatePartitionsTopic t : data.topics()) {
+                if (allowed.getOrDefault(t.name(), Boolean.TRUE)) {
+                    continue;
+                }
+                result.results()
+                        .add(
+                                new CreatePartitionsResponseData.CreatePartitionsTopicResult()
+                                        .setName(t.name())
+                                        .setErrorCode(authzErr));
+            }
+            request.complete(new CreatePartitionsResponse(result));
         } catch (Throwable t) {
             LOG.error("CreatePartitions handler threw", t);
             request.fail(t);
@@ -1124,10 +1229,45 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
         }
         try {
             DeleteRecordsRequest req = request.request();
+            DeleteRecordsRequestData data = req.data();
+            java.util.List<String> topics = new java.util.ArrayList<>();
+            for (DeleteRecordsRequestData.DeleteRecordsTopic t : data.topics()) {
+                topics.add(t.name());
+            }
+            Map<String, Boolean> allowed =
+                    AuthzHelper.authorizeTopicBatch(
+                            context.authorizer(),
+                            AuthzHelper.sessionOf(request),
+                            OperationType.DROP,
+                            topics,
+                            context.kafkaDatabase());
+            DeleteRecordsRequestData filtered = data.duplicate();
+            filtered.topics().clear();
+            for (DeleteRecordsRequestData.DeleteRecordsTopic t : data.topics()) {
+                if (allowed.getOrDefault(t.name(), Boolean.TRUE)) {
+                    filtered.topics().add(t.duplicate());
+                }
+            }
             KafkaDeleteRecordsTranscoder transcoder =
                     new KafkaDeleteRecordsTranscoder(newCatalog(), context.replicaManager());
-            DeleteRecordsResponseData data = transcoder.deleteRecords(req.data());
-            request.complete(new DeleteRecordsResponse(data));
+            DeleteRecordsResponseData result = transcoder.deleteRecords(filtered);
+            short authzErr = Errors.TOPIC_AUTHORIZATION_FAILED.code();
+            for (DeleteRecordsRequestData.DeleteRecordsTopic t : data.topics()) {
+                if (allowed.getOrDefault(t.name(), Boolean.TRUE)) {
+                    continue;
+                }
+                DeleteRecordsResponseData.DeleteRecordsTopicResult topic =
+                        new DeleteRecordsResponseData.DeleteRecordsTopicResult().setName(t.name());
+                for (DeleteRecordsRequestData.DeleteRecordsPartition p : t.partitions()) {
+                    topic.partitions()
+                            .add(
+                                    new DeleteRecordsResponseData.DeleteRecordsPartitionResult()
+                                            .setPartitionIndex(p.partitionIndex())
+                                            .setErrorCode(authzErr));
+                }
+                result.topics().add(topic);
+            }
+            request.complete(new DeleteRecordsResponse(result));
         } catch (Throwable t) {
             LOG.error("DeleteRecords handler threw", t);
             request.fail(t);
