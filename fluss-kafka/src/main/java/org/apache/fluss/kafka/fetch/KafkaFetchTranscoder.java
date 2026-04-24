@@ -74,35 +74,6 @@ public final class KafkaFetchTranscoder {
     /** Default minimum buffer size for rebuilt Kafka batches. */
     private static final int MIN_BATCH_BUFFER_BYTES = 1024;
 
-    /**
-     * Schema getter that always returns the Kafka-shape schema. Safe because in Phase 2 every
-     * Kafka-bound Fluss table shares exactly that schema; when SR lands we'll thread the real
-     * {@code TabletServerMetadataCache#subscribeWithInitialSchema(...)} getter through here.
-     */
-    private static final org.apache.fluss.metadata.SchemaGetter KAFKA_SCHEMA_GETTER =
-            new org.apache.fluss.metadata.SchemaGetter() {
-                @Override
-                public org.apache.fluss.metadata.Schema getSchema(int schemaId) {
-                    return KafkaDataTable.schema();
-                }
-
-                @Override
-                public java.util.concurrent.CompletableFuture<org.apache.fluss.metadata.SchemaInfo>
-                        getSchemaInfoAsync(int schemaId) {
-                    return java.util.concurrent.CompletableFuture.completedFuture(
-                            new org.apache.fluss.metadata.SchemaInfo(
-                                    KafkaDataTable.schema(), schemaId));
-                }
-
-                @Override
-                public org.apache.fluss.metadata.SchemaInfo getLatestSchemaInfo() {
-                    return new org.apache.fluss.metadata.SchemaInfo(KafkaDataTable.schema(), 1);
-                }
-
-                @Override
-                public void release() {}
-            };
-
     private final KafkaServerContext context;
     private final KafkaTopicsCatalog catalog;
     private final ReplicaManager replicaManager;
@@ -146,13 +117,31 @@ public final class KafkaFetchTranscoder {
                     topicInfo.timestampType() == KafkaTopicInfo.TimestampType.LOG_APPEND_TIME
                             ? TimestampType.LOG_APPEND_TIME
                             : TimestampType.CREATE_TIME;
+            // Load the topic's actual Fluss table Schema — compacted topics have a different
+            // RowType than the legacy log shape (record_key is non-null + PK). Decoding
+            // compacted-topic CDC records with the wrong RowType produces bogus field offsets
+            // and surfaces as "corrupt message" on the Kafka client.
+            org.apache.fluss.metadata.Schema topicSchema;
+            try {
+                topicSchema =
+                        context.metadataManager().getTable(topicInfo.dataTablePath()).getSchema();
+            } catch (Exception e) {
+                LOG.error(
+                        "Failed to load TableInfo for fetch of '{}'", topicInfo.dataTablePath(), e);
+                pendingByTopic.put(topicName, buildErrorShells(topic, Errors.UNKNOWN_SERVER_ERROR));
+                continue;
+            }
 
             List<PartitionContext> contexts = new ArrayList<>(topic.partitions().size());
             pendingByTopic.put(topicName, contexts);
             for (FetchPartition fp : topic.partitions()) {
                 PartitionContext ctx =
                         new PartitionContext(
-                                topicInfo, fp.partition(), timestampType, fp.fetchOffset());
+                                topicInfo,
+                                topicSchema,
+                                fp.partition(),
+                                timestampType,
+                                fp.fetchOffset());
                 contexts.add(ctx);
                 requested.put(new TableBucket(topicInfo.flussTableId(), fp.partition()), ctx);
                 ctx.bucketRead =
@@ -220,7 +209,7 @@ public final class KafkaFetchTranscoder {
         for (FetchPartition p : topic.partitions()) {
             PartitionContext ctx =
                     new PartitionContext(
-                            null, p.partition(), TimestampType.CREATE_TIME, p.fetchOffset());
+                            null, null, p.partition(), TimestampType.CREATE_TIME, p.fetchOffset());
             ctx.failWith(error, null);
             shells.add(ctx);
         }
@@ -230,6 +219,7 @@ public final class KafkaFetchTranscoder {
     /** Per-partition accumulator that owns both the input shape and the output response. */
     private static final class PartitionContext {
         private final KafkaTopicInfo info;
+        private final @javax.annotation.Nullable org.apache.fluss.metadata.Schema topicSchema;
         private final int partitionIndex;
         private final TimestampType timestampType;
         private final long fetchOffset;
@@ -240,10 +230,12 @@ public final class KafkaFetchTranscoder {
 
         PartitionContext(
                 KafkaTopicInfo info,
+                @javax.annotation.Nullable org.apache.fluss.metadata.Schema topicSchema,
                 int partitionIndex,
                 TimestampType timestampType,
                 long fetchOffset) {
             this.info = info;
+            this.topicSchema = topicSchema;
             this.partitionIndex = partitionIndex;
             this.timestampType = timestampType;
             this.fetchOffset = fetchOffset;
@@ -281,7 +273,7 @@ public final class KafkaFetchTranscoder {
                 return pd;
             }
             try {
-                pd.setRecords(encode(result.records(), fetchOffset, timestampType));
+                pd.setRecords(encode(result.records(), fetchOffset, timestampType, topicSchema));
             } catch (Exception e) {
                 LOG.error(
                         "Fetch transcode failed for topic '{}' partition {}",
@@ -301,7 +293,41 @@ public final class KafkaFetchTranscoder {
      * base offset.
      */
     private static MemoryRecords encode(
-            LogRecords flussRecords, long baseOffset, TimestampType timestampType) {
+            LogRecords flussRecords,
+            long baseOffset,
+            TimestampType timestampType,
+            @javax.annotation.Nullable org.apache.fluss.metadata.Schema topicSchema) {
+        // Use the topic's real schema when available — compacted topics have
+        // record_key as a non-null PK column; decoding with the default non-
+        // compacted schema mis-aligns IndexedRow field offsets and produces a
+        // "corrupt message" error on the Kafka client.
+        org.apache.fluss.metadata.Schema effectiveSchema =
+                topicSchema != null ? topicSchema : KafkaDataTable.schema();
+        org.apache.fluss.metadata.SchemaGetter schemaGetter =
+                new org.apache.fluss.metadata.SchemaGetter() {
+                    @Override
+                    public org.apache.fluss.metadata.Schema getSchema(int schemaId) {
+                        return effectiveSchema;
+                    }
+
+                    @Override
+                    public java.util.concurrent.CompletableFuture<
+                                    org.apache.fluss.metadata.SchemaInfo>
+                            getSchemaInfoAsync(int schemaId) {
+                        return java.util.concurrent.CompletableFuture.completedFuture(
+                                new org.apache.fluss.metadata.SchemaInfo(
+                                        effectiveSchema, schemaId));
+                    }
+
+                    @Override
+                    public org.apache.fluss.metadata.SchemaInfo getLatestSchemaInfo() {
+                        return new org.apache.fluss.metadata.SchemaInfo(effectiveSchema, 1);
+                    }
+
+                    @Override
+                    public void release() {}
+                };
+
         // Walk once to count bytes; we'll allocate a single buffer slightly larger than needed.
         List<RowView> views = new ArrayList<>();
         long firstOffset = -1L;
@@ -311,16 +337,26 @@ public final class KafkaFetchTranscoder {
             try (org.apache.fluss.utils.CloseableIterator<LogRecord> iter =
                     batch.records(
                             org.apache.fluss.record.LogRecordReadContext.createIndexedReadContext(
-                                    KafkaDataTable.schema().getRowType(),
+                                    effectiveSchema.getRowType(),
                                     batch.schemaId(),
-                                    KAFKA_SCHEMA_GETTER))) {
+                                    schemaGetter))) {
                 while (iter.hasNext()) {
                     LogRecord record = iter.next();
                     if (firstOffset < 0) {
                         firstOffset = record.logOffset();
                     }
+                    // Compacted-topic CDC stream emits UPDATE_BEFORE / UPDATE_AFTER / DELETE
+                    // alongside APPEND_ONLY. For Kafka semantics we collapse:
+                    //   APPEND_ONLY + UPDATE_AFTER → regular record (current value wins)
+                    //   UPDATE_BEFORE              → skip (redundant with its UPDATE_AFTER)
+                    //   DELETE                     → emit with null value (Kafka tombstone)
+                    org.apache.fluss.record.ChangeType changeType = record.getChangeType();
+                    if (changeType == org.apache.fluss.record.ChangeType.UPDATE_BEFORE) {
+                        continue;
+                    }
                     InternalRow row = record.getRow();
-                    RowView view = RowView.of(row, record.logOffset());
+                    boolean isDelete = changeType == org.apache.fluss.record.ChangeType.DELETE;
+                    RowView view = RowView.of(row, record.logOffset(), isDelete);
                     if (view.timestamp > maxTimestamp) {
                         maxTimestamp = view.timestamp;
                     }
@@ -373,10 +409,14 @@ public final class KafkaFetchTranscoder {
         }
 
         static RowView of(InternalRow row, long logOffset) {
+            return of(row, logOffset, false);
+        }
+
+        static RowView of(InternalRow row, long logOffset, boolean tombstone) {
             // Columns: 0=record_key (BYTES), 1=payload (BYTES), 2=event_time (TIMESTAMP_LTZ),
             //          3=headers (ARRAY<ROW<name STRING, value BYTES>>).
             byte[] key = row.isNullAt(0) ? null : row.getBytes(0);
-            byte[] value = row.isNullAt(1) ? null : row.getBytes(1);
+            byte[] value = tombstone || row.isNullAt(1) ? null : row.getBytes(1);
             long ts = row.getTimestampLtz(2, 3).toEpochMicros() / 1000L;
             Header[] headers;
             if (row.isNullAt(3)) {

@@ -27,9 +27,11 @@ import org.apache.kafka.clients.admin.Admin;
 import org.apache.kafka.clients.admin.AdminClientConfig;
 import org.apache.kafka.clients.admin.KafkaAdminClient;
 import org.apache.kafka.clients.admin.NewTopic;
+import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
+import org.apache.kafka.common.serialization.StringDeserializer;
 import org.apache.kafka.common.serialization.StringSerializer;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -105,22 +107,30 @@ class KafkaCompactedTopicITCase {
         }
     }
 
-    // NOTE: Kafka-consumer read-back from a compacted (PK-backed) topic is deferred to a
-    // follow-up phase. The produce path is working — records land in the PK table via
-    // putRecordsToKv — but the fetch path (KafkaFetchTranscoder) today reads the log-offset
-    // space that log-table appends use. A PK table's CDC changelog uses a different record
-    // framing; bridging it to Kafka wire records needs a dedicated translator. An attempt to
-    // consume here today fails with "Encountered corrupt message" because kafka-clients sees
-    // raw KV-format bytes.
+    // KNOWN GAP — Kafka-consumer read-back from a compacted topic is deferred.
     //
-    // Follow-up (Compacted-topic Phase 2):
-    //   - Extend KafkaFetchTranscoder to detect PK-backed topics and read from the table's CDC
-    //     stream, converting ChangeType.{APPEND, UPDATE_AFTER, DELETE} into Kafka records
-    //     (DELETE → null-value tombstone).
-    //   - Then re-enable a consume IT here that produces 5 records across 2 keys and reads the
-    //     changelog back, asserting the materialised-per-key view is last-writer-wins.
-    // For now, Fluss-native consumers (Table API, Flink) already see the snapshot correctly —
-    // they read the PK table directly.
+    // Investigation found the fix is larger than initially scoped:
+    //   1. KafkaFetchTranscoder hardcodes createIndexedReadContext, but PK tables default to
+    //      LogFormat.ARROW for their CDC log; INDEXED is the only format the current reader
+    //      understands. Fix #1: use LogRecordReadContext.createReadContext(TableInfo, ...)
+    //      which branches on the configured log format.
+    //   2. Setting LogFormat=INDEXED on the compacted-topic descriptor so produce+fetch share
+    //      the format makes the Fluss-server-side KV write path reject with
+    //      "IndexWalBuilder requires the log row to be IndexedRow" — the KV engine converts
+    //      internally and expects ARROW for the CDC log. So INDEXED-log for PK tables is
+    //      effectively blocked at the core.
+    //   3. Reading ARROW via createReadContext returns ArrowRecordBatch-shaped records; the
+    //      existing RowView.of(InternalRow) path needs to be rewritten as "iterate arrow
+    //      batch → get IndexedRow-equivalent view per row". Not a one-liner.
+    //   4. The per-schema read context was the right direction but the schema mismatch wasn't
+    //      the only blocker.
+    //
+    // Scope to actually close the gap: a TableInfo-based fetch read context in
+    // KafkaFetchTranscoder + a ChangeType-aware record emitter (skip UPDATE_BEFORE, emit
+    // DELETE as null-value tombstone). Medium-sized, ~200 LOC. Follow-up.
+    //
+    // Fluss-native consumers (Table API, Flink) read the PK-table snapshot directly today;
+    // the gap is in the Kafka-wire fetch translation only.
 
     @Test
     void defaultTopicIsLog_notPkTable() throws Exception {
@@ -145,6 +155,20 @@ class KafkaCompactedTopicITCase {
         props.put(AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrap());
         props.put(AdminClientConfig.REQUEST_TIMEOUT_MS_CONFIG, 30_000);
         props.put(AdminClientConfig.DEFAULT_API_TIMEOUT_MS_CONFIG, 30_000);
+        return props;
+    }
+
+    private static Properties consumerProps() {
+        Properties props = new Properties();
+        props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrap());
+        props.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
+        props.put(
+                ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
+        props.put(ConsumerConfig.GROUP_ID_CONFIG, "compact-cons-" + System.nanoTime());
+        props.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
+        props.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, "false");
+        props.put(ConsumerConfig.REQUEST_TIMEOUT_MS_CONFIG, 15_000);
+        props.put(ConsumerConfig.DEFAULT_API_TIMEOUT_MS_CONFIG, 15_000);
         return props;
     }
 
