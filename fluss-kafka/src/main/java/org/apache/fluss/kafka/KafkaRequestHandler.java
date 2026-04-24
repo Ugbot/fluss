@@ -50,6 +50,7 @@ import org.apache.fluss.rpc.protocol.RequestType;
 import org.apache.fluss.security.acl.OperationType;
 import org.apache.fluss.security.acl.Resource;
 
+import org.apache.kafka.common.message.AlterClientQuotasRequestData;
 import org.apache.kafka.common.message.AlterClientQuotasResponseData;
 import org.apache.kafka.common.message.AlterConfigsResponseData;
 import org.apache.kafka.common.message.ApiVersionsResponseData;
@@ -1205,6 +1206,18 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
             return;
         }
         try {
+            AuthzHelper.authorizeOrThrow(
+                    context.authorizer(),
+                    AuthzHelper.sessionOf(request),
+                    OperationType.ALTER,
+                    Resource.cluster());
+        } catch (AuthorizationException denied) {
+            ElectLeadersResponseData data = new ElectLeadersResponseData();
+            data.setErrorCode(Errors.CLUSTER_AUTHORIZATION_FAILED.code());
+            request.complete(new ElectLeadersResponse(data));
+            return;
+        }
+        try {
             ElectLeadersRequest req = request.request();
             KafkaElectLeadersTranscoder transcoder =
                     new KafkaElectLeadersTranscoder(newCatalog(), context.metadataCache());
@@ -1225,6 +1238,19 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
             return;
         }
         try {
+            AuthzHelper.authorizeOrThrow(
+                    context.authorizer(),
+                    AuthzHelper.sessionOf(request),
+                    OperationType.DESCRIBE,
+                    Resource.cluster());
+        } catch (AuthorizationException denied) {
+            DescribeClientQuotasResponseData data = new DescribeClientQuotasResponseData();
+            data.setErrorCode(Errors.CLUSTER_AUTHORIZATION_FAILED.code())
+                    .setErrorMessage(denied.getMessage());
+            request.complete(new DescribeClientQuotasResponse(data));
+            return;
+        }
+        try {
             DescribeClientQuotasRequest req = request.request();
             KafkaClientQuotasTranscoder transcoder =
                     new KafkaClientQuotasTranscoder(kafkaClientQuotasCatalog());
@@ -1242,6 +1268,33 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
                     Errors.BROKER_NOT_AVAILABLE.exception(
                             "Kafka AlterClientQuotas requires a running server; the plugin is not"
                                     + " wired."));
+            return;
+        }
+        try {
+            AuthzHelper.authorizeOrThrow(
+                    context.authorizer(),
+                    AuthzHelper.sessionOf(request),
+                    OperationType.ALTER,
+                    Resource.cluster());
+        } catch (AuthorizationException denied) {
+            AlterClientQuotasResponseData data = new AlterClientQuotasResponseData();
+            AlterClientQuotasRequest denyReq = request.request();
+            short authzErr = Errors.CLUSTER_AUTHORIZATION_FAILED.code();
+            for (AlterClientQuotasRequestData.EntryData requested : denyReq.data().entries()) {
+                AlterClientQuotasResponseData.EntryData entry =
+                        new AlterClientQuotasResponseData.EntryData()
+                                .setErrorCode(authzErr)
+                                .setErrorMessage(denied.getMessage());
+                for (AlterClientQuotasRequestData.EntityData c : requested.entity()) {
+                    entry.entity()
+                            .add(
+                                    new AlterClientQuotasResponseData.EntityData()
+                                            .setEntityType(c.entityType())
+                                            .setEntityName(c.entityName()));
+                }
+                data.entries().add(entry);
+            }
+            request.complete(new AlterClientQuotasResponse(data));
             return;
         }
         try {
