@@ -167,6 +167,94 @@ public final class SchemaRegistryHttpHandler extends SimpleChannelInboundHandler
             response.put("id", id);
             return jsonResponse(HttpResponseStatus.OK, response);
         }
+        if (HttpMethod.GET.equals(method) && path.equals("/schemas/types")) {
+            ArrayNode arr = MAPPER.createArrayNode();
+            for (String t : service.supportedTypes()) {
+                arr.add(t);
+            }
+            return jsonResponse(HttpResponseStatus.OK, arr);
+        }
+        if (HttpMethod.GET.equals(method)
+                && path.startsWith("/subjects/")
+                && path.endsWith("/versions")) {
+            String subject =
+                    path.substring("/subjects/".length(), path.length() - "/versions".length());
+            List<Integer> versions = service.listVersions(subject);
+            if (versions.isEmpty()) {
+                throw new SchemaRegistryException(
+                        SchemaRegistryException.Kind.NOT_FOUND,
+                        "subject " + subject + " not found");
+            }
+            ArrayNode arr = MAPPER.createArrayNode();
+            for (Integer v : versions) {
+                arr.add(v);
+            }
+            return jsonResponse(HttpResponseStatus.OK, arr);
+        }
+        if (HttpMethod.GET.equals(method)
+                && path.startsWith("/subjects/")
+                && path.contains("/versions/")
+                && !path.endsWith("/versions/latest")) {
+            // GET /subjects/{s}/versions/{v}
+            int versionsIdx = path.indexOf("/versions/");
+            String subject = path.substring("/subjects/".length(), versionsIdx);
+            String versionPart = path.substring(versionsIdx + "/versions/".length());
+            int version;
+            if ("latest".equalsIgnoreCase(versionPart)) {
+                version = -1;
+            } else {
+                version = parseIntOr400(versionPart, "version");
+            }
+            Optional<SchemaRegistryService.RegisteredSchema> found =
+                    service.versionForSubject(subject, version);
+            if (!found.isPresent()) {
+                throw new SchemaRegistryException(
+                        SchemaRegistryException.Kind.NOT_FOUND,
+                        "subject " + subject + " version " + versionPart + " not found");
+            }
+            ObjectNode body = MAPPER.createObjectNode();
+            body.put("id", found.get().id());
+            body.put("subject", found.get().subject());
+            body.put("version", found.get().version());
+            body.put("schemaType", found.get().format());
+            body.put("schema", found.get().schema());
+            return jsonResponse(HttpResponseStatus.OK, body);
+        }
+        if (HttpMethod.POST.equals(method)
+                && path.startsWith("/subjects/")
+                && !path.contains("/versions")) {
+            // POST /subjects/{s} — schema-exists probe (never mints a new id).
+            String subject = path.substring("/subjects/".length());
+            JsonNode body = MAPPER.readTree(readUtf8(request));
+            if (!body.hasNonNull("schema")) {
+                throw new SchemaRegistryException(
+                        SchemaRegistryException.Kind.INVALID_INPUT,
+                        "'schema' field is required in POST body");
+            }
+            String schemaType =
+                    body.hasNonNull("schemaType") ? body.get("schemaType").asText() : "AVRO";
+            if (!"AVRO".equalsIgnoreCase(schemaType)) {
+                throw new SchemaRegistryException(
+                        SchemaRegistryException.Kind.UNSUPPORTED,
+                        "schemaType '"
+                                + schemaType
+                                + "' is not supported in Phase SR-X.1 (only AVRO)");
+            }
+            Optional<SchemaRegistryService.RegisteredSchema> found =
+                    service.schemaExists(subject, body.get("schema").asText());
+            if (!found.isPresent()) {
+                throw new SchemaRegistryException(
+                        SchemaRegistryException.Kind.NOT_FOUND,
+                        "Schema not found under subject " + subject);
+            }
+            ObjectNode response = MAPPER.createObjectNode();
+            response.put("id", found.get().id());
+            response.put("subject", found.get().subject());
+            response.put("version", found.get().version());
+            response.put("schemaType", found.get().format());
+            response.put("schema", found.get().schema());
+            return jsonResponse(HttpResponseStatus.OK, response);
+        }
         throw new SchemaRegistryException(
                 SchemaRegistryException.Kind.NOT_FOUND,
                 method + " " + path + " is not a Schema Registry endpoint");

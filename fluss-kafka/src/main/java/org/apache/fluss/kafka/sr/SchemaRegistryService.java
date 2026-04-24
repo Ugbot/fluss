@@ -199,6 +199,98 @@ public final class SchemaRegistryService {
         }
     }
 
+    /**
+     * Supported schema types advertised by {@code GET /schemas/types}. Phase SR-X.1 is Avro-only;
+     * JSON / Protobuf land in Phase T alongside typed-table support.
+     */
+    public List<String> supportedTypes() {
+        return Collections.singletonList(FORMAT_AVRO);
+    }
+
+    /** Version numbers (1-based, monotone) registered against a subject, sorted ascending. */
+    public List<Integer> listVersions(String subject) {
+        authorize(GrantEntity.PRIVILEGE_READ);
+        try {
+            Optional<KafkaSubjectBinding> binding = catalog.resolveKafkaSubject(subject);
+            if (!binding.isPresent()) {
+                return Collections.emptyList();
+            }
+            String topic = SubjectResolver.topicFromValueSubject(subject);
+            List<SchemaVersionEntity> versions = catalog.listSchemaVersions(kafkaDatabase, topic);
+            List<Integer> out = new ArrayList<>(versions.size());
+            for (SchemaVersionEntity v : versions) {
+                out.add(v.version());
+            }
+            Collections.sort(out);
+            return out;
+        } catch (Exception e) {
+            throw translate(e);
+        }
+    }
+
+    /**
+     * Resolve a specific version for a subject. {@code version == -1} is Confluent's alias for
+     * "latest" and is accepted here; callers translate textual {@code "latest"} before invoking.
+     */
+    public Optional<RegisteredSchema> versionForSubject(String subject, int version) {
+        if (version == -1) {
+            return latestForSubject(subject);
+        }
+        authorize(GrantEntity.PRIVILEGE_READ);
+        try {
+            Optional<KafkaSubjectBinding> binding = catalog.resolveKafkaSubject(subject);
+            if (!binding.isPresent()) {
+                return Optional.empty();
+            }
+            String topic = SubjectResolver.topicFromValueSubject(subject);
+            Optional<SchemaVersionEntity> schema =
+                    catalog.getSchemaVersion(kafkaDatabase, topic, version);
+            if (!schema.isPresent()) {
+                return Optional.empty();
+            }
+            SchemaVersionEntity s = schema.get();
+            return Optional.of(
+                    new RegisteredSchema(
+                            s.confluentId(), subject, s.version(), s.format(), s.schemaText()));
+        } catch (Exception e) {
+            throw translate(e);
+        }
+    }
+
+    /**
+     * Probe: does {@code schemaText} already exist under {@code subject}? Returns the registered
+     * tuple if so, {@link Optional#empty()} otherwise. Never writes.
+     */
+    public Optional<RegisteredSchema> schemaExists(String subject, String schemaText) {
+        authorize(GrantEntity.PRIVILEGE_READ);
+        if (schemaText == null || schemaText.isEmpty()) {
+            throw new SchemaRegistryException(
+                    SchemaRegistryException.Kind.INVALID_INPUT, "schema body is required");
+        }
+        try {
+            Optional<KafkaSubjectBinding> binding = catalog.resolveKafkaSubject(subject);
+            if (!binding.isPresent()) {
+                return Optional.empty();
+            }
+            String topic = SubjectResolver.topicFromValueSubject(subject);
+            List<SchemaVersionEntity> versions = catalog.listSchemaVersions(kafkaDatabase, topic);
+            for (SchemaVersionEntity v : versions) {
+                if (schemaText.equals(v.schemaText())) {
+                    return Optional.of(
+                            new RegisteredSchema(
+                                    v.confluentId(),
+                                    subject,
+                                    v.version(),
+                                    v.format(),
+                                    v.schemaText()));
+                }
+            }
+            return Optional.empty();
+        } catch (Exception e) {
+            throw translate(e);
+        }
+    }
+
     public Optional<RegisteredSchema> latestForSubject(String subject) {
         authorize(GrantEntity.PRIVILEGE_READ);
         try {
