@@ -66,6 +66,7 @@ import org.apache.kafka.common.message.DescribeConfigsResponseData;
 import org.apache.kafka.common.message.DescribeGroupsResponseData;
 import org.apache.kafka.common.message.DescribeProducersResponseData;
 import org.apache.kafka.common.message.ElectLeadersResponseData;
+import org.apache.kafka.common.message.FetchRequestData;
 import org.apache.kafka.common.message.FindCoordinatorResponseData;
 import org.apache.kafka.common.message.HeartbeatResponseData;
 import org.apache.kafka.common.message.IncrementalAlterConfigsResponseData;
@@ -78,6 +79,7 @@ import org.apache.kafka.common.message.OffsetCommitResponseData;
 import org.apache.kafka.common.message.OffsetDeleteResponseData;
 import org.apache.kafka.common.message.OffsetFetchResponseData;
 import org.apache.kafka.common.message.OffsetForLeaderEpochResponseData;
+import org.apache.kafka.common.message.ProduceRequestData;
 import org.apache.kafka.common.message.ProduceResponseData;
 import org.apache.kafka.common.protocol.ApiKeys;
 import org.apache.kafka.common.protocol.Errors;
@@ -743,22 +745,71 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
         }
         try {
             ProduceRequest req = request.request();
+            ProduceRequestData data = req.data();
+            java.util.List<String> topics = new java.util.ArrayList<>();
+            for (ProduceRequestData.TopicProduceData t : data.topicData()) {
+                topics.add(t.name());
+            }
+            Map<String, Boolean> allowed =
+                    AuthzHelper.authorizeTopicBatch(
+                            context.authorizer(),
+                            AuthzHelper.sessionOf(request),
+                            OperationType.WRITE,
+                            topics,
+                            context.kafkaDatabase());
+
+            ProduceRequestData filtered = filterProduceByAllowed(data, allowed);
             KafkaProduceTranscoder transcoder =
                     new KafkaProduceTranscoder(context, newCatalog(), context.replicaManager());
             transcoder
-                    .produce(req.data())
+                    .produce(filtered)
                     .whenComplete(
-                            (data, err) -> {
+                            (result, err) -> {
                                 if (err != null) {
                                     LOG.error("Produce handler failed", err);
                                     request.fail(err);
                                     return;
                                 }
-                                request.complete(completedProduceResponse(data));
+                                appendDeniedProduceTopics(data, allowed, result);
+                                request.complete(completedProduceResponse(result));
                             });
         } catch (Throwable t) {
             LOG.error("Produce handler threw", t);
             request.fail(t);
+        }
+    }
+
+    private static ProduceRequestData filterProduceByAllowed(
+            ProduceRequestData in, Map<String, Boolean> allowed) {
+        ProduceRequestData out = new ProduceRequestData();
+        out.setAcks(in.acks());
+        out.setTimeoutMs(in.timeoutMs());
+        out.setTransactionalId(in.transactionalId());
+        for (ProduceRequestData.TopicProduceData t : in.topicData()) {
+            if (allowed.getOrDefault(t.name(), Boolean.TRUE)) {
+                out.topicData().add(t.duplicate());
+            }
+        }
+        return out;
+    }
+
+    private static void appendDeniedProduceTopics(
+            ProduceRequestData original, Map<String, Boolean> allowed, ProduceResponseData result) {
+        short authzDenied = Errors.TOPIC_AUTHORIZATION_FAILED.code();
+        for (ProduceRequestData.TopicProduceData t : original.topicData()) {
+            if (allowed.getOrDefault(t.name(), Boolean.TRUE)) {
+                continue;
+            }
+            ProduceResponseData.TopicProduceResponse topic =
+                    new ProduceResponseData.TopicProduceResponse().setName(t.name());
+            for (ProduceRequestData.PartitionProduceData p : t.partitionData()) {
+                topic.partitionResponses()
+                        .add(
+                                new ProduceResponseData.PartitionProduceResponse()
+                                        .setIndex(p.index())
+                                        .setErrorCode(authzDenied));
+            }
+            result.responses().add(topic);
         }
     }
 
@@ -1267,22 +1318,73 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
         }
         try {
             FetchRequest req = request.request();
+            FetchRequestData data = req.data();
+            java.util.List<String> topics = new java.util.ArrayList<>();
+            for (FetchRequestData.FetchTopic t : data.topics()) {
+                topics.add(t.topic());
+            }
+            Map<String, Boolean> allowed =
+                    AuthzHelper.authorizeTopicBatch(
+                            context.authorizer(),
+                            AuthzHelper.sessionOf(request),
+                            OperationType.READ,
+                            topics,
+                            context.kafkaDatabase());
+
+            FetchRequestData filtered = filterFetchByAllowed(data, allowed);
             KafkaFetchTranscoder transcoder =
                     new KafkaFetchTranscoder(context, newCatalog(), context.replicaManager());
             transcoder
-                    .fetch(req.data())
+                    .fetch(filtered)
                     .whenComplete(
-                            (data, err) -> {
+                            (result, err) -> {
                                 if (err != null) {
                                     LOG.error("Fetch handler failed", err);
                                     request.fail(err);
                                     return;
                                 }
-                                request.complete(new FetchResponse(data));
+                                appendDeniedFetchTopics(data, allowed, result);
+                                request.complete(new FetchResponse(result));
                             });
         } catch (Throwable t) {
             LOG.error("Fetch handler threw", t);
             request.fail(t);
+        }
+    }
+
+    private static FetchRequestData filterFetchByAllowed(
+            FetchRequestData in, Map<String, Boolean> allowed) {
+        FetchRequestData out = in.duplicate();
+        out.topics().clear();
+        for (FetchRequestData.FetchTopic t : in.topics()) {
+            if (allowed.getOrDefault(t.topic(), Boolean.TRUE)) {
+                out.topics().add(t.duplicate());
+            }
+        }
+        return out;
+    }
+
+    private static void appendDeniedFetchTopics(
+            FetchRequestData original,
+            Map<String, Boolean> allowed,
+            org.apache.kafka.common.message.FetchResponseData result) {
+        short authzDenied = Errors.TOPIC_AUTHORIZATION_FAILED.code();
+        for (FetchRequestData.FetchTopic t : original.topics()) {
+            if (allowed.getOrDefault(t.topic(), Boolean.TRUE)) {
+                continue;
+            }
+            org.apache.kafka.common.message.FetchResponseData.FetchableTopicResponse topic =
+                    new org.apache.kafka.common.message.FetchResponseData.FetchableTopicResponse()
+                            .setTopic(t.topic());
+            for (FetchRequestData.FetchPartition p : t.partitions()) {
+                topic.partitions()
+                        .add(
+                                new org.apache.kafka.common.message.FetchResponseData
+                                                .PartitionData()
+                                        .setPartitionIndex(p.partition())
+                                        .setErrorCode(authzDenied));
+            }
+            result.responses().add(topic);
         }
     }
 
