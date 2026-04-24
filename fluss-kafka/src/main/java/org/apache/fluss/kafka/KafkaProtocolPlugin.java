@@ -27,6 +27,7 @@ import org.apache.fluss.rpc.gateway.TabletServerGateway;
 import org.apache.fluss.rpc.netty.server.RequestChannel;
 import org.apache.fluss.rpc.netty.server.RequestHandler;
 import org.apache.fluss.rpc.protocol.NetworkProtocolPlugin;
+import org.apache.fluss.server.authorizer.Authorizer;
 import org.apache.fluss.server.metrics.ServerMetricUtils;
 import org.apache.fluss.server.tablet.TabletService;
 import org.apache.fluss.shaded.netty4.io.netty.channel.ChannelHandler;
@@ -34,6 +35,7 @@ import org.apache.fluss.shaded.netty4.io.netty.channel.ChannelHandler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.lang.reflect.Field;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -110,6 +112,7 @@ public class KafkaProtocolPlugin implements NetworkProtocolPlugin {
                     ts.getCoordinatorGateway(),
                     ts.getReplicaManager(),
                     ts.getZooKeeperClient(),
+                    extractAuthorizer(ts),
                     clusterId,
                     kafkaDatabase,
                     ts.getServerId(),
@@ -121,6 +124,34 @@ public class KafkaProtocolPlugin implements NetworkProtocolPlugin {
                         + "Metadata and DescribeCluster requests will fail until a full TabletService is used.",
                 service.getClass().getSimpleName());
         return new KafkaServerContext(null, null, null, null, null, clusterId, kafkaDatabase);
+    }
+
+    /**
+     * Pulls the {@link Authorizer} off the service's {@code RpcServiceBase} parent. The field is
+     * package-private to {@code fluss-server} and has no public accessor, so we reach through
+     * reflection rather than modifying a server-module API surface. Returns {@code null} if the
+     * server was started without an authorizer.
+     */
+    private static Authorizer extractAuthorizer(TabletService service) {
+        Class<?> c = service.getClass();
+        while (c != null && c != Object.class) {
+            try {
+                Field f = c.getDeclaredField("authorizer");
+                f.setAccessible(true);
+                Object value = f.get(service);
+                return value instanceof Authorizer ? (Authorizer) value : null;
+            } catch (NoSuchFieldException e) {
+                c = c.getSuperclass();
+            } catch (IllegalAccessException e) {
+                LOG.warn(
+                        "Failed to read Authorizer from {}; ACL enforcement will be disabled"
+                                + " for the Kafka listener.",
+                        service.getClass().getSimpleName(),
+                        e);
+                return null;
+            }
+        }
+        return null;
     }
 
     private void validateLocalListenerBinding(Configuration conf) {

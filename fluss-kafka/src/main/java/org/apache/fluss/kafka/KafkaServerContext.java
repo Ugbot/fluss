@@ -20,6 +20,7 @@ package org.apache.fluss.kafka;
 import org.apache.fluss.annotation.Internal;
 import org.apache.fluss.config.Configuration;
 import org.apache.fluss.rpc.gateway.CoordinatorGateway;
+import org.apache.fluss.server.authorizer.Authorizer;
 import org.apache.fluss.server.coordinator.MetadataManager;
 import org.apache.fluss.server.metadata.ClusterMetadataProvider;
 import org.apache.fluss.server.replica.ReplicaManager;
@@ -43,6 +44,7 @@ public final class KafkaServerContext {
     private final @Nullable CoordinatorGateway coordinatorGateway;
     private final @Nullable ReplicaManager replicaManager;
     private final @Nullable ZooKeeperClient zooKeeperClient;
+    private final @Nullable Authorizer authorizer;
     private final String clusterId;
     private final String kafkaDatabase;
     private final Configuration serverConf;
@@ -67,6 +69,7 @@ public final class KafkaServerContext {
                 coordinatorGateway,
                 replicaManager,
                 zooKeeperClient,
+                null,
                 clusterId,
                 kafkaDatabase,
                 Integer.MIN_VALUE,
@@ -83,11 +86,36 @@ public final class KafkaServerContext {
             String kafkaDatabase,
             int ownServerId,
             Configuration serverConf) {
+        this(
+                metadataCache,
+                metadataManager,
+                coordinatorGateway,
+                replicaManager,
+                zooKeeperClient,
+                null,
+                clusterId,
+                kafkaDatabase,
+                ownServerId,
+                serverConf);
+    }
+
+    public KafkaServerContext(
+            @Nullable ClusterMetadataProvider metadataCache,
+            @Nullable MetadataManager metadataManager,
+            @Nullable CoordinatorGateway coordinatorGateway,
+            @Nullable ReplicaManager replicaManager,
+            @Nullable ZooKeeperClient zooKeeperClient,
+            @Nullable Authorizer authorizer,
+            String clusterId,
+            String kafkaDatabase,
+            int ownServerId,
+            Configuration serverConf) {
         this.metadataCache = metadataCache;
         this.metadataManager = metadataManager;
         this.coordinatorGateway = coordinatorGateway;
         this.replicaManager = replicaManager;
         this.zooKeeperClient = zooKeeperClient;
+        this.authorizer = authorizer;
         this.clusterId = checkNotNull(clusterId, "clusterId");
         this.kafkaDatabase = checkNotNull(kafkaDatabase, "kafkaDatabase");
         this.ownServerId = ownServerId;
@@ -167,5 +195,16 @@ public final class KafkaServerContext {
     /** Returns the full server-side configuration the plugin was started with. */
     public Configuration serverConf() {
         return serverConf;
+    }
+
+    /**
+     * The ACL enforcement point for this Kafka listener, or {@code null} when the server started
+     * with {@code authorizer.enabled=false} or the plugin is bound to a test-only gateway. Handlers
+     * must no-op authz when this is {@code null} so that unauthenticated development setups (and
+     * the test gateway) continue to work.
+     */
+    @Nullable
+    public Authorizer authorizer() {
+        return authorizer;
     }
 }
