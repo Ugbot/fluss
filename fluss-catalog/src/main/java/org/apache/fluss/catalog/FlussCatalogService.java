@@ -19,6 +19,8 @@ package org.apache.fluss.catalog;
 
 import org.apache.fluss.annotation.Internal;
 import org.apache.fluss.catalog.entities.CatalogTableEntity;
+import org.apache.fluss.catalog.entities.ClientQuotaEntry;
+import org.apache.fluss.catalog.entities.ClientQuotaFilter;
 import org.apache.fluss.catalog.entities.GrantEntity;
 import org.apache.fluss.catalog.entities.KafkaSubjectBinding;
 import org.apache.fluss.catalog.entities.NamespaceEntity;
@@ -92,6 +94,7 @@ public final class FlussCatalogService implements CatalogService, AutoCloseable 
         PRINCIPALS,
         GRANTS,
         KAFKA_BINDINGS,
+        CLIENT_QUOTAS,
         ID_RESERVATIONS
     }
 
@@ -458,6 +461,104 @@ public final class FlussCatalogService implements CatalogService, AutoCloseable 
     }
 
     // =================================================================
+    // Client quotas (Phase I.3, Path A: storage only)
+    // =================================================================
+
+    @Override
+    public ClientQuotaEntry upsertClientQuota(
+            String entityType, String entityName, String quotaKey, double quotaValue)
+            throws Exception {
+        requireNonEmpty("entityType", entityType);
+        // entityName is allowed to be the empty string (Kafka convention for "default entity").
+        if (entityName == null) {
+            throw new CatalogException(
+                    CatalogException.Kind.INVALID_INPUT, "entityName is required (may be empty)");
+        }
+        requireNonEmpty("quotaKey", quotaKey);
+        long nowMs = System.currentTimeMillis();
+        GenericRow row = new GenericRow(5);
+        row.setField(0, BinaryString.fromString(entityType));
+        row.setField(1, BinaryString.fromString(entityName));
+        row.setField(2, BinaryString.fromString(quotaKey));
+        row.setField(3, quotaValue);
+        row.setField(4, TimestampLtz.fromEpochMillis(nowMs));
+        upsert(Handle.CLIENT_QUOTAS, row);
+        return new ClientQuotaEntry(entityType, entityName, quotaKey, quotaValue, nowMs);
+    }
+
+    @Override
+    public void deleteClientQuota(String entityType, String entityName, String quotaKey)
+            throws Exception {
+        requireNonEmpty("entityType", entityType);
+        if (entityName == null) {
+            throw new CatalogException(
+                    CatalogException.Kind.INVALID_INPUT, "entityName is required (may be empty)");
+        }
+        requireNonEmpty("quotaKey", quotaKey);
+        deleteClientQuotaRow(entityType, entityName, quotaKey);
+    }
+
+    @Override
+    public List<ClientQuotaEntry> listClientQuotas(ClientQuotaFilter filter) throws Exception {
+        List<ClientQuotaEntry> all = new ArrayList<>();
+        scan(
+                Handle.CLIENT_QUOTAS,
+                row -> {
+                    String entityType = row.getString(0).toString();
+                    String entityName = row.getString(1).toString();
+                    String quotaKey = row.getString(2).toString();
+                    if ("__readiness__".equals(entityType)) {
+                        return; // skip sentinel probe rows if any ever slip in
+                    }
+                    double quotaValue = row.getDouble(3);
+                    long updatedAt = row.getTimestampLtz(4, 3).toEpochMicros() / 1000;
+                    all.add(
+                            new ClientQuotaEntry(
+                                    entityType, entityName, quotaKey, quotaValue, updatedAt));
+                });
+        if (filter.components().isEmpty()) {
+            return all;
+        }
+        List<ClientQuotaEntry> out = new ArrayList<>();
+        for (ClientQuotaEntry e : all) {
+            if (matches(e, filter)) {
+                out.add(e);
+            }
+        }
+        return out;
+    }
+
+    private static boolean matches(ClientQuotaEntry entry, ClientQuotaFilter filter) {
+        // Strict mode: every entity-type dimension in the entry must appear in filter components
+        // and match. Because our storage schema has a single entity-type per row, strictness
+        // reduces to "one component, this component's entityType equals the row's".
+        if (filter.strict() && filter.components().size() != 1) {
+            return false;
+        }
+        for (ClientQuotaFilter.Component c : filter.components()) {
+            if (!c.entityType().equals(entry.entityType())) {
+                if (filter.strict()) {
+                    return false;
+                }
+                continue; // lenient — a component over a different type doesn't reject the row
+            }
+            if (c.matchDefault()) {
+                if (!entry.isDefault()) {
+                    return false;
+                }
+            } else if (c.entityName() != null) {
+                if (!c.entityName().equals(entry.entityName())) {
+                    return false;
+                }
+            }
+            // ofEntityType (no name, no matchDefault) matches any name under this type.
+            return true;
+        }
+        // No matching component found for the entry's entity type.
+        return false;
+    }
+
+    // =================================================================
     // Principals
     // =================================================================
 
@@ -726,6 +827,14 @@ public final class FlussCatalogService implements CatalogService, AutoCloseable 
                     r.setField(0, 0);
                     return r;
                 }
+            case CLIENT_QUOTAS:
+                {
+                    GenericRow r = new GenericRow(3);
+                    r.setField(0, BinaryString.fromString("__readiness__"));
+                    r.setField(1, BinaryString.fromString(""));
+                    r.setField(2, BinaryString.fromString(""));
+                    return r;
+                }
             default:
                 {
                     GenericRow r = new GenericRow(1);
@@ -767,6 +876,8 @@ public final class FlussCatalogService implements CatalogService, AutoCloseable 
                 return SystemTables.GRANTS;
             case KAFKA_BINDINGS:
                 return SystemTables.KAFKA_BINDINGS;
+            case CLIENT_QUOTAS:
+                return SystemTables.CLIENT_QUOTAS;
             case ID_RESERVATIONS:
                 return SystemTables.ID_RESERVATIONS;
             default:
@@ -870,9 +981,24 @@ public final class FlussCatalogService implements CatalogService, AutoCloseable 
             case ID_RESERVATIONS:
                 throw new IllegalArgumentException(
                         "ID_RESERVATIONS delete uses a numeric PK; use deletePlaceholderInt()");
+            case CLIENT_QUOTAS:
+                throw new IllegalArgumentException(
+                        "CLIENT_QUOTAS delete uses a composite PK; use deleteClientQuotaRow()");
             default:
                 throw new IllegalStateException("Unknown handle: " + handle);
         }
+    }
+
+    /** Delete a single client-quota row by its composite PK. */
+    private void deleteClientQuotaRow(String entityType, String entityName, String quotaKey)
+            throws Exception {
+        GenericRow row = new GenericRow(5);
+        row.setField(0, BinaryString.fromString(entityType));
+        row.setField(1, BinaryString.fromString(entityName));
+        row.setField(2, BinaryString.fromString(quotaKey));
+        row.setField(3, 0.0);
+        row.setField(4, TimestampLtz.fromEpochMillis(0));
+        delete(Handle.CLIENT_QUOTAS, row);
     }
 
     private @Nullable InternalRow awaitLookup(Lookuper lookuper, InternalRow key) throws Exception {

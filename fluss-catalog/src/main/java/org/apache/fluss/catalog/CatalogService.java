@@ -19,6 +19,8 @@ package org.apache.fluss.catalog;
 
 import org.apache.fluss.annotation.PublicEvolving;
 import org.apache.fluss.catalog.entities.CatalogTableEntity;
+import org.apache.fluss.catalog.entities.ClientQuotaEntry;
+import org.apache.fluss.catalog.entities.ClientQuotaFilter;
 import org.apache.fluss.catalog.entities.GrantEntity;
 import org.apache.fluss.catalog.entities.KafkaSubjectBinding;
 import org.apache.fluss.catalog.entities.NamespaceEntity;
@@ -122,6 +124,22 @@ public interface CatalogService {
     Optional<KafkaSubjectBinding> resolveKafkaSubject(String subject) throws Exception;
 
     List<KafkaSubjectBinding> listKafkaSubjects() throws Exception;
+
+    // --------------------------- Client quotas ------------------------ //
+
+    /**
+     * Upsert a single client-quota entry. {@code entityName} may be the empty string to target the
+     * default entity. Phase I.3 (Path A) storage-only — this does not install a throttle.
+     */
+    ClientQuotaEntry upsertClientQuota(
+            String entityType, String entityName, String quotaKey, double quotaValue)
+            throws Exception;
+
+    /** Delete a client-quota entry. No-op when the entry is absent. */
+    void deleteClientQuota(String entityType, String entityName, String quotaKey) throws Exception;
+
+    /** List every client-quota entry matching {@code filter}. */
+    List<ClientQuotaEntry> listClientQuotas(ClientQuotaFilter filter) throws Exception;
 
     // --------------------------- Principals --------------------------- //
 

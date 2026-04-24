@@ -117,6 +117,23 @@ public final class SystemTables {
                             .primaryKey("subject")
                             .build());
 
+    /**
+     * Kafka-compatible client-quotas store. PK is the composite {@code (entityType, entityName,
+     * quotaKey)}; {@code entityName} is the empty string for the "default entity" of its type.
+     * Phase I.3 (Path A) is storage-only — Produce / Fetch paths don't consult these rows.
+     */
+    public static final Table CLIENT_QUOTAS =
+            new Table(
+                    "_client_quotas",
+                    Schema.newBuilder()
+                            .column("entity_type", DataTypes.STRING().copy(false))
+                            .column("entity_name", DataTypes.STRING().copy(false))
+                            .column("quota_key", DataTypes.STRING().copy(false))
+                            .column("quota_value", DataTypes.DOUBLE().copy(false))
+                            .column("updated_at", DataTypes.TIMESTAMP_LTZ(3).copy(false))
+                            .primaryKey("entity_type", "entity_name", "quota_key")
+                            .build());
+
     public static final Table ID_RESERVATIONS =
             new Table(
                     "_id_reservations",
@@ -133,7 +150,14 @@ public final class SystemTables {
     /** Every system table, in bootstrap order (namespaces first, grants after their targets). */
     public static Table[] all() {
         return new Table[] {
-            NAMESPACES, TABLES, SCHEMAS, PRINCIPALS, GRANTS, KAFKA_BINDINGS, ID_RESERVATIONS
+            NAMESPACES,
+            TABLES,
+            SCHEMAS,
+            PRINCIPALS,
+            GRANTS,
+            KAFKA_BINDINGS,
+            CLIENT_QUOTAS,
+            ID_RESERVATIONS
         };
     }
 

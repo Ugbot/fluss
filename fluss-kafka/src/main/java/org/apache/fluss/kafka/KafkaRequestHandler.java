@@ -17,9 +17,12 @@
 
 package org.apache.fluss.kafka;
 
+import org.apache.fluss.catalog.CatalogService;
+import org.apache.fluss.catalog.FlussCatalogService;
 import org.apache.fluss.client.Connection;
 import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.kafka.admin.KafkaAdminTranscoder;
+import org.apache.fluss.kafka.admin.KafkaClientQuotasTranscoder;
 import org.apache.fluss.kafka.admin.KafkaConfigsTranscoder;
 import org.apache.fluss.kafka.admin.KafkaCreatePartitionsTranscoder;
 import org.apache.fluss.kafka.admin.KafkaDeleteRecordsTranscoder;
@@ -43,6 +46,7 @@ import org.apache.fluss.rpc.gateway.TabletServerGateway;
 import org.apache.fluss.rpc.netty.server.RequestHandler;
 import org.apache.fluss.rpc.protocol.RequestType;
 
+import org.apache.kafka.common.message.AlterClientQuotasResponseData;
 import org.apache.kafka.common.message.AlterConfigsResponseData;
 import org.apache.kafka.common.message.ApiVersionsResponseData;
 import org.apache.kafka.common.message.CreatePartitionsResponseData;
@@ -50,6 +54,7 @@ import org.apache.kafka.common.message.CreateTopicsResponseData;
 import org.apache.kafka.common.message.DeleteGroupsResponseData;
 import org.apache.kafka.common.message.DeleteRecordsResponseData;
 import org.apache.kafka.common.message.DeleteTopicsResponseData;
+import org.apache.kafka.common.message.DescribeClientQuotasResponseData;
 import org.apache.kafka.common.message.DescribeClusterResponseData;
 import org.apache.kafka.common.message.DescribeConfigsResponseData;
 import org.apache.kafka.common.message.DescribeGroupsResponseData;
@@ -73,6 +78,8 @@ import org.apache.kafka.common.protocol.Errors;
 import org.apache.kafka.common.record.RecordBatch;
 import org.apache.kafka.common.requests.AbstractRequest;
 import org.apache.kafka.common.requests.AbstractResponse;
+import org.apache.kafka.common.requests.AlterClientQuotasRequest;
+import org.apache.kafka.common.requests.AlterClientQuotasResponse;
 import org.apache.kafka.common.requests.AlterConfigsRequest;
 import org.apache.kafka.common.requests.AlterConfigsResponse;
 import org.apache.kafka.common.requests.ApiVersionsResponse;
@@ -86,6 +93,8 @@ import org.apache.kafka.common.requests.DeleteRecordsRequest;
 import org.apache.kafka.common.requests.DeleteRecordsResponse;
 import org.apache.kafka.common.requests.DeleteTopicsRequest;
 import org.apache.kafka.common.requests.DeleteTopicsResponse;
+import org.apache.kafka.common.requests.DescribeClientQuotasRequest;
+import org.apache.kafka.common.requests.DescribeClientQuotasResponse;
 import org.apache.kafka.common.requests.DescribeClusterResponse;
 import org.apache.kafka.common.requests.DescribeConfigsRequest;
 import org.apache.kafka.common.requests.DescribeConfigsResponse;
@@ -180,6 +189,8 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
                     ApiKeys.INCREMENTAL_ALTER_CONFIGS,
                     ApiKeys.ELECT_LEADERS,
                     ApiKeys.DESCRIBE_PRODUCERS,
+                    ApiKeys.DESCRIBE_CLIENT_QUOTAS,
+                    ApiKeys.ALTER_CLIENT_QUOTAS,
                     // SASL APIs are intercepted in KafkaCommandDecoder and never reach the handler,
                     // but we list them here so ApiVersions advertises their true implementation
                     // status to clients that consult IMPLEMENTED_APIS.
@@ -209,6 +220,18 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
      * and closed in {@link #close()}.
      */
     @javax.annotation.Nullable private final Connection offsetsConnection;
+
+    /**
+     * Lazy-opened Fluss catalog handle used by the Kafka client-quotas bolt-on (Phase I.3). Opened
+     * on first DESCRIBE_CLIENT_QUOTAS / ALTER_CLIENT_QUOTAS, closed in {@link #close()}. May share
+     * the {@link #offsetsConnection} when the FlussPkOffsetStore is active; otherwise opens its
+     * own.
+     */
+    @javax.annotation.Nullable private volatile FlussCatalogService kafkaClientQuotasCatalog;
+
+    @javax.annotation.Nullable private volatile Connection kafkaClientQuotasConnection;
+
+    private final Object clientQuotasCatalogLock = new Object();
 
     /** In-memory group registry: membership + generation per groupId. */
     private final KafkaGroupRegistry groupRegistry = new KafkaGroupRegistry();
@@ -275,7 +298,9 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
                     ApiKeys.OFFSET_DELETE,
                     ApiKeys.DESCRIBE_CLUSTER,
                     ApiKeys.ELECT_LEADERS,
-                    ApiKeys.DESCRIBE_PRODUCERS);
+                    ApiKeys.DESCRIBE_PRODUCERS,
+                    ApiKeys.DESCRIBE_CLIENT_QUOTAS,
+                    ApiKeys.ALTER_CLIENT_QUOTAS);
 
     // TODO: we may need a new abstraction between TabletService and ReplicaManager to avoid
     //  affecting Fluss protocol when supporting compatibility with Kafka.
@@ -365,6 +390,25 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
                 ((AutoCloseable) groupOffsets).close();
             } catch (Exception e) {
                 LOG.warn("Failed to close offset store", e);
+            }
+        }
+        // Close the catalog before any Connection we own — it's either piggybacking on
+        // offsetsConnection (which we close below) or on its own dedicated Connection stored in
+        // kafkaClientQuotasConnection.
+        FlussCatalogService catalog = kafkaClientQuotasCatalog;
+        if (catalog != null) {
+            try {
+                catalog.close();
+            } catch (Exception e) {
+                LOG.warn("Failed to close Fluss catalog for Kafka client-quotas store", e);
+            }
+        }
+        Connection quotasConn = kafkaClientQuotasConnection;
+        if (quotasConn != null && quotasConn != offsetsConnection) {
+            try {
+                quotasConn.close();
+            } catch (Exception e) {
+                LOG.warn("Failed to close dedicated Kafka client-quotas Connection", e);
             }
         }
         if (offsetsConnection != null) {
@@ -463,6 +507,12 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
                 break;
             case DESCRIBE_PRODUCERS:
                 handleDescribeProducersRequest(request);
+                break;
+            case DESCRIBE_CLIENT_QUOTAS:
+                handleDescribeClientQuotasRequest(request);
+                break;
+            case ALTER_CLIENT_QUOTAS:
+                handleAlterClientQuotasRequest(request);
                 break;
             default:
                 handleUnsupportedRequest(request);
@@ -1011,6 +1061,79 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
         } catch (Throwable t) {
             LOG.error("ElectLeaders handler threw", t);
             request.fail(t);
+        }
+    }
+
+    void handleDescribeClientQuotasRequest(KafkaRequest request) {
+        if (!context.hasServerState()) {
+            request.fail(
+                    Errors.BROKER_NOT_AVAILABLE.exception(
+                            "Kafka DescribeClientQuotas requires a running server; the plugin is"
+                                    + " not wired."));
+            return;
+        }
+        try {
+            DescribeClientQuotasRequest req = request.request();
+            KafkaClientQuotasTranscoder transcoder =
+                    new KafkaClientQuotasTranscoder(kafkaClientQuotasCatalog());
+            DescribeClientQuotasResponseData data = transcoder.describeClientQuotas(req.data());
+            request.complete(new DescribeClientQuotasResponse(data));
+        } catch (Throwable t) {
+            LOG.error("DescribeClientQuotas handler threw", t);
+            request.fail(t);
+        }
+    }
+
+    void handleAlterClientQuotasRequest(KafkaRequest request) {
+        if (!context.hasServerState()) {
+            request.fail(
+                    Errors.BROKER_NOT_AVAILABLE.exception(
+                            "Kafka AlterClientQuotas requires a running server; the plugin is not"
+                                    + " wired."));
+            return;
+        }
+        try {
+            AlterClientQuotasRequest req = request.request();
+            KafkaClientQuotasTranscoder transcoder =
+                    new KafkaClientQuotasTranscoder(kafkaClientQuotasCatalog());
+            AlterClientQuotasResponseData data = transcoder.alterClientQuotas(req.data());
+            request.complete(new AlterClientQuotasResponse(data));
+        } catch (Throwable t) {
+            LOG.error("AlterClientQuotas handler threw", t);
+            request.fail(t);
+        }
+    }
+
+    /**
+     * Lazy-init the FlussCatalogService backing the Kafka client-quotas store. Reuses {@link
+     * #offsetsConnection} when the FlussPkOffsetStore is active so we don't open a second
+     * Connection; otherwise opens a dedicated one against the FLUSS listener.
+     */
+    private CatalogService kafkaClientQuotasCatalog() {
+        FlussCatalogService existing = kafkaClientQuotasCatalog;
+        if (existing != null) {
+            return existing;
+        }
+        synchronized (clientQuotasCatalogLock) {
+            if (kafkaClientQuotasCatalog != null) {
+                return kafkaClientQuotasCatalog;
+            }
+            Connection conn = offsetsConnection;
+            if (conn == null) {
+                if (!context.ownServerId().isPresent()) {
+                    throw Errors.BROKER_NOT_AVAILABLE.exception(
+                            "Kafka client-quotas require a FLUSS-listener TabletServer to open a"
+                                    + " catalog Connection.");
+                }
+                conn =
+                        org.apache.fluss.kafka.group.OffsetStoreConnections.open(
+                                context.metadataCache(),
+                                context.ownServerId().getAsInt(),
+                                context.serverConf());
+                kafkaClientQuotasConnection = conn;
+            }
+            kafkaClientQuotasCatalog = new FlussCatalogService(conn);
+            return kafkaClientQuotasCatalog;
         }
     }
 
