@@ -250,6 +250,88 @@ class FlussKafkaE2E:
         self._log(f"watermarks low={low} high={high} (>= 7): OK")
         return True
 
+    def test_headers_round_trip(self) -> bool:
+        topic = f"py_hdr_{self.run_id}_{_rand_suffix(4)}"
+        self._create_topic(topic)
+
+        prod = self._producer()
+        expected_headers = [("trace-id", b"abc-123"), ("tenant", b"acme")]
+        prod.produce(
+            topic,
+            key=b"k1",
+            value=b"headered-payload",
+            headers=expected_headers,
+        )
+        prod.flush(timeout=15)
+
+        consumer = self._consumer(f"hdr-group-{self.run_id}-{_rand_suffix(4)}")
+        try:
+            consumer.subscribe([topic])
+            got = None
+            deadline = time.time() + 15
+            while time.time() < deadline and got is None:
+                msg = consumer.poll(1.0)
+                if msg is None or msg.error():
+                    continue
+                got = msg
+        finally:
+            consumer.close()
+
+        if got is None:
+            self.failures.append("headers: no message received")
+            return False
+        actual_headers = got.headers() or []
+        as_dict = {k: v for k, v in actual_headers}
+        for expected_key, expected_value in expected_headers:
+            if as_dict.get(expected_key) != expected_value:
+                self.failures.append(
+                    f"headers: expected {expected_key}={expected_value!r}, "
+                    f"got {actual_headers}"
+                )
+                return False
+        self._log(f"headers round-tripped: {actual_headers}")
+        return True
+
+    def test_multi_partition_spread(self) -> bool:
+        topic = f"py_mp_{self.run_id}_{_rand_suffix(4)}"
+        self._create_topic(topic, partitions=3)
+
+        prod = self._producer()
+        for i in range(30):
+            # Explicit partition steering — 10 msgs per partition.
+            prod.produce(topic, key=f"k{i}".encode(), value=f"v{i}".encode(),
+                         partition=i % 3)
+        prod.flush(timeout=15)
+
+        consumer = self._consumer(f"mp-group-{self.run_id}-{_rand_suffix(4)}")
+        per_partition = {0: 0, 1: 0, 2: 0}
+        try:
+            consumer.subscribe([topic])
+            total = 0
+            deadline = time.time() + 20
+            while time.time() < deadline and total < 30:
+                msg = consumer.poll(1.0)
+                if msg is None or msg.error():
+                    continue
+                per_partition[msg.partition()] = per_partition.get(msg.partition(), 0) + 1
+                total += 1
+        finally:
+            consumer.close()
+
+        if total != 30:
+            self.failures.append(
+                f"multi_partition: expected 30 msgs, got {total} "
+                f"(per-partition {per_partition})"
+            )
+            return False
+        if any(v != 10 for v in per_partition.values()):
+            self.failures.append(
+                f"multi_partition: uneven spread {per_partition}"
+            )
+            return False
+        self._log(f"multi-partition: 10/10/10 across 3 partitions: OK")
+        return True
+
     # --- entry point ---
 
     def run(self) -> int:
@@ -258,6 +340,8 @@ class FlussKafkaE2E:
             ("produce_consume_round_trip", self.test_produce_consume_round_trip),
             ("consumer_group_offset_commit", self.test_consumer_group_offset_commit),
             ("list_offsets_watermarks", self.test_list_offsets),
+            ("headers_round_trip", self.test_headers_round_trip),
+            ("multi_partition_spread", self.test_multi_partition_spread),
         ]
         print(f"Fluss Kafka e2e — bootstrap={self.bootstrap} run={self.run_id}")
         passed = 0

@@ -126,7 +126,9 @@ class KafkaPythonE2EITCase {
         assertThat(output).contains("produce_consume_round_trip").contains("PASS");
         assertThat(output).contains("consumer_group_offset_commit").contains("PASS");
         assertThat(output).contains("list_offsets_watermarks").contains("PASS");
-        assertThat(output).contains("Summary: 4/4 passed");
+        assertThat(output).contains("headers_round_trip").contains("PASS");
+        assertThat(output).contains("multi_partition_spread").contains("PASS");
+        assertThat(output).contains("Summary: 6/6 passed");
     }
 
     private static Path resolvePythonWithConfluentKafka() {
