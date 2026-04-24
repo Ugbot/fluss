@@ -2097,6 +2097,38 @@ public class ConfigOptions {
                     .withDescription(
                             "Close kafka idle connections after the given time specified by this config.");
 
+    public static final ConfigOption<Boolean> KAFKA_METRICS_PER_TOPIC_ENABLED =
+            key("kafka.metrics.per-topic.enabled")
+                    .booleanType()
+                    .defaultValue(true)
+                    .withDescription(
+                            "Whether to emit per-topic Kafka bolt-on metrics (bytesIn/Out, operations, "
+                                    + "errors). Disable on clusters where the cardinality of topics would "
+                                    + "overwhelm the metric reporter.");
+
+    public static final ConfigOption<Integer> KAFKA_METRICS_PER_TOPIC_MAX_CARDINALITY =
+            key("kafka.metrics.per-topic.max-cardinality")
+                    .intType()
+                    .defaultValue(1000)
+                    .withDescription(
+                            "Cap on the number of distinct topic sub-groups emitted for Kafka bolt-on "
+                                    + "per-topic metrics. Topics beyond the cap roll up into a single "
+                                    + "__overflow__ bucket; a warning is logged on the first overflow.");
+
+    public static final ConfigOption<Boolean> KAFKA_METRICS_PER_GROUP_ENABLED =
+            key("kafka.metrics.per-group.enabled")
+                    .booleanType()
+                    .defaultValue(true)
+                    .withDescription("Whether to emit per-consumer-group Kafka bolt-on metrics.");
+
+    public static final ConfigOption<Integer> KAFKA_METRICS_PER_GROUP_MAX_CARDINALITY =
+            key("kafka.metrics.per-group.max-cardinality")
+                    .intType()
+                    .defaultValue(500)
+                    .withDescription(
+                            "Cap on the number of distinct consumer-group sub-groups emitted for the "
+                                    + "Kafka bolt-on. Groups beyond the cap roll up into __overflow__.");
+
     /**
      * Backing store for Kafka consumer-group committed offsets. {@code zk} is the legacy
      * implementation (znodes under {@code /fluss/kafka/offsets/...}). {@code fluss_pk_table} is the
@@ -2165,6 +2197,41 @@ public class ConfigOptions {
                                     + "every HTTP request. Requires a principal-extraction path "
                                     + "(SASL, forwarded-header, etc.); until then the SR treats "
                                     + "every request as ANONYMOUS.");
+
+    /**
+     * CIDR blocks from which the Schema Registry HTTP listener trusts an {@code X-Forwarded-User}
+     * header. Empty (the default) means the header is never trusted — use this for deployments that
+     * have no reverse proxy in front of the SR. Typical values: {@code 10.0.0.0/8} for a private
+     * VPC, {@code 127.0.0.0/8} for loopback-only (local development), or several entries for a
+     * fleet of sidecars. Both IPv4 and IPv6 CIDRs are accepted.
+     */
+    public static final ConfigOption<List<String>> KAFKA_SCHEMA_REGISTRY_TRUSTED_PROXY_CIDRS =
+            key("kafka.schema-registry.trusted-proxy-cidrs")
+                    .stringType()
+                    .asList()
+                    .defaultValues()
+                    .withDescription(
+                            "Comma-separated list of CIDR blocks from which the Schema Registry "
+                                    + "trusts the X-Forwarded-User header. Empty means the header "
+                                    + "is never trusted. Both IPv4 and IPv6 CIDRs are accepted.");
+
+    /**
+     * JAAS-syntax credentials store used by the Schema Registry HTTP Basic-auth fallback. Same
+     * shape as the PLAIN-SASL JAAS config: a single {@code PlainLoginModule required} entry listing
+     * {@code user_<name>="<password>"} pairs. Empty (the default) disables Basic auth. The store is
+     * dedicated to the SR because the HTTP port has no SASL listener name to hang a
+     * listener-specific SASL JAAS config off.
+     */
+    public static final ConfigOption<String> KAFKA_SCHEMA_REGISTRY_BASIC_AUTH_JAAS_CONFIG =
+            key("kafka.schema-registry.basic-auth-jaas-config")
+                    .stringType()
+                    .defaultValue("")
+                    .withDescription(
+                            "JAAS-syntax credentials for HTTP Basic auth on the Schema Registry. "
+                                    + "Empty disables Basic auth. Format matches the SASL PLAIN "
+                                    + "JAAS config: "
+                                    + "'org.apache.fluss.security.auth.sasl.plain.PlainLoginModule "
+                                    + "required user_<name>=\"<password>\";'.");
 
     /**
      * Whether the Iceberg REST Catalog HTTP endpoint is started on the coordinator leader. Second

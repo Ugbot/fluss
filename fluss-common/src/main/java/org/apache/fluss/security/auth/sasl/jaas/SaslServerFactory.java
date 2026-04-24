@@ -18,6 +18,11 @@
 package org.apache.fluss.security.auth.sasl.jaas;
 
 import org.apache.fluss.security.auth.sasl.plain.PlainServerCallbackHandler;
+import org.apache.fluss.security.auth.sasl.scram.JaasFileScramCredentialStore;
+import org.apache.fluss.security.auth.sasl.scram.ScramCredentialStore;
+import org.apache.fluss.security.auth.sasl.scram.ScramMechanism;
+import org.apache.fluss.security.auth.sasl.scram.ScramSaslServerProvider;
+import org.apache.fluss.security.auth.sasl.scram.ScramServerCallbackHandler;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -39,9 +44,32 @@ import java.util.Map;
  * Software Foundation (ASF) under the Apache License, Version 2.0. See the NOTICE file distributed with this work for
  * additional information regarding copyright ownership. */
 
-/** Factory class for creating SASL/PLAIN servers and clients. */
+/** Factory class for creating SASL servers and clients. */
 public class SaslServerFactory {
     private static final Logger LOG = LoggerFactory.getLogger(SaslServerFactory.class);
+
+    /**
+     * Globally-registered SCRAM credential store for server-side credential lookup.
+     *
+     * <p>Tests and bolt-on integrations install a store before the first {@link #createSaslServer}
+     * call. If unset, a dev-mode {@link JaasFileScramCredentialStore} is used; credentials can be
+     * registered at runtime via {@link JaasFileScramCredentialStore#upsert}.
+     */
+    private static volatile ScramCredentialStore scramCredentialStore =
+            new JaasFileScramCredentialStore();
+
+    /** Overrides the SCRAM credential store used by all SASL servers created afterwards. */
+    public static void setScramCredentialStore(ScramCredentialStore store) {
+        if (store == null) {
+            throw new IllegalArgumentException("scram credential store must not be null");
+        }
+        scramCredentialStore = store;
+    }
+
+    /** Returns the currently-registered SCRAM credential store. */
+    public static ScramCredentialStore scramCredentialStore() {
+        return scramCredentialStore;
+    }
 
     public static SaslServer createSaslServer(
             String mechanism,
@@ -56,6 +84,9 @@ public class SaslServerFactory {
             AuthenticateCallbackHandler callbackHandler;
             if (mechanism.equals("PLAIN")) {
                 callbackHandler = new PlainServerCallbackHandler();
+            } else if (ScramMechanism.isScram(mechanism)) {
+                ScramSaslServerProvider.initialize();
+                callbackHandler = new ScramServerCallbackHandler(scramCredentialStore);
             } else {
                 throw new IllegalArgumentException("Unsupported mechanism: " + mechanism);
             }
