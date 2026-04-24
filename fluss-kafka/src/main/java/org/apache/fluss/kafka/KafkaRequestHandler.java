@@ -30,6 +30,7 @@ import org.apache.fluss.kafka.admin.KafkaDeleteRecordsTranscoder;
 import org.apache.fluss.kafka.admin.KafkaDescribeProducersTranscoder;
 import org.apache.fluss.kafka.admin.KafkaElectLeadersTranscoder;
 import org.apache.fluss.kafka.auth.AuthzHelper;
+import org.apache.fluss.kafka.auth.KafkaAclsTranscoder;
 import org.apache.fluss.kafka.catalog.CustomPropertiesTopicsCatalog;
 import org.apache.fluss.kafka.catalog.KafkaTopicsCatalog;
 import org.apache.fluss.kafka.fetch.KafkaFetchTranscoder;
@@ -55,15 +56,18 @@ import org.apache.kafka.common.message.AlterClientQuotasResponseData;
 import org.apache.kafka.common.message.AlterConfigsRequestData;
 import org.apache.kafka.common.message.AlterConfigsResponseData;
 import org.apache.kafka.common.message.ApiVersionsResponseData;
+import org.apache.kafka.common.message.CreateAclsResponseData;
 import org.apache.kafka.common.message.CreatePartitionsRequestData;
 import org.apache.kafka.common.message.CreatePartitionsResponseData;
 import org.apache.kafka.common.message.CreateTopicsRequestData;
 import org.apache.kafka.common.message.CreateTopicsResponseData;
+import org.apache.kafka.common.message.DeleteAclsResponseData;
 import org.apache.kafka.common.message.DeleteGroupsResponseData;
 import org.apache.kafka.common.message.DeleteRecordsRequestData;
 import org.apache.kafka.common.message.DeleteRecordsResponseData;
 import org.apache.kafka.common.message.DeleteTopicsRequestData;
 import org.apache.kafka.common.message.DeleteTopicsResponseData;
+import org.apache.kafka.common.message.DescribeAclsResponseData;
 import org.apache.kafka.common.message.DescribeClientQuotasResponseData;
 import org.apache.kafka.common.message.DescribeClusterResponseData;
 import org.apache.kafka.common.message.DescribeConfigsRequestData;
@@ -100,16 +104,22 @@ import org.apache.kafka.common.requests.AlterClientQuotasResponse;
 import org.apache.kafka.common.requests.AlterConfigsRequest;
 import org.apache.kafka.common.requests.AlterConfigsResponse;
 import org.apache.kafka.common.requests.ApiVersionsResponse;
+import org.apache.kafka.common.requests.CreateAclsRequest;
+import org.apache.kafka.common.requests.CreateAclsResponse;
 import org.apache.kafka.common.requests.CreatePartitionsRequest;
 import org.apache.kafka.common.requests.CreatePartitionsResponse;
 import org.apache.kafka.common.requests.CreateTopicsRequest;
 import org.apache.kafka.common.requests.CreateTopicsResponse;
+import org.apache.kafka.common.requests.DeleteAclsRequest;
+import org.apache.kafka.common.requests.DeleteAclsResponse;
 import org.apache.kafka.common.requests.DeleteGroupsRequest;
 import org.apache.kafka.common.requests.DeleteGroupsResponse;
 import org.apache.kafka.common.requests.DeleteRecordsRequest;
 import org.apache.kafka.common.requests.DeleteRecordsResponse;
 import org.apache.kafka.common.requests.DeleteTopicsRequest;
 import org.apache.kafka.common.requests.DeleteTopicsResponse;
+import org.apache.kafka.common.requests.DescribeAclsRequest;
+import org.apache.kafka.common.requests.DescribeAclsResponse;
 import org.apache.kafka.common.requests.DescribeClientQuotasRequest;
 import org.apache.kafka.common.requests.DescribeClientQuotasResponse;
 import org.apache.kafka.common.requests.DescribeClusterResponse;
@@ -209,6 +219,9 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
                     ApiKeys.DESCRIBE_PRODUCERS,
                     ApiKeys.DESCRIBE_CLIENT_QUOTAS,
                     ApiKeys.ALTER_CLIENT_QUOTAS,
+                    ApiKeys.DESCRIBE_ACLS,
+                    ApiKeys.CREATE_ACLS,
+                    ApiKeys.DELETE_ACLS,
                     // SASL APIs are intercepted in KafkaCommandDecoder and never reach the handler,
                     // but we list them here so ApiVersions advertises their true implementation
                     // status to clients that consult IMPLEMENTED_APIS.
@@ -318,7 +331,10 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
                     ApiKeys.ELECT_LEADERS,
                     ApiKeys.DESCRIBE_PRODUCERS,
                     ApiKeys.DESCRIBE_CLIENT_QUOTAS,
-                    ApiKeys.ALTER_CLIENT_QUOTAS);
+                    ApiKeys.ALTER_CLIENT_QUOTAS,
+                    ApiKeys.DESCRIBE_ACLS,
+                    ApiKeys.CREATE_ACLS,
+                    ApiKeys.DELETE_ACLS);
 
     // TODO: we may need a new abstraction between TabletService and ReplicaManager to avoid
     //  affecting Fluss protocol when supporting compatibility with Kafka.
@@ -531,6 +547,15 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
                 break;
             case ALTER_CLIENT_QUOTAS:
                 handleAlterClientQuotasRequest(request);
+                break;
+            case DESCRIBE_ACLS:
+                handleDescribeAclsRequest(request);
+                break;
+            case CREATE_ACLS:
+                handleCreateAclsRequest(request);
+                break;
+            case DELETE_ACLS:
+                handleDeleteAclsRequest(request);
                 break;
             default:
                 handleUnsupportedRequest(request);
@@ -1649,6 +1674,145 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
             request.complete(new AlterClientQuotasResponse(data));
         } catch (Throwable t) {
             LOG.error("AlterClientQuotas handler threw", t);
+            request.fail(t);
+        }
+    }
+
+    void handleDescribeAclsRequest(KafkaRequest request) {
+        if (context.authorizer() == null) {
+            DescribeAclsRequest req = request.request();
+            DescribeAclsResponseData data = new DescribeAclsResponseData();
+            data.setErrorCode(Errors.SECURITY_DISABLED.code())
+                    .setErrorMessage(
+                            "ACL management requires authorizer.enabled=true on the server.");
+            request.complete(new DescribeAclsResponse(data, req.version()));
+            return;
+        }
+        try {
+            AuthzHelper.authorizeOrThrow(
+                    context.authorizer(),
+                    AuthzHelper.sessionOf(request),
+                    OperationType.DESCRIBE,
+                    Resource.cluster());
+        } catch (AuthorizationException denied) {
+            DescribeAclsResponseData data = new DescribeAclsResponseData();
+            data.setErrorCode(Errors.CLUSTER_AUTHORIZATION_FAILED.code())
+                    .setErrorMessage(denied.getMessage());
+            DescribeAclsRequest req = request.request();
+            request.complete(new DescribeAclsResponse(data, req.version()));
+            return;
+        }
+        try {
+            DescribeAclsRequest req = request.request();
+            KafkaAclsTranscoder transcoder =
+                    new KafkaAclsTranscoder(
+                            context.authorizer(),
+                            context.kafkaDatabase(),
+                            AuthzHelper.sessionOf(request));
+            DescribeAclsResponseData data = transcoder.describeAcls(req.data());
+            request.complete(new DescribeAclsResponse(data, req.version()));
+        } catch (Throwable t) {
+            LOG.error("DescribeAcls handler threw", t);
+            request.fail(t);
+        }
+    }
+
+    void handleCreateAclsRequest(KafkaRequest request) {
+        if (context.authorizer() == null) {
+            CreateAclsResponseData data = new CreateAclsResponseData();
+            CreateAclsRequest req = request.request();
+            for (int i = 0; i < req.data().creations().size(); i++) {
+                data.results()
+                        .add(
+                                new CreateAclsResponseData.AclCreationResult()
+                                        .setErrorCode(Errors.SECURITY_DISABLED.code())
+                                        .setErrorMessage(
+                                                "ACL management requires"
+                                                        + " authorizer.enabled=true."));
+            }
+            request.complete(new CreateAclsResponse(data));
+            return;
+        }
+        try {
+            AuthzHelper.authorizeOrThrow(
+                    context.authorizer(),
+                    AuthzHelper.sessionOf(request),
+                    OperationType.ALTER,
+                    Resource.cluster());
+        } catch (AuthorizationException denied) {
+            CreateAclsResponseData data = new CreateAclsResponseData();
+            CreateAclsRequest req = request.request();
+            for (int i = 0; i < req.data().creations().size(); i++) {
+                data.results()
+                        .add(
+                                new CreateAclsResponseData.AclCreationResult()
+                                        .setErrorCode(Errors.CLUSTER_AUTHORIZATION_FAILED.code())
+                                        .setErrorMessage(denied.getMessage()));
+            }
+            request.complete(new CreateAclsResponse(data));
+            return;
+        }
+        try {
+            CreateAclsRequest req = request.request();
+            KafkaAclsTranscoder transcoder =
+                    new KafkaAclsTranscoder(
+                            context.authorizer(),
+                            context.kafkaDatabase(),
+                            AuthzHelper.sessionOf(request));
+            CreateAclsResponseData data = transcoder.createAcls(req.data());
+            request.complete(new CreateAclsResponse(data));
+        } catch (Throwable t) {
+            LOG.error("CreateAcls handler threw", t);
+            request.fail(t);
+        }
+    }
+
+    void handleDeleteAclsRequest(KafkaRequest request) {
+        if (context.authorizer() == null) {
+            DeleteAclsResponseData data = new DeleteAclsResponseData();
+            DeleteAclsRequest req = request.request();
+            for (int i = 0; i < req.data().filters().size(); i++) {
+                data.filterResults()
+                        .add(
+                                new DeleteAclsResponseData.DeleteAclsFilterResult()
+                                        .setErrorCode(Errors.SECURITY_DISABLED.code())
+                                        .setErrorMessage(
+                                                "ACL management requires"
+                                                        + " authorizer.enabled=true."));
+            }
+            request.complete(new DeleteAclsResponse(data, req.version()));
+            return;
+        }
+        try {
+            AuthzHelper.authorizeOrThrow(
+                    context.authorizer(),
+                    AuthzHelper.sessionOf(request),
+                    OperationType.ALTER,
+                    Resource.cluster());
+        } catch (AuthorizationException denied) {
+            DeleteAclsResponseData data = new DeleteAclsResponseData();
+            DeleteAclsRequest req = request.request();
+            for (int i = 0; i < req.data().filters().size(); i++) {
+                data.filterResults()
+                        .add(
+                                new DeleteAclsResponseData.DeleteAclsFilterResult()
+                                        .setErrorCode(Errors.CLUSTER_AUTHORIZATION_FAILED.code())
+                                        .setErrorMessage(denied.getMessage()));
+            }
+            request.complete(new DeleteAclsResponse(data, req.version()));
+            return;
+        }
+        try {
+            DeleteAclsRequest req = request.request();
+            KafkaAclsTranscoder transcoder =
+                    new KafkaAclsTranscoder(
+                            context.authorizer(),
+                            context.kafkaDatabase(),
+                            AuthzHelper.sessionOf(request));
+            DeleteAclsResponseData data = transcoder.deleteAcls(req.data());
+            request.complete(new DeleteAclsResponse(data, req.version()));
+        } catch (Throwable t) {
+            LOG.error("DeleteAcls handler threw", t);
             request.fail(t);
         }
     }

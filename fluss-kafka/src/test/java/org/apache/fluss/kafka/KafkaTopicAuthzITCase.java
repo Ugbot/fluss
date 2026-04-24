@@ -46,6 +46,7 @@ import org.junit.jupiter.api.TestMethodOrder;
 import org.junit.jupiter.api.extension.RegisterExtension;
 
 import java.time.Duration;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
 import java.util.Properties;
@@ -151,6 +152,79 @@ class KafkaTopicAuthzITCase {
                 .all()
                 .get();
         assertThat(aliceAdmin.listTopics().names().get()).contains(topic);
+    }
+
+    @Test
+    @Order(3)
+    void adminCanCreateDescribeDeleteAclsOverKafkaWire() throws Exception {
+        // admin has super-user privileges, so CreateAcls / DescribeAcls / DeleteAcls all work
+        // end-to-end through the KafkaAclsTranscoder → DefaultAuthorizer pipeline.
+        try (Admin adminAdmin = KafkaAdminClient.create(adminPropsFor(ADMIN, ADMIN_PASSWORD))) {
+            String topic = "authz_acls_" + System.nanoTime();
+            org.apache.kafka.common.acl.AclBinding kafkaBinding =
+                    new org.apache.kafka.common.acl.AclBinding(
+                            new org.apache.kafka.common.resource.ResourcePattern(
+                                    org.apache.kafka.common.resource.ResourceType.TOPIC,
+                                    topic,
+                                    org.apache.kafka.common.resource.PatternType.LITERAL),
+                            new org.apache.kafka.common.acl.AccessControlEntry(
+                                    "User:" + ALICE,
+                                    "*",
+                                    org.apache.kafka.common.acl.AclOperation.READ,
+                                    org.apache.kafka.common.acl.AclPermissionType.ALLOW));
+
+            adminAdmin.createAcls(Collections.singletonList(kafkaBinding)).all().get();
+
+            Collection<org.apache.kafka.common.acl.AclBinding> found =
+                    adminAdmin
+                            .describeAcls(
+                                    new org.apache.kafka.common.acl.AclBindingFilter(
+                                            new org.apache.kafka.common.resource
+                                                    .ResourcePatternFilter(
+                                                    org.apache.kafka.common.resource.ResourceType
+                                                            .TOPIC,
+                                                    topic,
+                                                    org.apache.kafka.common.resource.PatternType
+                                                            .LITERAL),
+                                            org.apache.kafka.common.acl.AccessControlEntryFilter
+                                                    .ANY))
+                            .values()
+                            .get();
+            assertThat(found).isNotEmpty();
+
+            adminAdmin
+                    .deleteAcls(
+                            Collections.singletonList(
+                                    new org.apache.kafka.common.acl.AclBindingFilter(
+                                            new org.apache.kafka.common.resource
+                                                    .ResourcePatternFilter(
+                                                    org.apache.kafka.common.resource.ResourceType
+                                                            .TOPIC,
+                                                    topic,
+                                                    org.apache.kafka.common.resource.PatternType
+                                                            .LITERAL),
+                                            org.apache.kafka.common.acl.AccessControlEntryFilter
+                                                    .ANY)))
+                    .all()
+                    .get();
+
+            Collection<org.apache.kafka.common.acl.AclBinding> afterDelete =
+                    adminAdmin
+                            .describeAcls(
+                                    new org.apache.kafka.common.acl.AclBindingFilter(
+                                            new org.apache.kafka.common.resource
+                                                    .ResourcePatternFilter(
+                                                    org.apache.kafka.common.resource.ResourceType
+                                                            .TOPIC,
+                                                    topic,
+                                                    org.apache.kafka.common.resource.PatternType
+                                                            .LITERAL),
+                                            org.apache.kafka.common.acl.AccessControlEntryFilter
+                                                    .ANY))
+                            .values()
+                            .get();
+            assertThat(afterDelete).isEmpty();
+        }
     }
 
     private void seedAcl(AclBinding binding) {
