@@ -23,6 +23,7 @@ import org.apache.fluss.kafka.admin.KafkaAdminTranscoder;
 import org.apache.fluss.kafka.admin.KafkaConfigsTranscoder;
 import org.apache.fluss.kafka.admin.KafkaCreatePartitionsTranscoder;
 import org.apache.fluss.kafka.admin.KafkaDeleteRecordsTranscoder;
+import org.apache.fluss.kafka.admin.KafkaElectLeadersTranscoder;
 import org.apache.fluss.kafka.catalog.CustomPropertiesTopicsCatalog;
 import org.apache.fluss.kafka.catalog.KafkaTopicsCatalog;
 import org.apache.fluss.kafka.fetch.KafkaFetchTranscoder;
@@ -51,6 +52,7 @@ import org.apache.kafka.common.message.DeleteTopicsResponseData;
 import org.apache.kafka.common.message.DescribeClusterResponseData;
 import org.apache.kafka.common.message.DescribeConfigsResponseData;
 import org.apache.kafka.common.message.DescribeGroupsResponseData;
+import org.apache.kafka.common.message.ElectLeadersResponseData;
 import org.apache.kafka.common.message.FindCoordinatorResponseData;
 import org.apache.kafka.common.message.HeartbeatResponseData;
 import org.apache.kafka.common.message.IncrementalAlterConfigsResponseData;
@@ -87,6 +89,8 @@ import org.apache.kafka.common.requests.DescribeConfigsRequest;
 import org.apache.kafka.common.requests.DescribeConfigsResponse;
 import org.apache.kafka.common.requests.DescribeGroupsRequest;
 import org.apache.kafka.common.requests.DescribeGroupsResponse;
+import org.apache.kafka.common.requests.ElectLeadersRequest;
+import org.apache.kafka.common.requests.ElectLeadersResponse;
 import org.apache.kafka.common.requests.FetchRequest;
 import org.apache.kafka.common.requests.FetchResponse;
 import org.apache.kafka.common.requests.FindCoordinatorRequest;
@@ -170,6 +174,7 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
                     ApiKeys.DESCRIBE_CONFIGS,
                     ApiKeys.ALTER_CONFIGS,
                     ApiKeys.INCREMENTAL_ALTER_CONFIGS,
+                    ApiKeys.ELECT_LEADERS,
                     // SASL APIs are intercepted in KafkaCommandDecoder and never reach the handler,
                     // but we list them here so ApiVersions advertises their true implementation
                     // status to clients that consult IMPLEMENTED_APIS.
@@ -263,7 +268,8 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
                     ApiKeys.CREATE_PARTITIONS,
                     ApiKeys.DELETE_GROUPS,
                     ApiKeys.OFFSET_DELETE,
-                    ApiKeys.DESCRIBE_CLUSTER);
+                    ApiKeys.DESCRIBE_CLUSTER,
+                    ApiKeys.ELECT_LEADERS);
 
     // TODO: we may need a new abstraction between TabletService and ReplicaManager to avoid
     //  affecting Fluss protocol when supporting compatibility with Kafka.
@@ -445,6 +451,9 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
                 break;
             case INCREMENTAL_ALTER_CONFIGS:
                 handleIncrementalAlterConfigsRequest(request);
+                break;
+            case ELECT_LEADERS:
+                handleElectLeadersRequest(request);
                 break;
             default:
                 handleUnsupportedRequest(request);
@@ -974,6 +983,26 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
     private KafkaConfigsTranscoder newConfigsTranscoder() {
         return new KafkaConfigsTranscoder(
                 context.metadataManager(), newCatalog(), context.kafkaDatabase());
+    }
+
+    void handleElectLeadersRequest(KafkaRequest request) {
+        if (!context.hasServerState()) {
+            request.fail(
+                    Errors.BROKER_NOT_AVAILABLE.exception(
+                            "Kafka ElectLeaders requires a running server; the plugin is not"
+                                    + " wired."));
+            return;
+        }
+        try {
+            ElectLeadersRequest req = request.request();
+            KafkaElectLeadersTranscoder transcoder =
+                    new KafkaElectLeadersTranscoder(newCatalog(), context.metadataCache());
+            ElectLeadersResponseData data = transcoder.electLeaders(req.data());
+            request.complete(new ElectLeadersResponse(data));
+        } catch (Throwable t) {
+            LOG.error("ElectLeaders handler threw", t);
+            request.fail(t);
+        }
     }
 
     void handleFetchRequest(KafkaRequest request) {
