@@ -461,37 +461,74 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
 
     @Override
     public void processRequest(KafkaRequest request) {
-        // Measure and record per-request metrics + log.
-        // Hook completion of the request's future so we capture true end-to-end latency
-        // (handlers hand off to async writes/fetches, so just wrapping the dispatch switch
-        // below would mis-report).
-        final long startNanos = System.nanoTime();
+        // Phase M: single try/finally around dispatch. The metric update and DEBUG log both see
+        // the same startNanos / requestBytes / responseBytes / errorCode, so the two views can't
+        // drift. Completion is async — the metric + log hang off future.whenComplete; the
+        // try/finally is here so a synchronous throw in the dispatch switch still fails the
+        // future so the hook fires.
+        final long startNanos = request.startNanos();
         final KafkaMetricGroup metrics = context.metrics();
-        if (metrics != null) {
-            request.future()
-                    .whenComplete(
-                            (resp, err) -> {
-                                long elapsed = System.nanoTime() - startNanos;
-                                boolean isError = err != null || isErrorResponse(resp);
-                                metrics.onRequest(request.apiKey().name(), elapsed, isError);
-                            });
-        }
-        if (LOG.isDebugEnabled()) {
-            request.future()
-                    .whenComplete(
-                            (resp, err) -> {
-                                long elapsedMs = (System.nanoTime() - startNanos) / 1_000_000L;
+        final String apiName = request.apiKey().name();
+        final int requestBytes = request.requestSize();
+        final boolean debug = LOG.isDebugEnabled();
+        // The metric + DEBUG hook fires on future completion. Response size is normally taken
+        // from {@link KafkaRequest#responseBytes()} which is populated during serialize on the
+        // channel executor; for acks=0 produces and for hooks that fire before serialize runs,
+        // we compute the size directly from the response via {@code computeResponseSize}.
+        request.future()
+                .whenComplete(
+                        (resp, err) -> {
+                            long nowNanos = System.nanoTime();
+                            long processNanos = nowNanos - startNanos;
+                            long flushNanos = request.responseFlushNanos();
+                            long totalNanos =
+                                    flushNanos > 0 ? (flushNanos - startNanos) : processNanos;
+                            long responseBytes = request.responseBytes();
+                            if (responseBytes < 0 && resp != null) {
+                                responseBytes = request.computeResponseSize(resp);
+                            }
+                            boolean isError = err != null || isErrorResponse(resp);
+                            if (metrics != null) {
+                                metrics.onRequest(
+                                        apiName,
+                                        processNanos,
+                                        totalNanos,
+                                        requestBytes,
+                                        responseBytes,
+                                        isError);
+                            }
+                            if (debug) {
+                                long elapsedMs = processNanos / 1_000_000L;
+                                String errorCode = errorCodeShortForm(resp, err);
                                 LOG.debug(
-                                        "kafka.request api={} v={} correlationId={} principal={}"
-                                                + " elapsedMs={} error={}",
-                                        request.apiKey(),
+                                        "kafka-request api={} apiVersion={} clientId={}"
+                                                + " principal={} correlationId={} bytes.in={}"
+                                                + " bytes.out={} elapsed.ms={} error={}",
+                                        apiName,
                                         request.apiVersion(),
-                                        request.header().correlationId(),
+                                        request.header().clientId(),
                                         request.principal().getName(),
+                                        request.header().correlationId(),
+                                        requestBytes,
+                                        responseBytes,
                                         elapsedMs,
-                                        err != null ? err.toString() : "none");
-                            });
+                                        errorCode);
+                            }
+                        });
+        try {
+            dispatch(request);
+        } catch (Throwable t) {
+            // Synchronous dispatch failure — fail the future so the whenComplete hook above
+            // still fires with a useful error code, and rethrow so the decoder sees it too.
+            if (!request.future().isDone()) {
+                request.fail(t);
+            }
+            throw t;
         }
+    }
+
+    /** Dispatch switch, split out so {@link #processRequest} stays readable. */
+    private void dispatch(KafkaRequest request) {
         // See kafka.server.KafkaApis#handle
         switch (request.apiKey()) {
             case API_VERSIONS:
@@ -605,6 +642,25 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
     }
 
     void handleDescribeUserScramCredentialsRequest(KafkaRequest request) {
+        try {
+            // SCRAM credentials are a broker-private secret store; DESCRIBE on CLUSTER gates the
+            // read so that no authenticated user can enumerate other users' credentials without a
+            // cluster-admin grant. No-op on PLAINTEXT listeners (authorizer == null).
+            AuthzHelper.authorizeOrThrow(
+                    context.authorizer(),
+                    AuthzHelper.sessionOf(request),
+                    OperationType.DESCRIBE,
+                    Resource.cluster());
+        } catch (AuthorizationException denied) {
+            org.apache.kafka.common.message.DescribeUserScramCredentialsResponseData data =
+                    new org.apache.kafka.common.message.DescribeUserScramCredentialsResponseData();
+            data.setErrorCode(Errors.CLUSTER_AUTHORIZATION_FAILED.code())
+                    .setErrorMessage(denied.getMessage());
+            request.complete(
+                    new org.apache.kafka.common.requests.DescribeUserScramCredentialsResponse(
+                            data));
+            return;
+        }
         org.apache.fluss.security.auth.sasl.scram.ScramCredentialStore store =
                 org.apache.fluss.security.auth.sasl.jaas.SaslServerFactory.scramCredentialStore();
         org.apache.kafka.common.message.DescribeUserScramCredentialsRequestData req =
@@ -616,6 +672,53 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
     }
 
     void handleAlterUserScramCredentialsRequest(KafkaRequest request) {
+        try {
+            // Mutating the broker's SCRAM credential store is a cluster-admin operation — ALTER on
+            // CLUSTER. No-op on PLAINTEXT listeners.
+            AuthzHelper.authorizeOrThrow(
+                    context.authorizer(),
+                    AuthzHelper.sessionOf(request),
+                    OperationType.ALTER,
+                    Resource.cluster());
+        } catch (AuthorizationException denied) {
+            org.apache.kafka.common.message.AlterUserScramCredentialsResponseData data =
+                    new org.apache.kafka.common.message.AlterUserScramCredentialsResponseData();
+            // Emit one top-level CLUSTER_AUTHORIZATION_FAILED result per user mentioned in the
+            // request so the Kafka client's per-user futures all fail cleanly.
+            org.apache.kafka.common.message.AlterUserScramCredentialsRequestData deniedReq =
+                    request.request();
+            java.util.Set<String> users = new java.util.LinkedHashSet<>();
+            if (deniedReq.deletions() != null) {
+                for (org.apache.kafka.common.message.AlterUserScramCredentialsRequestData
+                                .ScramCredentialDeletion
+                        d : deniedReq.deletions()) {
+                    users.add(d.name());
+                }
+            }
+            if (deniedReq.upsertions() != null) {
+                for (org.apache.kafka.common.message.AlterUserScramCredentialsRequestData
+                                .ScramCredentialUpsertion
+                        u : deniedReq.upsertions()) {
+                    users.add(u.name());
+                }
+            }
+            if (users.isEmpty()) {
+                users.add("");
+            }
+            for (String user : users) {
+                data.results()
+                        .add(
+                                new org.apache.kafka.common.message
+                                                .AlterUserScramCredentialsResponseData
+                                                .AlterUserScramCredentialsResult()
+                                        .setUser(user)
+                                        .setErrorCode(Errors.CLUSTER_AUTHORIZATION_FAILED.code())
+                                        .setErrorMessage(denied.getMessage()));
+            }
+            request.complete(
+                    new org.apache.kafka.common.requests.AlterUserScramCredentialsResponse(data));
+            return;
+        }
         org.apache.fluss.security.auth.sasl.scram.ScramCredentialStore store =
                 org.apache.fluss.security.auth.sasl.jaas.SaslServerFactory.scramCredentialStore();
         org.apache.kafka.common.message.AlterUserScramCredentialsRequestData req =
@@ -652,6 +755,31 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
             }
         }
         return false;
+    }
+
+    /**
+     * Short-form error tag for the per-request DEBUG log: {@code "none"} if the future completed
+     * cleanly with no nested error code, the Kafka {@link Errors} name when a throwable is present,
+     * or the first non-{@code NONE} per-topic error name from {@link
+     * AbstractResponse#errorCounts()}. Always a single token so the log line grep-filters cleanly.
+     */
+    private static String errorCodeShortForm(AbstractResponse response, Throwable err) {
+        if (err != null) {
+            return Errors.forException(err).name();
+        }
+        if (response == null) {
+            return "unknown";
+        }
+        Map<Errors, Integer> errorCounts = response.errorCounts();
+        if (errorCounts == null || errorCounts.isEmpty()) {
+            return "none";
+        }
+        for (Map.Entry<Errors, Integer> entry : errorCounts.entrySet()) {
+            if (entry.getKey() != Errors.NONE && entry.getValue() != null && entry.getValue() > 0) {
+                return entry.getKey().name();
+            }
+        }
+        return "none";
     }
 
     void handleApiVersionsRequest(KafkaRequest request) {
@@ -1144,7 +1272,15 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
                                 KafkaMetricGroup m = context.metrics();
                                 if (m != null) {
                                     long elapsedMs = (System.nanoTime() - joinStart) / 1_000_000L;
-                                    m.recordJoin(req.data().groupId(), elapsedMs);
+                                    String gid = req.data().groupId();
+                                    m.registerMemberCountGauge(
+                                            gid,
+                                            id -> {
+                                                KafkaGroupRegistry.GroupState st =
+                                                        groupRegistry.get(id);
+                                                return st == null ? 0 : st.memberCount();
+                                            });
+                                    m.recordJoin(gid, elapsedMs);
                                 }
                                 request.complete(new JoinGroupResponse(data, request.apiVersion()));
                             });
@@ -2184,6 +2320,26 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
      * unique id and epoch 0.
      */
     void handleInitProducerIdRequest(KafkaRequest request) {
+        try {
+            // Kafka's IdempotentWrite semantics require a cluster-level gate on InitProducerId —
+            // the producer id is a broker-minted identifier with no per-topic scope and callers
+            // only need it to talk to any table they also have WRITE on. Gating WRITE on CLUSTER
+            // matches the "cluster-wildcard => every table" rollup behaviour of Fluss's ACL model.
+            // No-op on PLAINTEXT listeners.
+            AuthzHelper.authorizeOrThrow(
+                    context.authorizer(),
+                    AuthzHelper.sessionOf(request),
+                    OperationType.WRITE,
+                    Resource.cluster());
+        } catch (AuthorizationException denied) {
+            InitProducerIdResponseData data = new InitProducerIdResponseData();
+            data.setErrorCode(Errors.CLUSTER_AUTHORIZATION_FAILED.code())
+                    .setProducerId(-1L)
+                    .setProducerEpoch((short) -1)
+                    .setThrottleTimeMs(0);
+            request.complete(new InitProducerIdResponse(data));
+            return;
+        }
         long producerId = STUB_PRODUCER_ID.getAndIncrement();
         InitProducerIdResponseData data = new InitProducerIdResponseData();
         data.setErrorCode(Errors.NONE.code())

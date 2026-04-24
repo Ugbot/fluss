@@ -192,13 +192,8 @@ public class KafkaProtocolPlugin implements NetworkProtocolPlugin {
         int groupCap = conf.get(ConfigOptions.KAFKA_METRICS_PER_GROUP_MAX_CARDINALITY);
         boolean topicEnabled = conf.getBoolean(ConfigOptions.KAFKA_METRICS_PER_TOPIC_ENABLED);
         boolean groupEnabled = conf.getBoolean(ConfigOptions.KAFKA_METRICS_PER_GROUP_ENABLED);
-        if (!topicEnabled) {
-            topicCap = 0;
-        }
-        if (!groupEnabled) {
-            groupCap = 0;
-        }
-        return new KafkaMetricGroup(parent.getMetricRegistry(), parent, topicCap, groupCap);
+        return new KafkaMetricGroup(
+                parent.getMetricRegistry(), parent, topicEnabled, topicCap, groupEnabled, groupCap);
     }
 
     /**

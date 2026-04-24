@@ -82,6 +82,10 @@ public abstract class BoltOnMetricGroup extends AbstractMetricGroup {
             new ConcurrentHashMap<>();
     private final ConcurrentMap<String, SessionEntityMetricGroup> clientGroups =
             new ConcurrentHashMap<>();
+    private final ConcurrentMap<String, Long> entityTouch = new ConcurrentHashMap<>();
+    private final ConcurrentMap<String, Long> clientTouch = new ConcurrentHashMap<>();
+    private final Object entityEvictLock = new Object();
+    private final Object clientEvictLock = new Object();
     private volatile boolean entityOverflowLogged;
     private volatile boolean clientOverflowLogged;
 
@@ -135,18 +139,39 @@ public abstract class BoltOnMetricGroup extends AbstractMetricGroup {
         connectionsClosed.inc();
     }
 
-    /** Report one completed request through the bolt-on. Safe to call on hot paths. */
+    /**
+     * Report one completed request through the bolt-on — legacy signature used by handlers that do
+     * not have request/response byte counts. Safe to call on hot paths.
+     */
     public void onRequest(String apiName, long elapsedNanos, boolean isError) {
+        onRequest(apiName, elapsedNanos, elapsedNanos, -1L, -1L, isError);
+    }
+
+    /**
+     * Report one completed request with the full set of per-request measurements. {@code
+     * requestBytes} / {@code responseBytes} may be {@code -1} when unknown; in that case the
+     * matching histograms skip the update. Both timings are nanosecond-precision; {@code
+     * processNanos} is the handler entry → future complete window, {@code totalNanos} is handler
+     * entry → flush (if the caller only has one value, pass the same value for both).
+     */
+    public void onRequest(
+            String apiName,
+            long processNanos,
+            long totalNanos,
+            long requestBytes,
+            long responseBytes,
+            boolean isError) {
         requests.inc();
         if (isError) {
             errors.inc();
         }
-        long elapsedMs = Math.max(0L, elapsedNanos / 1_000_000L);
-        requestProcessingTime.update(elapsedMs);
+        long processMs = Math.max(0L, processNanos / 1_000_000L);
+        long totalMs = Math.max(0L, totalNanos / 1_000_000L);
+        requestProcessingTime.update(processMs);
 
         ApiMetricGroup api = apiGroup(apiName);
         if (api != null) {
-            api.onRequest(elapsedMs, isError);
+            api.onRequest(processMs, totalMs, requestBytes, responseBytes, isError);
         }
     }
 
@@ -198,30 +223,50 @@ public abstract class BoltOnMetricGroup extends AbstractMetricGroup {
 
     /**
      * Returns (or lazily creates) a session-entity sub-group (e.g. per Kafka topic). Respects the
-     * cardinality cap; names beyond the cap roll up into a shared {@code __overflow__} bucket.
+     * cardinality cap with LRU eviction; names beyond the cap roll up into a shared {@code
+     * __overflow__} bucket, and the least-recently-touched entry is evicted when a new name would
+     * exceed the cap.
      */
     @Nullable
     protected SessionEntityMetricGroup entityGroup(String dimension, String name) {
         if (name == null || name.isEmpty()) {
             return null;
         }
-        return cappedLookup(entityGroups, entityMaxCardinality, dimension, name, "entity", false);
+        return cappedLookup(
+                entityGroups,
+                entityTouch,
+                entityEvictLock,
+                entityMaxCardinality,
+                dimension,
+                name,
+                "entity",
+                false);
     }
 
     /**
      * Returns (or lazily creates) a client-grouping sub-group (e.g. per Kafka consumer group). Same
-     * overflow-bucket behaviour as {@link #entityGroup}.
+     * LRU + overflow-bucket behaviour as {@link #entityGroup}.
      */
     @Nullable
     protected SessionEntityMetricGroup clientGroup(String dimension, String name) {
         if (name == null || name.isEmpty()) {
             return null;
         }
-        return cappedLookup(clientGroups, clientMaxCardinality, dimension, name, "client", true);
+        return cappedLookup(
+                clientGroups,
+                clientTouch,
+                clientEvictLock,
+                clientMaxCardinality,
+                dimension,
+                name,
+                "client",
+                true);
     }
 
     private SessionEntityMetricGroup cappedLookup(
             ConcurrentMap<String, SessionEntityMetricGroup> map,
+            ConcurrentMap<String, Long> touchMap,
+            Object evictLock,
             int cap,
             String dimension,
             String name,
@@ -229,34 +274,115 @@ public abstract class BoltOnMetricGroup extends AbstractMetricGroup {
             boolean isClient) {
         SessionEntityMetricGroup existing = map.get(name);
         if (existing != null) {
+            touchMap.put(name, System.nanoTime());
             return existing;
         }
-        if (map.size() >= cap) {
-            if (isClient) {
-                if (!clientOverflowLogged) {
-                    clientOverflowLogged = true;
-                    LOG.warn(
-                            "{} metrics: {} cardinality cap ({}) reached; further names roll up"
-                                    + " into __overflow__ sub-group.",
-                            subsystemName(),
-                            flavour,
-                            cap);
+        // Creation + eviction is serialised per flavour to make LRU eviction + overflow folding
+        // deterministic. The per-request read path above is still lock-free via ConcurrentMap#get.
+        synchronized (evictLock) {
+            existing = map.get(name);
+            if (existing != null) {
+                touchMap.put(name, System.nanoTime());
+                return existing;
+            }
+            // Eviction is disabled when cap <= 0: every new name routes straight to __overflow__.
+            if (cap <= 0) {
+                warnOverflowOnce(flavour, cap, isClient);
+                return map.computeIfAbsent(
+                        "__overflow__",
+                        n -> new SessionEntityMetricGroup(registry, this, dimension, n));
+            }
+            // If we are at (or past) the cap, evict the least-recently-touched entry. Skip the
+            // __overflow__ slot itself — it is the fold-target, not an eviction candidate, and
+            // does NOT count toward the cap (otherwise once overflow is materialised, every new
+            // name evicts one real entry).
+            while (sizeExcludingOverflow(map) >= cap) {
+                String victim = findLruVictim(touchMap);
+                if (victim == null) {
+                    // Couldn't pick a victim (only __overflow__ left, or all entries equally old
+                    // and the map raced us). Route to overflow.
+                    warnOverflowOnce(flavour, cap, isClient);
+                    return map.computeIfAbsent(
+                            "__overflow__",
+                            n -> new SessionEntityMetricGroup(registry, this, dimension, n));
                 }
-            } else if (!entityOverflowLogged) {
-                entityOverflowLogged = true;
+                warnOverflowOnce(flavour, cap, isClient);
+                SessionEntityMetricGroup evicted = map.remove(victim);
+                touchMap.remove(victim);
+                if (evicted != null) {
+                    SessionEntityMetricGroup overflow =
+                            map.computeIfAbsent(
+                                    "__overflow__",
+                                    n ->
+                                            new SessionEntityMetricGroup(
+                                                    registry, this, dimension, n));
+                    foldInto(overflow, evicted);
+                    evicted.close();
+                }
+            }
+            touchMap.put(name, System.nanoTime());
+            return map.computeIfAbsent(
+                    name, n -> new SessionEntityMetricGroup(registry, this, dimension, n));
+        }
+    }
+
+    private static int sizeExcludingOverflow(ConcurrentMap<String, SessionEntityMetricGroup> map) {
+        return map.containsKey("__overflow__") ? map.size() - 1 : map.size();
+    }
+
+    @Nullable
+    private static String findLruVictim(ConcurrentMap<String, Long> touchMap) {
+        String victim = null;
+        long oldest = Long.MAX_VALUE;
+        for (Map.Entry<String, Long> e : touchMap.entrySet()) {
+            if ("__overflow__".equals(e.getKey())) {
+                continue;
+            }
+            long ts = e.getValue() == null ? 0L : e.getValue();
+            if (ts < oldest) {
+                oldest = ts;
+                victim = e.getKey();
+            }
+        }
+        return victim;
+    }
+
+    private static void foldInto(SessionEntityMetricGroup target, SessionEntityMetricGroup source) {
+        // Counters are monotonic and additive, so folding preserves the aggregate totals. The
+        // __overflow__ group deliberately drops the dimension value — operators see the sum, not
+        // a stale per-name breakdown.
+        target.bytesIn.inc(source.bytesIn.getCount());
+        target.bytesOut.inc(source.bytesOut.getCount());
+        target.messagesIn.inc(source.messagesIn.getCount());
+        target.operations.inc(source.operations.getCount());
+        target.errors.inc(source.errors.getCount());
+        target.produceErrors.inc(source.produceErrors.getCount());
+        target.fetchErrors.inc(source.fetchErrors.getCount());
+        target.heartbeats.inc(source.heartbeats.getCount());
+        target.offsetCommits.inc(source.offsetCommits.getCount());
+        target.rebalances.inc(source.rebalances.getCount());
+    }
+
+    private void warnOverflowOnce(String flavour, int cap, boolean isClient) {
+        if (isClient) {
+            if (!clientOverflowLogged) {
+                clientOverflowLogged = true;
                 LOG.warn(
                         "{} metrics: {} cardinality cap ({}) reached; further names roll up into"
-                                + " __overflow__ sub-group.",
+                                + " __overflow__ sub-group (LRU eviction active).",
                         subsystemName(),
                         flavour,
                         cap);
             }
-            return map.computeIfAbsent(
-                    "__overflow__",
-                    n -> new SessionEntityMetricGroup(registry, this, dimension, n));
+        } else if (!entityOverflowLogged) {
+            entityOverflowLogged = true;
+            LOG.warn(
+                    "{} metrics: {} cardinality cap ({}) reached; further names roll up into"
+                            + " __overflow__ sub-group (LRU eviction active).",
+                    subsystemName(),
+                    flavour,
+                    cap);
         }
-        return map.computeIfAbsent(
-                name, n -> new SessionEntityMetricGroup(registry, this, dimension, n));
     }
 
     // ---- introspection (tests) ------------------------------------------
@@ -311,12 +437,18 @@ public abstract class BoltOnMetricGroup extends AbstractMetricGroup {
 
     // ---- nested sub-group types ------------------------------------------
 
-    /** Per-API request rate + latency + error view. */
+    /** Per-API request rate + latency + error + size view. */
     public static class ApiMetricGroup extends AbstractMetricGroup {
         private final String apiName;
         private final Counter requests = new ThreadSafeSimpleCounter();
         private final Counter errors = new ThreadSafeSimpleCounter();
         private final Histogram processingTime =
+                new DescriptiveStatisticsHistogram(DEFAULT_HISTOGRAM_WINDOW);
+        private final Histogram totalTime =
+                new DescriptiveStatisticsHistogram(DEFAULT_HISTOGRAM_WINDOW);
+        private final Histogram requestBytes =
+                new DescriptiveStatisticsHistogram(DEFAULT_HISTOGRAM_WINDOW);
+        private final Histogram responseBytes =
                 new DescriptiveStatisticsHistogram(DEFAULT_HISTOGRAM_WINDOW);
 
         ApiMetricGroup(MetricRegistry registry, BoltOnMetricGroup parent, String apiName) {
@@ -325,14 +457,29 @@ public abstract class BoltOnMetricGroup extends AbstractMetricGroup {
             meter(BoltOnMetricNames.REQUESTS_RATE, new MeterView(requests));
             meter(BoltOnMetricNames.ERRORS_RATE, new MeterView(errors));
             histogram(BoltOnMetricNames.REQUEST_PROCESS_TIME_MS, processingTime);
+            histogram(BoltOnMetricNames.REQUEST_TOTAL_TIME_MS, totalTime);
+            histogram(BoltOnMetricNames.REQUEST_BYTES, requestBytes);
+            histogram(BoltOnMetricNames.RESPONSE_BYTES, responseBytes);
         }
 
-        void onRequest(long elapsedMs, boolean error) {
+        void onRequest(
+                long processMs,
+                long totalMs,
+                long requestBytesValue,
+                long responseBytesValue,
+                boolean error) {
             requests.inc();
             if (error) {
                 errors.inc();
             }
-            processingTime.update(elapsedMs);
+            processingTime.update(processMs);
+            totalTime.update(totalMs);
+            if (requestBytesValue >= 0) {
+                requestBytes.update(requestBytesValue);
+            }
+            if (responseBytesValue >= 0) {
+                responseBytes.update(responseBytesValue);
+            }
         }
 
         @Override
@@ -353,6 +500,22 @@ public abstract class BoltOnMetricGroup extends AbstractMetricGroup {
             return errors.getCount();
         }
 
+        public Histogram requestBytesHistogram() {
+            return requestBytes;
+        }
+
+        public Histogram responseBytesHistogram() {
+            return responseBytes;
+        }
+
+        public Histogram totalTimeHistogram() {
+            return totalTime;
+        }
+
+        public Histogram processingTimeHistogram() {
+            return processingTime;
+        }
+
         public Meter requestMeter() {
             // MeterView is the only registered metric; fetch via the map.
             Meter m = (Meter) getMetrics().get(BoltOnMetricNames.REQUESTS_RATE);
@@ -369,6 +532,13 @@ public abstract class BoltOnMetricGroup extends AbstractMetricGroup {
         private final Counter messagesIn = new ThreadSafeSimpleCounter();
         private final Counter operations = new ThreadSafeSimpleCounter();
         private final Counter errors = new ThreadSafeSimpleCounter();
+        private final Counter produceErrors = new ThreadSafeSimpleCounter();
+        private final Counter fetchErrors = new ThreadSafeSimpleCounter();
+        private final Counter heartbeats = new ThreadSafeSimpleCounter();
+        private final Counter offsetCommits = new ThreadSafeSimpleCounter();
+        private final Counter rebalances = new ThreadSafeSimpleCounter();
+        private final Histogram joinLatency =
+                new DescriptiveStatisticsHistogram(DEFAULT_HISTOGRAM_WINDOW);
         private final ConcurrentMap<String, Gauge<?>> customGauges = new ConcurrentHashMap<>();
 
         SessionEntityMetricGroup(
@@ -381,6 +551,12 @@ public abstract class BoltOnMetricGroup extends AbstractMetricGroup {
             meter(BoltOnMetricNames.MESSAGES_IN_RATE, new MeterView(messagesIn));
             meter(BoltOnMetricNames.OPERATIONS_RATE, new MeterView(operations));
             meter(BoltOnMetricNames.ERRORS_RATE, new MeterView(errors));
+            meter(BoltOnMetricNames.PRODUCE_ERROR_RATE, new MeterView(produceErrors));
+            meter(BoltOnMetricNames.FETCH_ERROR_RATE, new MeterView(fetchErrors));
+            meter(BoltOnMetricNames.HEARTBEAT_RATE, new MeterView(heartbeats));
+            meter(BoltOnMetricNames.OFFSET_COMMIT_RATE, new MeterView(offsetCommits));
+            meter(BoltOnMetricNames.REBALANCE_RATE, new MeterView(rebalances));
+            histogram(BoltOnMetricNames.JOIN_LATENCY_MS, joinLatency);
         }
 
         public void onBytesIn(long bytes, long records) {
@@ -404,6 +580,36 @@ public abstract class BoltOnMetricGroup extends AbstractMetricGroup {
 
         public void onError() {
             errors.inc();
+        }
+
+        /** Increment the op-kind-tagged produce error counter. */
+        public void onProduceError() {
+            errors.inc();
+            produceErrors.inc();
+        }
+
+        /** Increment the op-kind-tagged fetch error counter. */
+        public void onFetchError() {
+            errors.inc();
+            fetchErrors.inc();
+        }
+
+        /** Record a consumer-group Heartbeat event. */
+        public void onHeartbeat() {
+            heartbeats.inc();
+        }
+
+        /** Record a consumer-group OffsetCommit event. */
+        public void onOffsetCommit() {
+            offsetCommits.inc();
+        }
+
+        /** Record a consumer-group rebalance (a JoinGroup round). */
+        public void onRebalance(long joinLatencyMs) {
+            rebalances.inc();
+            if (joinLatencyMs >= 0) {
+                joinLatency.update(joinLatencyMs);
+            }
         }
 
         /** Register an external gauge under this entity group (idempotent). */
@@ -442,6 +648,30 @@ public abstract class BoltOnMetricGroup extends AbstractMetricGroup {
 
         public long errorCount() {
             return errors.getCount();
+        }
+
+        public long produceErrorCount() {
+            return produceErrors.getCount();
+        }
+
+        public long fetchErrorCount() {
+            return fetchErrors.getCount();
+        }
+
+        public long heartbeatCount() {
+            return heartbeats.getCount();
+        }
+
+        public long offsetCommitCount() {
+            return offsetCommits.getCount();
+        }
+
+        public long rebalanceCount() {
+            return rebalances.getCount();
+        }
+
+        public Histogram joinLatencyHistogram() {
+            return joinLatency;
         }
     }
 }

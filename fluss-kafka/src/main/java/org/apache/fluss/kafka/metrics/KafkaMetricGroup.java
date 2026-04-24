@@ -18,15 +18,20 @@
 package org.apache.fluss.kafka.metrics;
 
 import org.apache.fluss.annotation.Internal;
+import org.apache.fluss.metrics.Gauge;
 import org.apache.fluss.metrics.groups.AbstractMetricGroup;
 import org.apache.fluss.metrics.registry.MetricRegistry;
 import org.apache.fluss.rpc.metrics.BoltOnMetricGroup;
+import org.apache.fluss.rpc.metrics.BoltOnMetricNames;
 import org.apache.fluss.security.acl.OperationType;
 import org.apache.fluss.security.acl.ResourceType;
 
 import javax.annotation.Nullable;
 
 import java.util.Locale;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
+import java.util.function.ToIntFunction;
 
 /**
  * Kafka-flavoured bolt-on metric group. Adds Kafka-protocol-aware entity helpers on top of the
@@ -38,12 +43,53 @@ public final class KafkaMetricGroup extends BoltOnMetricGroup {
 
     public static final String SUBSYSTEM = "kafka";
 
+    /**
+     * Whether per-topic metrics are enabled. When {@code false}, {@link #topicMetrics} returns
+     * null.
+     */
+    private final boolean perTopicEnabled;
+
+    /**
+     * Whether per-consumer-group metrics are enabled. When {@code false}, {@link #groupMetrics}
+     * returns null.
+     */
+    private final boolean perGroupEnabled;
+
+    /**
+     * Tracks which consumer-group ids have had their {@code memberCount} gauge registered already,
+     * so we register each gauge at most once even across concurrent JoinGroup races.
+     */
+    private final ConcurrentMap<String, Boolean> memberCountRegistered = new ConcurrentHashMap<>();
+
     public KafkaMetricGroup(
             MetricRegistry registry,
             AbstractMetricGroup parent,
             int topicMaxCardinality,
             int groupMaxCardinality) {
-        super(registry, parent, SUBSYSTEM, topicMaxCardinality, groupMaxCardinality);
+        this(
+                registry,
+                parent,
+                topicMaxCardinality > 0,
+                topicMaxCardinality,
+                groupMaxCardinality > 0,
+                groupMaxCardinality);
+    }
+
+    public KafkaMetricGroup(
+            MetricRegistry registry,
+            AbstractMetricGroup parent,
+            boolean perTopicEnabled,
+            int topicMaxCardinality,
+            boolean perGroupEnabled,
+            int groupMaxCardinality) {
+        super(
+                registry,
+                parent,
+                SUBSYSTEM,
+                perTopicEnabled ? topicMaxCardinality : 0,
+                perGroupEnabled ? groupMaxCardinality : 0);
+        this.perTopicEnabled = perTopicEnabled;
+        this.perGroupEnabled = perGroupEnabled;
     }
 
     @Override
@@ -51,10 +97,21 @@ public final class KafkaMetricGroup extends BoltOnMetricGroup {
         return SUBSYSTEM;
     }
 
+    public boolean isPerTopicEnabled() {
+        return perTopicEnabled;
+    }
+
+    public boolean isPerGroupEnabled() {
+        return perGroupEnabled;
+    }
+
     // ---- per-topic ------------------------------------------------------
 
     @Nullable
     public SessionEntityMetricGroup topicMetrics(String topic) {
+        if (!perTopicEnabled) {
+            return null;
+        }
         return entityGroup("topic", topic);
     }
 
@@ -65,7 +122,7 @@ public final class KafkaMetricGroup extends BoltOnMetricGroup {
             g.onBytesIn(bytes, records);
             g.onOperation();
             if (error) {
-                g.onError();
+                g.onProduceError();
             }
         }
     }
@@ -77,7 +134,7 @@ public final class KafkaMetricGroup extends BoltOnMetricGroup {
             g.onBytesOut(bytes);
             g.onOperation();
             if (error) {
-                g.onError();
+                g.onFetchError();
             }
         }
     }
@@ -86,6 +143,9 @@ public final class KafkaMetricGroup extends BoltOnMetricGroup {
 
     @Nullable
     public SessionEntityMetricGroup groupMetrics(String groupId) {
+        if (!perGroupEnabled) {
+            return null;
+        }
         return clientGroup("group", groupId);
     }
 
@@ -93,9 +153,7 @@ public final class KafkaMetricGroup extends BoltOnMetricGroup {
         SessionEntityMetricGroup g = groupMetrics(groupId);
         if (g != null) {
             g.onOperation();
-            g.onBytesIn(0, 0);
-            // Reuse the shared process-time histogram metric slot — readers look up by name.
-            // The join-latency isn't a bytes count, so recorded via the shared op counter only.
+            g.onRebalance(joinLatencyMs);
         }
     }
 
@@ -103,6 +161,7 @@ public final class KafkaMetricGroup extends BoltOnMetricGroup {
         SessionEntityMetricGroup g = groupMetrics(groupId);
         if (g != null) {
             g.onOperation();
+            g.onHeartbeat();
             if (error) {
                 g.onError();
             }
@@ -113,9 +172,31 @@ public final class KafkaMetricGroup extends BoltOnMetricGroup {
         SessionEntityMetricGroup g = groupMetrics(groupId);
         if (g != null) {
             g.onOperation();
+            g.onOffsetCommit();
             if (error) {
                 g.onError();
             }
+        }
+    }
+
+    /**
+     * Idempotently register a {@code memberCount} gauge on the per-group sub-group. Called once per
+     * consumer-group on its first {@code JoinGroup}. The gauge reads live state from {@code
+     * memberCountSupplier} every poll, so no per-heartbeat write is needed.
+     */
+    public void registerMemberCountGauge(
+            String groupId, ToIntFunction<String> memberCountSupplier) {
+        if (!perGroupEnabled || groupId == null || groupId.isEmpty()) {
+            return;
+        }
+        if (memberCountRegistered.putIfAbsent(groupId, Boolean.TRUE) != null) {
+            return;
+        }
+        SessionEntityMetricGroup g = groupMetrics(groupId);
+        if (g != null) {
+            g.registerGauge(
+                    BoltOnMetricNames.MEMBER_COUNT,
+                    (Gauge<Integer>) () -> memberCountSupplier.applyAsInt(groupId));
         }
     }
 

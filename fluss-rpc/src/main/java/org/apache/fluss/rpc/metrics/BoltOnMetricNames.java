@@ -36,6 +36,11 @@ public final class BoltOnMetricNames {
     public static final String REQUESTS_RATE = MetricNames.REQUESTS_RATE;
     public static final String ERRORS_RATE = MetricNames.ERRORS_RATE;
     public static final String REQUEST_PROCESS_TIME_MS = MetricNames.REQUEST_PROCESS_TIME_MS;
+    public static final String REQUEST_BYTES = MetricNames.REQUEST_BYTES;
+    public static final String REQUEST_TOTAL_TIME_MS = MetricNames.REQUEST_TOTAL_TIME_MS;
+
+    // Response-side histogram — mirrors REQUEST_BYTES for the reply side.
+    public static final String RESPONSE_BYTES = "responseBytes";
 
     // Byte / message rates — matches Fluss-native user-scope metrics.
     public static final String BYTES_IN_RATE = MetricNames.BYTES_IN_RATE;
@@ -44,6 +49,17 @@ public final class BoltOnMetricNames {
 
     // Entity-group operation rate — lightweight op counter separate from {@link #REQUESTS_RATE}.
     public static final String OPERATIONS_RATE = "operationsPerSecond";
+
+    // Per-entity (e.g. topic) error splits. The generic ERRORS_RATE stays as the aggregate.
+    public static final String PRODUCE_ERROR_RATE = "produceErrorPerSecond";
+    public static final String FETCH_ERROR_RATE = "fetchErrorPerSecond";
+
+    // Per-client-group (e.g. consumer-group) lifecycle meters + histograms.
+    public static final String HEARTBEAT_RATE = "heartbeatPerSecond";
+    public static final String OFFSET_COMMIT_RATE = "offsetCommitPerSecond";
+    public static final String REBALANCE_RATE = "rebalancePerSecond";
+    public static final String JOIN_LATENCY_MS = "joinLatencyMs";
+    public static final String MEMBER_COUNT = "memberCount";
 
     // Auth / authz.
     public static final String AUTH_SUCCESS_RATE = "authSuccessPerSecond";
