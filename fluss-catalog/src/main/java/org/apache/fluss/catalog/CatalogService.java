@@ -141,6 +141,23 @@ public interface CatalogService {
     /** List every client-quota entry matching {@code filter}. */
     List<ClientQuotaEntry> listClientQuotas(ClientQuotaFilter filter) throws Exception;
 
+    // --------------------------- SR config ---------------------------- //
+
+    /**
+     * Read the {@code _sr_config} value for {@code key}; {@link Optional#empty()} when unset. Keys
+     * follow the {@code global_compatibility} / {@code subject_compatibility:<s>} / {@code
+     * global_mode} / {@code subject_mode:<s>} convention.
+     */
+    Optional<org.apache.fluss.catalog.entities.SrConfigEntry> getSrConfig(String key)
+            throws Exception;
+
+    /** Upsert an SR config row. Idempotent on {@code (key, value)}. */
+    org.apache.fluss.catalog.entities.SrConfigEntry setSrConfig(String key, String value)
+            throws Exception;
+
+    /** Delete an SR config row. No-op when absent. */
+    void deleteSrConfig(String key) throws Exception;
+
     // --------------------------- Principals --------------------------- //
 
     /**

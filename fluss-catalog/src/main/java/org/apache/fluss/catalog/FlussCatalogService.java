@@ -95,7 +95,8 @@ public final class FlussCatalogService implements CatalogService, AutoCloseable 
         GRANTS,
         KAFKA_BINDINGS,
         CLIENT_QUOTAS,
-        ID_RESERVATIONS
+        ID_RESERVATIONS,
+        SR_CONFIG
     }
 
     public FlussCatalogService(Connection connection) {
@@ -559,6 +560,50 @@ public final class FlussCatalogService implements CatalogService, AutoCloseable 
     }
 
     // =================================================================
+    // SR config (key/value store for compatibility + mode)
+    // =================================================================
+
+    @Override
+    public Optional<org.apache.fluss.catalog.entities.SrConfigEntry> getSrConfig(String key)
+            throws Exception {
+        requireNonEmpty("key", key);
+        Lookuper lookuper = table(Handle.SR_CONFIG).newLookup().createLookuper();
+        GenericRow keyRow = new GenericRow(1);
+        keyRow.setField(0, BinaryString.fromString(key));
+        InternalRow row = awaitLookup(lookuper, keyRow);
+        if (row == null) {
+            return Optional.empty();
+        }
+        String k = row.getString(0).toString();
+        String v = row.getString(1).toString();
+        return Optional.of(new org.apache.fluss.catalog.entities.SrConfigEntry(k, v));
+    }
+
+    @Override
+    public org.apache.fluss.catalog.entities.SrConfigEntry setSrConfig(String key, String value)
+            throws Exception {
+        requireNonEmpty("key", key);
+        if (value == null) {
+            throw new CatalogException(
+                    CatalogException.Kind.INVALID_INPUT,
+                    "value is required (use deleteSrConfig to clear)");
+        }
+        GenericRow row = new GenericRow(2);
+        row.setField(0, BinaryString.fromString(key));
+        row.setField(1, BinaryString.fromString(value));
+        upsert(Handle.SR_CONFIG, row);
+        return new org.apache.fluss.catalog.entities.SrConfigEntry(key, value);
+    }
+
+    @Override
+    public void deleteSrConfig(String key) throws Exception {
+        requireNonEmpty("key", key);
+        GenericRow keyRow = new GenericRow(1);
+        keyRow.setField(0, BinaryString.fromString(key));
+        delete(Handle.SR_CONFIG, keyRow);
+    }
+
+    // =================================================================
     // Principals
     // =================================================================
 
@@ -880,6 +925,8 @@ public final class FlussCatalogService implements CatalogService, AutoCloseable 
                 return SystemTables.CLIENT_QUOTAS;
             case ID_RESERVATIONS:
                 return SystemTables.ID_RESERVATIONS;
+            case SR_CONFIG:
+                return SystemTables.SR_CONFIG;
             default:
                 throw new IllegalStateException("Unknown handle: " + handle);
         }

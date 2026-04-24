@@ -255,6 +255,114 @@ public final class SchemaRegistryHttpHandler extends SimpleChannelInboundHandler
             response.put("schema", found.get().schema());
             return jsonResponse(HttpResponseStatus.OK, response);
         }
+        // --- /config endpoints ---
+        if (HttpMethod.GET.equals(method) && path.equals("/config")) {
+            ObjectNode body = MAPPER.createObjectNode();
+            body.put("compatibilityLevel", service.defaultCompatibility());
+            return jsonResponse(HttpResponseStatus.OK, body);
+        }
+        if (HttpMethod.PUT.equals(method) && path.equals("/config")) {
+            JsonNode body = MAPPER.readTree(readUtf8(request));
+            String level =
+                    body.hasNonNull("compatibility") ? body.get("compatibility").asText() : null;
+            if (level == null) {
+                throw new SchemaRegistryException(
+                        SchemaRegistryException.Kind.INVALID_INPUT,
+                        "'compatibility' is required in PUT /config body");
+            }
+            service.setGlobalCompatibility(level);
+            ObjectNode response = MAPPER.createObjectNode();
+            response.put("compatibility", level.toUpperCase(java.util.Locale.ROOT));
+            return jsonResponse(HttpResponseStatus.OK, response);
+        }
+        if (HttpMethod.GET.equals(method) && path.startsWith("/config/")) {
+            String subject = path.substring("/config/".length());
+            Optional<String> level = service.subjectCompatibility(subject);
+            if (!level.isPresent()) {
+                throw new SchemaRegistryException(
+                        SchemaRegistryException.Kind.NOT_FOUND,
+                        "Subject '" + subject + "' has no compatibility override");
+            }
+            ObjectNode body = MAPPER.createObjectNode();
+            body.put("compatibilityLevel", level.get());
+            return jsonResponse(HttpResponseStatus.OK, body);
+        }
+        if (HttpMethod.PUT.equals(method) && path.startsWith("/config/")) {
+            String subject = path.substring("/config/".length());
+            JsonNode body = MAPPER.readTree(readUtf8(request));
+            String level =
+                    body.hasNonNull("compatibility") ? body.get("compatibility").asText() : null;
+            if (level == null) {
+                throw new SchemaRegistryException(
+                        SchemaRegistryException.Kind.INVALID_INPUT,
+                        "'compatibility' is required in PUT /config/{subject} body");
+            }
+            service.setSubjectCompatibility(subject, level);
+            ObjectNode response = MAPPER.createObjectNode();
+            response.put("compatibility", level.toUpperCase(java.util.Locale.ROOT));
+            return jsonResponse(HttpResponseStatus.OK, response);
+        }
+        if (HttpMethod.DELETE.equals(method) && path.startsWith("/config/")) {
+            String subject = path.substring("/config/".length());
+            service.deleteSubjectCompatibility(subject);
+            ObjectNode response = MAPPER.createObjectNode();
+            response.put("compatibility", service.defaultCompatibility());
+            return jsonResponse(HttpResponseStatus.OK, response);
+        }
+
+        // --- /mode endpoints ---
+        if (HttpMethod.GET.equals(method) && path.equals("/mode")) {
+            ObjectNode body = MAPPER.createObjectNode();
+            body.put("mode", service.globalMode());
+            return jsonResponse(HttpResponseStatus.OK, body);
+        }
+        if (HttpMethod.PUT.equals(method) && path.equals("/mode")) {
+            JsonNode body = MAPPER.readTree(readUtf8(request));
+            String mode = body.hasNonNull("mode") ? body.get("mode").asText() : null;
+            if (mode == null) {
+                throw new SchemaRegistryException(
+                        SchemaRegistryException.Kind.INVALID_INPUT,
+                        "'mode' is required in PUT /mode body");
+            }
+            service.setGlobalMode(mode);
+            ObjectNode response = MAPPER.createObjectNode();
+            response.put("mode", mode.toUpperCase(java.util.Locale.ROOT));
+            return jsonResponse(HttpResponseStatus.OK, response);
+        }
+        if (HttpMethod.GET.equals(method) && path.startsWith("/mode/")) {
+            String subject = path.substring("/mode/".length());
+            Optional<String> mode = service.subjectMode(subject);
+            if (!mode.isPresent()) {
+                throw new SchemaRegistryException(
+                        SchemaRegistryException.Kind.NOT_FOUND,
+                        "Subject '" + subject + "' has no mode override");
+            }
+            ObjectNode body = MAPPER.createObjectNode();
+            body.put("mode", mode.get());
+            return jsonResponse(HttpResponseStatus.OK, body);
+        }
+        if (HttpMethod.PUT.equals(method) && path.startsWith("/mode/")) {
+            String subject = path.substring("/mode/".length());
+            JsonNode body = MAPPER.readTree(readUtf8(request));
+            String mode = body.hasNonNull("mode") ? body.get("mode").asText() : null;
+            if (mode == null) {
+                throw new SchemaRegistryException(
+                        SchemaRegistryException.Kind.INVALID_INPUT,
+                        "'mode' is required in PUT /mode/{subject} body");
+            }
+            service.setSubjectMode(subject, mode);
+            ObjectNode response = MAPPER.createObjectNode();
+            response.put("mode", mode.toUpperCase(java.util.Locale.ROOT));
+            return jsonResponse(HttpResponseStatus.OK, response);
+        }
+        if (HttpMethod.DELETE.equals(method) && path.startsWith("/mode/")) {
+            String subject = path.substring("/mode/".length());
+            service.deleteSubjectMode(subject);
+            ObjectNode response = MAPPER.createObjectNode();
+            response.put("mode", service.globalMode());
+            return jsonResponse(HttpResponseStatus.OK, response);
+        }
+
         throw new SchemaRegistryException(
                 SchemaRegistryException.Kind.NOT_FOUND,
                 method + " " + path + " is not a Schema Registry endpoint");

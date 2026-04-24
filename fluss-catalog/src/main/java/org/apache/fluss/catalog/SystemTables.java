@@ -145,6 +145,21 @@ public final class SystemTables {
                             .primaryKey("confluent_id")
                             .build());
 
+    /**
+     * Free-form string-keyed store used by the Schema Registry projection for global and
+     * per-subject compatibility / mode config. Keys follow the convention {@code
+     * global_compatibility}, {@code subject_compatibility:<subject>}, {@code global_mode}, {@code
+     * subject_mode:<subject>}.
+     */
+    public static final Table SR_CONFIG =
+            new Table(
+                    "_sr_config",
+                    Schema.newBuilder()
+                            .column("config_key", DataTypes.STRING().copy(false))
+                            .column("config_value", DataTypes.STRING().copy(false))
+                            .primaryKey("config_key")
+                            .build());
+
     private SystemTables() {}
 
     /** Every system table, in bootstrap order (namespaces first, grants after their targets). */
@@ -157,7 +172,8 @@ public final class SystemTables {
             GRANTS,
             KAFKA_BINDINGS,
             CLIENT_QUOTAS,
-            ID_RESERVATIONS
+            ID_RESERVATIONS,
+            SR_CONFIG
         };
     }
 

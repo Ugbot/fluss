@@ -86,9 +86,154 @@ public final class SchemaRegistryService {
         this.rbacEnforced = rbacEnforced;
     }
 
-    /** Global default compatibility — hardcoded to BACKWARD per design 0002. */
+    /** Fallback compatibility when no global config row is stored. */
+    public static final String DEFAULT_COMPATIBILITY = "BACKWARD";
+
+    /** Fallback mode when no global mode row is stored. */
+    public static final String DEFAULT_MODE = "READWRITE";
+
+    private static final String KEY_GLOBAL_COMPAT = "global_compatibility";
+    private static final String KEY_SUBJECT_COMPAT_PREFIX = "subject_compatibility:";
+    private static final String KEY_GLOBAL_MODE = "global_mode";
+    private static final String KEY_SUBJECT_MODE_PREFIX = "subject_mode:";
+
+    /** Effective global compatibility level; persisted via {@link #setGlobalCompatibility}. */
     public String defaultCompatibility() {
-        return "BACKWARD";
+        authorize(GrantEntity.PRIVILEGE_READ);
+        try {
+            return catalog.getSrConfig(KEY_GLOBAL_COMPAT)
+                    .map(e -> e.value())
+                    .orElse(DEFAULT_COMPATIBILITY);
+        } catch (Exception e) {
+            throw translate(e);
+        }
+    }
+
+    public void setGlobalCompatibility(String level) {
+        authorize(GrantEntity.PRIVILEGE_WRITE);
+        validateCompatibility(level);
+        try {
+            catalog.setSrConfig(KEY_GLOBAL_COMPAT, level.toUpperCase(java.util.Locale.ROOT));
+        } catch (Exception e) {
+            throw translate(e);
+        }
+    }
+
+    public Optional<String> subjectCompatibility(String subject) {
+        authorize(GrantEntity.PRIVILEGE_READ);
+        try {
+            return catalog.getSrConfig(KEY_SUBJECT_COMPAT_PREFIX + subject).map(e -> e.value());
+        } catch (Exception e) {
+            throw translate(e);
+        }
+    }
+
+    public void setSubjectCompatibility(String subject, String level) {
+        authorize(GrantEntity.PRIVILEGE_WRITE);
+        validateCompatibility(level);
+        try {
+            catalog.setSrConfig(
+                    KEY_SUBJECT_COMPAT_PREFIX + subject, level.toUpperCase(java.util.Locale.ROOT));
+        } catch (Exception e) {
+            throw translate(e);
+        }
+    }
+
+    public void deleteSubjectCompatibility(String subject) {
+        authorize(GrantEntity.PRIVILEGE_WRITE);
+        try {
+            catalog.deleteSrConfig(KEY_SUBJECT_COMPAT_PREFIX + subject);
+        } catch (Exception e) {
+            throw translate(e);
+        }
+    }
+
+    public String globalMode() {
+        authorize(GrantEntity.PRIVILEGE_READ);
+        try {
+            return catalog.getSrConfig(KEY_GLOBAL_MODE).map(e -> e.value()).orElse(DEFAULT_MODE);
+        } catch (Exception e) {
+            throw translate(e);
+        }
+    }
+
+    public void setGlobalMode(String mode) {
+        authorize(GrantEntity.PRIVILEGE_WRITE);
+        validateMode(mode);
+        try {
+            catalog.setSrConfig(KEY_GLOBAL_MODE, mode.toUpperCase(java.util.Locale.ROOT));
+        } catch (Exception e) {
+            throw translate(e);
+        }
+    }
+
+    public Optional<String> subjectMode(String subject) {
+        authorize(GrantEntity.PRIVILEGE_READ);
+        try {
+            return catalog.getSrConfig(KEY_SUBJECT_MODE_PREFIX + subject).map(e -> e.value());
+        } catch (Exception e) {
+            throw translate(e);
+        }
+    }
+
+    public void setSubjectMode(String subject, String mode) {
+        authorize(GrantEntity.PRIVILEGE_WRITE);
+        validateMode(mode);
+        try {
+            catalog.setSrConfig(
+                    KEY_SUBJECT_MODE_PREFIX + subject, mode.toUpperCase(java.util.Locale.ROOT));
+        } catch (Exception e) {
+            throw translate(e);
+        }
+    }
+
+    public void deleteSubjectMode(String subject) {
+        authorize(GrantEntity.PRIVILEGE_WRITE);
+        try {
+            catalog.deleteSrConfig(KEY_SUBJECT_MODE_PREFIX + subject);
+        } catch (Exception e) {
+            throw translate(e);
+        }
+    }
+
+    private static void validateCompatibility(String level) {
+        if (level == null) {
+            throw new SchemaRegistryException(
+                    SchemaRegistryException.Kind.INVALID_INPUT, "compatibility level is required");
+        }
+        String normalised = level.toUpperCase(java.util.Locale.ROOT);
+        switch (normalised) {
+            case "NONE":
+            case "BACKWARD":
+            case "BACKWARD_TRANSITIVE":
+            case "FORWARD":
+            case "FORWARD_TRANSITIVE":
+            case "FULL":
+            case "FULL_TRANSITIVE":
+                return;
+            default:
+                throw new SchemaRegistryException(
+                        SchemaRegistryException.Kind.INVALID_INPUT,
+                        "Unsupported compatibility level '" + level + "'");
+        }
+    }
+
+    private static void validateMode(String mode) {
+        if (mode == null) {
+            throw new SchemaRegistryException(
+                    SchemaRegistryException.Kind.INVALID_INPUT, "mode is required");
+        }
+        String normalised = mode.toUpperCase(java.util.Locale.ROOT);
+        switch (normalised) {
+            case "READWRITE":
+            case "READONLY":
+            case "IMPORT":
+                return;
+            default:
+                throw new SchemaRegistryException(
+                        SchemaRegistryException.Kind.INVALID_INPUT,
+                        "Unsupported mode '" + mode + "'");
+        }
     }
 
     /**
