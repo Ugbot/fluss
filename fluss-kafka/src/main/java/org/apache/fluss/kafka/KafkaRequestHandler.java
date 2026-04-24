@@ -833,6 +833,9 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
                             "Kafka FindCoordinator requires server state."));
             return;
         }
+        if (denyGroupIfUnauthorized(request, OperationType.DESCRIBE)) {
+            return;
+        }
         try {
             FindCoordinatorRequest req = request.request();
             KafkaGroupTranscoder transcoder =
@@ -851,6 +854,9 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
             request.fail(
                     Errors.BROKER_NOT_AVAILABLE.exception(
                             "Kafka OffsetCommit requires server state."));
+            return;
+        }
+        if (denyGroupIfUnauthorized(request, OperationType.READ)) {
             return;
         }
         try {
@@ -873,6 +879,9 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
                             "Kafka OffsetFetch requires server state."));
             return;
         }
+        if (denyGroupIfUnauthorized(request, OperationType.READ)) {
+            return;
+        }
         try {
             OffsetFetchRequest req = request.request();
             KafkaGroupTranscoder transcoder =
@@ -886,11 +895,41 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
         }
     }
 
+    /**
+     * Coarse ACL gate for consumer-group APIs. Until Phase G.2 adds {@code ResourceType.GROUP} to
+     * Fluss core, every group-scoped request is checked against the entire cluster — so granting a
+     * principal {@code CLUSTER} privileges today lets it touch all groups. Returns {@code true} if
+     * a denial response has been sent; callers must return immediately.
+     */
+    private boolean denyGroupIfUnauthorized(KafkaRequest request, OperationType op) {
+        if (context.authorizer() == null) {
+            return false;
+        }
+        try {
+            AuthzHelper.authorizeOrThrow(
+                    context.authorizer(), AuthzHelper.sessionOf(request), op, Resource.cluster());
+            return false;
+        } catch (AuthorizationException denied) {
+            AbstractRequest req = request.request();
+            AbstractResponse resp =
+                    req.getErrorResponse(
+                            new org.apache.kafka.common.errors.GroupAuthorizationException(
+                                    denied.getMessage() == null
+                                            ? "Group authorization failed"
+                                            : denied.getMessage()));
+            request.complete(resp);
+            return true;
+        }
+    }
+
     void handleJoinGroupRequest(KafkaRequest request) {
         if (!context.hasServerState()) {
             request.fail(
                     Errors.BROKER_NOT_AVAILABLE.exception(
                             "Kafka JoinGroup requires server state."));
+            return;
+        }
+        if (denyGroupIfUnauthorized(request, OperationType.READ)) {
             return;
         }
         try {
@@ -922,6 +961,9 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
                             "Kafka SyncGroup requires server state."));
             return;
         }
+        if (denyGroupIfUnauthorized(request, OperationType.READ)) {
+            return;
+        }
         try {
             SyncGroupRequest req = request.request();
             KafkaGroupTranscoder transcoder =
@@ -951,6 +993,9 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
                             "Kafka Heartbeat requires server state."));
             return;
         }
+        if (denyGroupIfUnauthorized(request, OperationType.READ)) {
+            return;
+        }
         try {
             HeartbeatRequest req = request.request();
             KafkaGroupTranscoder transcoder =
@@ -969,6 +1014,9 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
             request.fail(
                     Errors.BROKER_NOT_AVAILABLE.exception(
                             "Kafka LeaveGroup requires server state."));
+            return;
+        }
+        if (denyGroupIfUnauthorized(request, OperationType.READ)) {
             return;
         }
         try {
@@ -991,6 +1039,9 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
                             "Kafka ListGroups requires server state."));
             return;
         }
+        if (denyGroupIfUnauthorized(request, OperationType.DESCRIBE)) {
+            return;
+        }
         try {
             ListGroupsRequest req = request.request();
             KafkaGroupTranscoder transcoder =
@@ -1009,6 +1060,9 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
             request.fail(
                     Errors.BROKER_NOT_AVAILABLE.exception(
                             "Kafka DeleteGroups requires server state."));
+            return;
+        }
+        if (denyGroupIfUnauthorized(request, OperationType.DROP)) {
             return;
         }
         try {
@@ -1031,6 +1085,9 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
                             "Kafka OffsetDelete requires server state."));
             return;
         }
+        if (denyGroupIfUnauthorized(request, OperationType.DROP)) {
+            return;
+        }
         try {
             OffsetDeleteRequest req = request.request();
             KafkaGroupTranscoder transcoder =
@@ -1049,6 +1106,9 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
             request.fail(
                     Errors.BROKER_NOT_AVAILABLE.exception(
                             "Kafka DescribeGroups requires server state."));
+            return;
+        }
+        if (denyGroupIfUnauthorized(request, OperationType.DESCRIBE)) {
             return;
         }
         try {
