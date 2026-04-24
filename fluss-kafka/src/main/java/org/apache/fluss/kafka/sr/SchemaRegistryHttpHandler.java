@@ -110,6 +110,35 @@ public final class SchemaRegistryHttpHandler extends SimpleChannelInboundHandler
             }
             return jsonResponse(HttpResponseStatus.OK, arr);
         }
+        if (HttpMethod.GET.equals(method) && path.matches("/schemas/ids/[0-9]+/subjects")) {
+            int id =
+                    parseIntOr400(
+                            path.substring(
+                                    "/schemas/ids/".length(), path.length() - "/subjects".length()),
+                            "schema id");
+            List<String> subjects = service.subjectsForId(id);
+            ArrayNode arr = MAPPER.createArrayNode();
+            for (String s : subjects) {
+                arr.add(s);
+            }
+            return jsonResponse(HttpResponseStatus.OK, arr);
+        }
+        if (HttpMethod.GET.equals(method) && path.matches("/schemas/ids/[0-9]+/versions")) {
+            int id =
+                    parseIntOr400(
+                            path.substring(
+                                    "/schemas/ids/".length(), path.length() - "/versions".length()),
+                            "schema id");
+            List<SchemaRegistryService.SubjectVersion> svs = service.subjectVersionsForId(id);
+            ArrayNode arr = MAPPER.createArrayNode();
+            for (SchemaRegistryService.SubjectVersion sv : svs) {
+                ObjectNode node = MAPPER.createObjectNode();
+                node.put("subject", sv.subject());
+                node.put("version", sv.version());
+                arr.add(node);
+            }
+            return jsonResponse(HttpResponseStatus.OK, arr);
+        }
         if (HttpMethod.GET.equals(method) && path.startsWith("/schemas/ids/")) {
             String idPart = path.substring("/schemas/ids/".length());
             int id = parseIntOr400(idPart, "schema id");

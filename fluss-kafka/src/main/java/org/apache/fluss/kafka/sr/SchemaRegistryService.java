@@ -352,6 +352,77 @@ public final class SchemaRegistryService {
         return Collections.singletonList(FORMAT_AVRO);
     }
 
+    /**
+     * Subjects that have bound any schema version sharing the Confluent global {@code id}. Backs
+     * {@code GET /schemas/ids/{id}/subjects}. Returns empty when the id is unknown.
+     */
+    public List<String> subjectsForId(int id) {
+        authorize(GrantEntity.PRIVILEGE_READ);
+        try {
+            Optional<SchemaVersionEntity> schema = catalog.getSchemaById(id);
+            if (!schema.isPresent()) {
+                return Collections.emptyList();
+            }
+            String tableId = schema.get().tableId();
+            List<String> out = new ArrayList<>();
+            for (KafkaSubjectBinding b : catalog.listKafkaSubjects()) {
+                if (tableId.equals(b.tableId())) {
+                    out.add(b.subject());
+                }
+            }
+            Collections.sort(out);
+            return out;
+        } catch (Exception e) {
+            throw translate(e);
+        }
+    }
+
+    /**
+     * {@code (subject, version)} tuples for the Confluent id. Backs {@code GET
+     * /schemas/ids/{id}/versions}. Returns empty when the id is unknown.
+     */
+    public List<SubjectVersion> subjectVersionsForId(int id) {
+        authorize(GrantEntity.PRIVILEGE_READ);
+        try {
+            Optional<SchemaVersionEntity> schema = catalog.getSchemaById(id);
+            if (!schema.isPresent()) {
+                return Collections.emptyList();
+            }
+            SchemaVersionEntity s = schema.get();
+            String tableId = s.tableId();
+            int version = s.version();
+            List<SubjectVersion> out = new ArrayList<>();
+            for (KafkaSubjectBinding b : catalog.listKafkaSubjects()) {
+                if (tableId.equals(b.tableId())) {
+                    out.add(new SubjectVersion(b.subject(), version));
+                }
+            }
+            Collections.sort(out, (a, c) -> a.subject().compareTo(c.subject()));
+            return out;
+        } catch (Exception e) {
+            throw translate(e);
+        }
+    }
+
+    /** {@code (subject, version)} tuple for reverse schema-id lookups. */
+    public static final class SubjectVersion {
+        private final String subject;
+        private final int version;
+
+        public SubjectVersion(String subject, int version) {
+            this.subject = subject;
+            this.version = version;
+        }
+
+        public String subject() {
+            return subject;
+        }
+
+        public int version() {
+            return version;
+        }
+    }
+
     /** Version numbers (1-based, monotone) registered against a subject, sorted ascending. */
     public List<Integer> listVersions(String subject) {
         authorize(GrantEntity.PRIVILEGE_READ);
