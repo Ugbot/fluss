@@ -23,6 +23,7 @@ import org.apache.fluss.kafka.admin.KafkaAdminTranscoder;
 import org.apache.fluss.kafka.admin.KafkaConfigsTranscoder;
 import org.apache.fluss.kafka.admin.KafkaCreatePartitionsTranscoder;
 import org.apache.fluss.kafka.admin.KafkaDeleteRecordsTranscoder;
+import org.apache.fluss.kafka.admin.KafkaDescribeProducersTranscoder;
 import org.apache.fluss.kafka.admin.KafkaElectLeadersTranscoder;
 import org.apache.fluss.kafka.catalog.CustomPropertiesTopicsCatalog;
 import org.apache.fluss.kafka.catalog.KafkaTopicsCatalog;
@@ -52,6 +53,7 @@ import org.apache.kafka.common.message.DeleteTopicsResponseData;
 import org.apache.kafka.common.message.DescribeClusterResponseData;
 import org.apache.kafka.common.message.DescribeConfigsResponseData;
 import org.apache.kafka.common.message.DescribeGroupsResponseData;
+import org.apache.kafka.common.message.DescribeProducersResponseData;
 import org.apache.kafka.common.message.ElectLeadersResponseData;
 import org.apache.kafka.common.message.FindCoordinatorResponseData;
 import org.apache.kafka.common.message.HeartbeatResponseData;
@@ -89,6 +91,8 @@ import org.apache.kafka.common.requests.DescribeConfigsRequest;
 import org.apache.kafka.common.requests.DescribeConfigsResponse;
 import org.apache.kafka.common.requests.DescribeGroupsRequest;
 import org.apache.kafka.common.requests.DescribeGroupsResponse;
+import org.apache.kafka.common.requests.DescribeProducersRequest;
+import org.apache.kafka.common.requests.DescribeProducersResponse;
 import org.apache.kafka.common.requests.ElectLeadersRequest;
 import org.apache.kafka.common.requests.ElectLeadersResponse;
 import org.apache.kafka.common.requests.FetchRequest;
@@ -175,6 +179,7 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
                     ApiKeys.ALTER_CONFIGS,
                     ApiKeys.INCREMENTAL_ALTER_CONFIGS,
                     ApiKeys.ELECT_LEADERS,
+                    ApiKeys.DESCRIBE_PRODUCERS,
                     // SASL APIs are intercepted in KafkaCommandDecoder and never reach the handler,
                     // but we list them here so ApiVersions advertises their true implementation
                     // status to clients that consult IMPLEMENTED_APIS.
@@ -269,7 +274,8 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
                     ApiKeys.DELETE_GROUPS,
                     ApiKeys.OFFSET_DELETE,
                     ApiKeys.DESCRIBE_CLUSTER,
-                    ApiKeys.ELECT_LEADERS);
+                    ApiKeys.ELECT_LEADERS,
+                    ApiKeys.DESCRIBE_PRODUCERS);
 
     // TODO: we may need a new abstraction between TabletService and ReplicaManager to avoid
     //  affecting Fluss protocol when supporting compatibility with Kafka.
@@ -454,6 +460,9 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
                 break;
             case ELECT_LEADERS:
                 handleElectLeadersRequest(request);
+                break;
+            case DESCRIBE_PRODUCERS:
+                handleDescribeProducersRequest(request);
                 break;
             default:
                 handleUnsupportedRequest(request);
@@ -1001,6 +1010,26 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
             request.complete(new ElectLeadersResponse(data));
         } catch (Throwable t) {
             LOG.error("ElectLeaders handler threw", t);
+            request.fail(t);
+        }
+    }
+
+    void handleDescribeProducersRequest(KafkaRequest request) {
+        if (!context.hasServerState() || !context.hasReplicaManager()) {
+            request.fail(
+                    Errors.BROKER_NOT_AVAILABLE.exception(
+                            "Kafka DescribeProducers requires a tablet server; the plugin is not"
+                                    + " wired."));
+            return;
+        }
+        try {
+            DescribeProducersRequest req = request.request();
+            KafkaDescribeProducersTranscoder transcoder =
+                    new KafkaDescribeProducersTranscoder(newCatalog(), context.replicaManager());
+            DescribeProducersResponseData data = transcoder.describeProducers(req.data());
+            request.complete(new DescribeProducersResponse(data));
+        } catch (Throwable t) {
+            LOG.error("DescribeProducers handler threw", t);
             request.fail(t);
         }
     }

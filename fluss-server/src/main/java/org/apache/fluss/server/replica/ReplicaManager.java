@@ -2040,6 +2040,68 @@ public class ReplicaManager implements ServerReconfigurable {
                         replica.isLeader()));
     }
 
+    /**
+     * Snapshot of every active idempotent-producer ({@code writer}) entry for this bucket. Consumed
+     * by Kafka's {@code DESCRIBE_PRODUCERS} bolt-on.
+     *
+     * <p>Returns:
+     *
+     * <ul>
+     *   <li>{@link java.util.Optional#empty()} — bucket not hosted locally (or not a log replica).
+     *   <li>{@code Optional.of(emptyList)} — bucket hosted but has no active idempotent producers,
+     *       or the underlying log tablet exposes no writer-state manager yet.
+     *   <li>{@code Optional.of(list)} — one entry per active writer id.
+     * </ul>
+     *
+     * <p>Fluss has no per-writer epoch, no transaction coordinator, and no transactional offset
+     * concept, so {@code producerEpoch} is always {@code 0}, {@code coordinatorEpoch} and {@code
+     * currentTxnStartOffset} are both {@code -1}.
+     */
+    public java.util.Optional<java.util.List<org.apache.fluss.rpc.replica.ProducerStateSnapshot>>
+            getProducerStates(TableBucket tableBucket) {
+        HostedReplica hosted = getReplica(tableBucket);
+        if (!(hosted instanceof OnlineReplica)) {
+            return java.util.Optional.empty();
+        }
+        Replica replica = ((OnlineReplica) hosted).getReplica();
+        org.apache.fluss.server.log.LogTablet logTablet;
+        try {
+            logTablet = replica.getLogTablet();
+        } catch (Throwable t) {
+            // KV-only replicas and other non-log hosts don't have a LogTablet; surface the
+            // bucket as "hosted but no producer state tracked" rather than "unknown".
+            return java.util.Optional.of(java.util.Collections.emptyList());
+        }
+        if (logTablet == null) {
+            return java.util.Optional.of(java.util.Collections.emptyList());
+        }
+        java.util.Map<Long, org.apache.fluss.server.log.WriterStateEntry> active;
+        try {
+            active = logTablet.activeWriters();
+        } catch (Throwable t) {
+            return java.util.Optional.of(java.util.Collections.emptyList());
+        }
+        if (active == null || active.isEmpty()) {
+            return java.util.Optional.of(java.util.Collections.emptyList());
+        }
+        java.util.List<org.apache.fluss.rpc.replica.ProducerStateSnapshot> out =
+                new java.util.ArrayList<>(active.size());
+        for (java.util.Map.Entry<Long, org.apache.fluss.server.log.WriterStateEntry> e :
+                active.entrySet()) {
+            org.apache.fluss.server.log.WriterStateEntry entry = e.getValue();
+            out.add(
+                    new org.apache.fluss.rpc.replica.ProducerStateSnapshot(
+                            e.getKey(),
+                            // Fluss has no per-writer epoch today — Kafka clients tolerate 0.
+                            0,
+                            entry.lastBatchSequence(),
+                            entry.lastBatchTimestamp(),
+                            -1,
+                            -1L));
+        }
+        return java.util.Optional.of(out);
+    }
+
     private boolean isRequiredAcksInvalid(int requiredAcks) {
         return requiredAcks != 0 && requiredAcks != 1 && requiredAcks != -1;
     }
