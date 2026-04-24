@@ -125,6 +125,21 @@ public interface CatalogService {
 
     List<KafkaSubjectBinding> listKafkaSubjects() throws Exception;
 
+    /**
+     * Hard-delete a Kafka subject binding. No-op when the subject has no binding. Used by the SR
+     * {@code DELETE /subjects/{s}?permanent=true} endpoint; soft-delete is modelled as a tombstone
+     * in the {@code _sr_config} KV table and does not call into this method.
+     */
+    void unbindKafkaSubject(String subject) throws Exception;
+
+    /**
+     * Hard-delete a single schema version by its internal schema id. Does NOT reclaim the
+     * associated Confluent id reservation — Confluent SR semantics require ids remain stable across
+     * the lifetime of the registry so that clients holding them keep dereferencing to "not found"
+     * rather than colliding with a future registration. No-op when absent.
+     */
+    void deleteSchemaVersion(String schemaId) throws Exception;
+
     // --------------------------- Client quotas ------------------------ //
 
     /**

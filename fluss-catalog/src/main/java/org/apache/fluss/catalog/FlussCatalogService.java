@@ -461,6 +461,24 @@ public final class FlussCatalogService implements CatalogService, AutoCloseable 
         return out;
     }
 
+    @Override
+    public void unbindKafkaSubject(String subject) throws Exception {
+        requireNonEmpty("subject", subject);
+        if (!resolveKafkaSubject(subject).isPresent()) {
+            return;
+        }
+        delete(Handle.KAFKA_BINDINGS, deletePlaceholder(Handle.KAFKA_BINDINGS, subject));
+    }
+
+    @Override
+    public void deleteSchemaVersion(String schemaId) throws Exception {
+        requireNonEmpty("schemaId", schemaId);
+        if (!getSchemaBySchemaId(schemaId).isPresent()) {
+            return;
+        }
+        delete(Handle.SCHEMAS, deletePlaceholder(Handle.SCHEMAS, schemaId));
+    }
+
     // =================================================================
     // Client quotas (Phase I.3, Path A: storage only)
     // =================================================================
@@ -598,8 +616,10 @@ public final class FlussCatalogService implements CatalogService, AutoCloseable 
     @Override
     public void deleteSrConfig(String key) throws Exception {
         requireNonEmpty("key", key);
-        GenericRow keyRow = new GenericRow(1);
+        // Fluss UpsertWriter#delete needs a full-width row even though only the PK is consulted.
+        GenericRow keyRow = new GenericRow(2);
         keyRow.setField(0, BinaryString.fromString(key));
+        keyRow.setField(1, BinaryString.fromString(""));
         delete(Handle.SR_CONFIG, keyRow);
     }
 
