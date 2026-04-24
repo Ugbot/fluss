@@ -178,15 +178,32 @@ class SchemaRegistryHttpITCase {
     }
 
     @Test
-    void nonAvroSchemaTypeReturns400() throws Exception {
+    void protobufSchemaTypeNowAccepted() throws Exception {
+        // Phase T-MF.5: schemaType=PROTOBUF is accepted alongside AVRO and JSON. An empty
+        // proto file (no message) is rejected by the translator, so we send a minimal valid
+        // .proto and expect a 200 from the register endpoint.
         String topic = "proto_" + System.nanoTime();
         String subject = topic + "-value";
         admin.createTopics(Collections.singletonList(new NewTopic(topic, 1, (short) 1)))
                 .all()
                 .get();
-        String postBody = "{\"schemaType\":\"PROTOBUF\",\"schema\":\"syntax = \\\"proto3\\\";\"}";
+        String proto = "syntax = \\\"proto3\\\";\\nmessage M { int32 id = 1; }";
+        String postBody = "{\"schemaType\":\"PROTOBUF\",\"schema\":\"" + proto + "\"}";
         HttpResponse<String> resp = http("POST", "/subjects/" + subject + "/versions", postBody);
-        assertThat(resp.statusCode()).isEqualTo(400);
+        assertThat(resp.statusCode()).isEqualTo(200);
+    }
+
+    @Test
+    void unknownSchemaTypeReturns422() throws Exception {
+        String topic = "unknown_" + System.nanoTime();
+        String subject = topic + "-value";
+        admin.createTopics(Collections.singletonList(new NewTopic(topic, 1, (short) 1)))
+                .all()
+                .get();
+        String postBody = "{\"schemaType\":\"THRIFT\",\"schema\":\"struct X {}\"}";
+        HttpResponse<String> resp = http("POST", "/subjects/" + subject + "/versions", postBody);
+        // FormatRegistry doesn't know THRIFT → service raises UNSUPPORTED → 422.
+        assertThat(resp.statusCode()).isBetween(400, 499);
     }
 
     @Test

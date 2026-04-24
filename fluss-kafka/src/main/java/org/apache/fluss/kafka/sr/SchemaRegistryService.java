@@ -316,11 +316,21 @@ public final class SchemaRegistryService {
     }
 
     public int register(String subject, String avroSchema) {
+        return register(subject, avroSchema, FORMAT_AVRO);
+    }
+
+    /**
+     * Register under an explicit {@code formatId} (one of {@code "AVRO"}, {@code "JSON"}, {@code
+     * "PROTOBUF"}). Validates the format through {@link FormatRegistry} so unknown formats produce
+     * a clean 422. Phase T-MF.5.
+     */
+    public int register(String subject, String schemaText, String formatId) {
         authorize(GrantEntity.PRIVILEGE_WRITE);
-        if (avroSchema == null || avroSchema.isEmpty()) {
+        if (schemaText == null || schemaText.isEmpty()) {
             throw new SchemaRegistryException(
                     SchemaRegistryException.Kind.INVALID_INPUT, "schema body is required");
         }
+        String canonicalFormat = canonicaliseFormat(formatId);
         String topic = SubjectResolver.topicFromValueSubject(subject);
         // Fail fast if the Kafka data table doesn't exist — keeps the 404 clean.
         requireKafkaTable(topic, subject);
@@ -337,12 +347,13 @@ public final class SchemaRegistryService {
             Optional<RegisteredSchema> latest = latestForSubject(subject);
             if (LOG.isDebugEnabled()) {
                 LOG.debug(
-                        "register subject={} latestPresent={} latestMatches={}",
+                        "register subject={} format={} latestPresent={} latestMatches={}",
                         subject,
+                        canonicalFormat,
                         latest.isPresent(),
-                        latest.isPresent() && avroSchema.equals(latest.get().schema()));
+                        latest.isPresent() && schemaText.equals(latest.get().schema()));
             }
-            if (latest.isPresent() && avroSchema.equals(latest.get().schema())) {
+            if (latest.isPresent() && schemaText.equals(latest.get().schema())) {
                 return latest.get().id();
             }
 
@@ -350,7 +361,7 @@ public final class SchemaRegistryService {
             // clears the tombstone and returns that row's Confluent id rather than minting a new
             // version.
             Optional<RegisteredSchema> resurrected =
-                    resurrectTombstonedSchemaIfMatches(subject, topic, avroSchema);
+                    resurrectTombstonedSchemaIfMatches(subject, topic, schemaText);
             if (resurrected.isPresent()) {
                 // The binding may also be soft-deleted / absent — re-bind to be safe.
                 ensureCatalogEntities(topic);
@@ -360,18 +371,39 @@ public final class SchemaRegistryService {
             }
 
             // Compatibility gate — runs before registration when there's a live prior history.
-            enforceCompatibilityOrThrow(subject, topic, avroSchema);
+            enforceCompatibilityOrThrow(subject, topic, schemaText);
 
             ensureCatalogEntities(topic);
             SchemaVersionEntity version =
                     catalog.registerSchema(
-                            kafkaDatabase, topic, FORMAT_AVRO, avroSchema, /* registeredBy */ null);
+                            kafkaDatabase,
+                            topic,
+                            canonicalFormat,
+                            schemaText,
+                            /* registeredBy */ null);
             catalog.bindKafkaSubject(
                     subject, kafkaDatabase, topic, KEY_OR_VALUE_VALUE, NAMING_STRATEGY);
             return version.confluentId();
         } catch (Exception e) {
             throw translate(e);
         }
+    }
+
+    /** Normalise a caller-supplied schemaType to the registry's canonical form (uppercase). */
+    private String canonicaliseFormat(String formatId) {
+        if (formatId == null || formatId.isEmpty()) {
+            return FORMAT_AVRO;
+        }
+        String upper = formatId.trim().toUpperCase(java.util.Locale.ROOT);
+        if (FormatRegistry.instance().translator(upper) == null) {
+            throw new SchemaRegistryException(
+                    SchemaRegistryException.Kind.UNSUPPORTED,
+                    "schemaType '"
+                            + formatId
+                            + "' is not registered; supported: "
+                            + FormatRegistry.instance().formatIds());
+        }
+        return upper;
     }
 
     // ---------- soft-delete ----------
@@ -648,11 +680,12 @@ public final class SchemaRegistryService {
     }
 
     /**
-     * Supported schema types advertised by {@code GET /schemas/types}. Phase SR-X.1 is Avro-only;
-     * JSON / Protobuf land in Phase T alongside typed-table support.
+     * Supported schema types advertised by {@code GET /schemas/types}. Reflects whatever
+     * translators are registered in {@link FormatRegistry}; after Phase T-MF this includes {@code
+     * AVRO}, {@code JSON}, and {@code PROTOBUF}.
      */
     public List<String> supportedTypes() {
-        return Collections.singletonList(FORMAT_AVRO);
+        return FormatRegistry.instance().formatIds();
     }
 
     /**

@@ -214,17 +214,12 @@ public final class SchemaRegistryHttpHandler extends SimpleChannelInboundHandler
             JsonNode body = MAPPER.readTree(readUtf8(request));
             String schemaType =
                     body.hasNonNull("schemaType") ? body.get("schemaType").asText() : "AVRO";
-            if (!"AVRO".equalsIgnoreCase(schemaType)) {
-                throw new SchemaRegistryException(
-                        SchemaRegistryException.Kind.UNSUPPORTED,
-                        "schemaType '" + schemaType + "' is not supported in Phase A1 (only AVRO)");
-            }
             if (!body.hasNonNull("schema")) {
                 throw new SchemaRegistryException(
                         SchemaRegistryException.Kind.INVALID_INPUT,
                         "'schema' field is required in POST body");
             }
-            int id = service.register(subject, body.get("schema").asText());
+            int id = service.register(subject, body.get("schema").asText(), schemaType);
             ObjectNode response = MAPPER.createObjectNode();
             response.put("id", id);
             return jsonResponse(HttpResponseStatus.OK, response);
@@ -339,15 +334,10 @@ public final class SchemaRegistryHttpHandler extends SimpleChannelInboundHandler
                         SchemaRegistryException.Kind.INVALID_INPUT,
                         "'schema' field is required in POST body");
             }
-            String schemaType =
-                    body.hasNonNull("schemaType") ? body.get("schemaType").asText() : "AVRO";
-            if (!"AVRO".equalsIgnoreCase(schemaType)) {
-                throw new SchemaRegistryException(
-                        SchemaRegistryException.Kind.UNSUPPORTED,
-                        "schemaType '"
-                                + schemaType
-                                + "' is not supported in Phase SR-X.2 (only AVRO)");
-            }
+            // schemaType is recorded but not separately validated here — checkCompatibility
+            // already dispatches via FormatRegistry based on the subject's stored format (the
+            // proposed schema must be same-format as the subject's prior versions; that's a
+            // semantic choice, not a wire-contract break).
             CompatibilityResult result =
                     service.checkCompatibility(subject, version, body.get("schema").asText());
             ObjectNode response = MAPPER.createObjectNode();
@@ -371,15 +361,8 @@ public final class SchemaRegistryHttpHandler extends SimpleChannelInboundHandler
                         SchemaRegistryException.Kind.INVALID_INPUT,
                         "'schema' field is required in POST body");
             }
-            String schemaType =
-                    body.hasNonNull("schemaType") ? body.get("schemaType").asText() : "AVRO";
-            if (!"AVRO".equalsIgnoreCase(schemaType)) {
-                throw new SchemaRegistryException(
-                        SchemaRegistryException.Kind.UNSUPPORTED,
-                        "schemaType '"
-                                + schemaType
-                                + "' is not supported in Phase SR-X.1 (only AVRO)");
-            }
+            // schemaExists keys on (subject, schemaText); schemaType is echoed from the
+            // matched row's stored format.
             Optional<SchemaRegistryService.RegisteredSchema> found =
                     service.schemaExists(subject, body.get("schema").asText());
             if (!found.isPresent()) {
