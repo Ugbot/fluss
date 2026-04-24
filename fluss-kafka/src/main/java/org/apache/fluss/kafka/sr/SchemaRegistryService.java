@@ -27,7 +27,9 @@ import org.apache.fluss.catalog.entities.SchemaVersionEntity;
 import org.apache.fluss.exception.TableNotExistException;
 import org.apache.fluss.kafka.sr.compat.AvroCompatibilityChecker;
 import org.apache.fluss.kafka.sr.compat.CompatLevel;
+import org.apache.fluss.kafka.sr.compat.CompatibilityChecker;
 import org.apache.fluss.kafka.sr.compat.CompatibilityResult;
+import org.apache.fluss.kafka.sr.typed.FormatRegistry;
 import org.apache.fluss.metadata.TablePath;
 import org.apache.fluss.security.acl.FlussPrincipal;
 import org.apache.fluss.server.coordinator.MetadataManager;
@@ -111,7 +113,22 @@ public final class SchemaRegistryService {
 
     private static final String KEY_TOMBSTONE_SCHEMA_PREFIX = "tombstone_schema:";
 
-    private final AvroCompatibilityChecker compatibilityChecker = new AvroCompatibilityChecker();
+    /**
+     * Fallback compat checker for the legacy single-format code path. Real per-format dispatch goes
+     * through {@link FormatRegistry#checker(String)} keyed on the subject's stored format.
+     */
+    private final AvroCompatibilityChecker legacyAvroChecker = new AvroCompatibilityChecker();
+
+    private CompatibilityChecker checkerFor(String formatId) {
+        CompatibilityChecker registered = FormatRegistry.instance().checker(formatId);
+        if (registered != null) {
+            return registered;
+        }
+        // AVRO is always registered via ServiceLoader; unknown formats (JSON / PROTOBUF before
+        // their checkers land) fall through to the legacy Avro one so existing subjects keep
+        // working. Wrong-format registrations are caught upstream at translator resolution.
+        return legacyAvroChecker;
+    }
 
     /** Effective global compatibility level; persisted via {@link #setGlobalCompatibility}. */
     public String defaultCompatibility() {
@@ -503,7 +520,8 @@ public final class SchemaRegistryService {
                 priorTexts.add(v.schemaText());
             }
             CompatLevel level = effectiveLevel(subject);
-            return compatibilityChecker.check(schemaText, priorTexts, level);
+            String subjectFormat = liveVersions.get(0).format();
+            return checkerFor(subjectFormat).check(schemaText, priorTexts, level);
         } catch (Exception e) {
             throw translate(e);
         }
@@ -536,7 +554,8 @@ public final class SchemaRegistryService {
         for (SchemaVersionEntity v : liveVersions) {
             priorTexts.add(v.schemaText());
         }
-        CompatibilityResult result = compatibilityChecker.check(proposed, priorTexts, level);
+        String subjectFormat = liveVersions.get(0).format();
+        CompatibilityResult result = checkerFor(subjectFormat).check(proposed, priorTexts, level);
         if (!result.isCompatible()) {
             StringBuilder sb = new StringBuilder();
             sb.append("Schema is incompatible with ")

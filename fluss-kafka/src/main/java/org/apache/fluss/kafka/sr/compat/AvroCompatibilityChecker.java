@@ -49,9 +49,14 @@ import java.util.List;
  * priorTexts} list as passed by the SR service, which orders prior versions ascending).
  */
 @Internal
-public final class AvroCompatibilityChecker {
+public final class AvroCompatibilityChecker implements CompatibilityChecker {
 
     public AvroCompatibilityChecker() {}
+
+    @Override
+    public String formatId() {
+        return "AVRO";
+    }
 
     /**
      * Check {@code proposedText} against {@code priorTexts} at {@code level}.
@@ -61,6 +66,7 @@ public final class AvroCompatibilityChecker {
      *     — a first registration is always compatible.
      * @param level Confluent compatibility level
      */
+    @Override
     public CompatibilityResult check(
             String proposedText, List<String> priorTexts, CompatLevel level) {
         if (level == CompatLevel.NONE) {
