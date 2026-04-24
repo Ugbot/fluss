@@ -55,6 +55,31 @@ import java.util.Optional;
  *       ProducerState} per active writer (empty list when the bucket has never received an
  *       idempotent producer record).
  * </ul>
+ *
+ * <p><b>Field filler rationale.</b> Fluss's writer-state model is narrower than Kafka's producer
+ * state: every active entry carries a writer id and a last-batch {@code (sequence, timestamp)} pair
+ * but has no concept of epoch, transaction coordinator, or in-flight transaction. Fields that Fluss
+ * does not track are emitted as wire sentinels so kafka-clients' {@code
+ * AdminClient.describeProducers} surfaces them unchanged:
+ *
+ * <ul>
+ *   <li>{@code producerId} — Fluss {@code WriterStateEntry} id; minted on first idempotent append
+ *       (Fluss has no separate {@code InitProducerId} path).
+ *   <li>{@code producerEpoch} — always {@code 0}; Fluss has no per-writer epoch. kafka-clients
+ *       accepts {@code 0} verbatim as the epoch of a non-transactional idempotent producer.
+ *   <li>{@code lastSequence} — {@code WriterStateEntry.lastBatchSequence()}; the sequence number of
+ *       the most recent appended batch. This is the value the de-dup path at {@code LogTablet.java}
+ *       consults.
+ *   <li>{@code lastTimestamp} — {@code WriterStateEntry.lastBatchTimestamp()}; millis since epoch.
+ *   <li>{@code coordinatorEpoch} — always {@code -1}; Fluss has no transaction coordinator today.
+ *   <li>{@code currentTxnStartOffset} — always {@code -1}; Fluss has no transactional producer.
+ * </ul>
+ *
+ * <p>The {@code 0} / {@code -1} filler values follow the Kafka convention used by brokers for
+ * non-transactional idempotent producers; they are a protocol-level "no value" rather than an
+ * error. The fillers propagate into {@link ProducerStateSnapshot} at the core/rpc boundary and this
+ * transcoder merely projects them onto the wire; see {@code ReplicaManager.getProducerStates} for
+ * the source-of-truth documentation.
  */
 @Internal
 public final class KafkaDescribeProducersTranscoder {

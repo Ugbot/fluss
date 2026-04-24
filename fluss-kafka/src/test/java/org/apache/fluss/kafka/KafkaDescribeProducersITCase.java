@@ -24,6 +24,7 @@ import org.apache.fluss.kafka.admin.KafkaDescribeProducersTranscoder;
 import org.apache.fluss.kafka.catalog.KafkaTopicInfo;
 import org.apache.fluss.kafka.catalog.KafkaTopicsCatalog;
 import org.apache.fluss.metadata.TableBucket;
+import org.apache.fluss.metadata.TablePath;
 import org.apache.fluss.server.replica.ReplicaManager;
 import org.apache.fluss.server.testutils.FlussClusterExtension;
 import org.apache.fluss.server.testutils.RpcMessageTestUtils;
@@ -32,11 +33,16 @@ import org.apache.kafka.clients.admin.Admin;
 import org.apache.kafka.clients.admin.AdminClientConfig;
 import org.apache.kafka.clients.admin.KafkaAdminClient;
 import org.apache.kafka.clients.admin.NewTopic;
+import org.apache.kafka.clients.producer.KafkaProducer;
+import org.apache.kafka.clients.producer.ProducerConfig;
+import org.apache.kafka.clients.producer.ProducerRecord;
+import org.apache.kafka.clients.producer.RecordMetadata;
 import org.apache.kafka.common.message.DescribeProducersRequestData;
 import org.apache.kafka.common.message.DescribeProducersRequestData.TopicRequest;
 import org.apache.kafka.common.message.DescribeProducersResponseData;
 import org.apache.kafka.common.message.DescribeProducersResponseData.PartitionResponse;
 import org.apache.kafka.common.protocol.Errors;
+import org.apache.kafka.common.serialization.ByteArraySerializer;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -47,6 +53,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
 import java.util.Properties;
+import java.util.concurrent.Future;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -57,14 +64,18 @@ import static org.assertj.core.api.Assertions.assertThat;
  * than routing through kafka-clients' {@code DescribeProducersHandler}, which adds partition-leader
  * routing plumbing unrelated to Phase I.2.
  *
- * <p>Happy-path producer-tracking coverage (idempotent writes -> non-empty activeProducers) is
- * deferred: Fluss's {@code WriterStateManager} tracks writer ids per bucket, and the transcoder
- * (plus {@link ReplicaManager#getProducerStates}) already projects them through; but driving a
- * kafka-clients idempotent producer against a 3-node Fluss cluster is unreliable today because the
- * coordinator's replica-activation handshake for Kafka-created topics races with the producer's
- * retry loop. Until the bolt-on exposes a synchronous "topic-is-ready" gate, the transcoder's
- * contract is validated by the not-hosted / unknown-topic cases exercised here; populated-producer
- * coverage lands when the handshake race is resolved (TODO Phase I follow-up).
+ * <p>Phase I.2 coverage:
+ *
+ * <ul>
+ *   <li>Unknown topic (catalog lookup miss) — {@code UNKNOWN_TOPIC_OR_PARTITION}.
+ *   <li>Bucket not hosted by the local tablet server (synthetic tableId) — {@code
+ *       UNKNOWN_TOPIC_OR_PARTITION}.
+ *   <li>Populated happy path: an idempotent {@code KafkaProducer} with {@code
+ *       enable.idempotence=true} writes 10 records to a leader; the transcoder reads back one
+ *       {@code ProducerState} with {@code producerId > 0}, {@code producerEpoch == 0}, {@code
+ *       lastSequence == 9}, {@code lastTimestamp > 0}, {@code coordinatorEpoch == -1}, {@code
+ *       currentTxnStartOffset == -1}.
+ * </ul>
  */
 class KafkaDescribeProducersITCase {
 
@@ -133,6 +144,88 @@ class KafkaDescribeProducersITCase {
             PartitionResponse pr = invokeTranscoder(rm, topic, fakeTableId, 0);
             assertThat(pr.errorCode()).isEqualTo(Errors.UNKNOWN_TOPIC_OR_PARTITION.code());
             assertThat(pr.activeProducers()).isEmpty();
+        } finally {
+            admin.deleteTopics(Collections.singletonList(topic)).all().get();
+        }
+    }
+
+    @Test
+    void idempotentProducerRoundTripsWriterState() throws Exception {
+        String topic = "idempotent_" + System.nanoTime();
+        // One partition, replication-1 to keep leader resolution trivial and avoid ISR flicker.
+        admin.createTopics(Collections.singletonList(new NewTopic(topic, 1, (short) 1)))
+                .all()
+                .get();
+        try {
+            // Resolve the bucket's leader so we invoke the transcoder against the correct server.
+            TablePath path = TablePath.of(KAFKA_DATABASE, topic);
+            long tableId =
+                    CLUSTER.newCoordinatorClient()
+                            .getTableInfo(RpcMessageTestUtils.newGetTableInfoRequest(path))
+                            .get()
+                            .getTableId();
+            TableBucket tb = new TableBucket(tableId, 0);
+            CLUSTER.waitUntilAllReplicaReady(tb);
+            int leaderServer = CLUSTER.waitAndGetLeader(tb);
+            ReplicaManager rm = CLUSTER.getTabletServerById(leaderServer).getReplicaManager();
+
+            // Idempotent producer: enable.idempotence=true forces the broker to allocate a
+            // producer id, and every record carries a sequence number. After flushing 10
+            // records, WriterStateManager holds one entry with lastBatchSequence=9.
+            Properties props = new Properties();
+            props.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrap());
+            props.put(
+                    ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG,
+                    ByteArraySerializer.class.getName());
+            props.put(
+                    ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG,
+                    ByteArraySerializer.class.getName());
+            props.put(ProducerConfig.ACKS_CONFIG, "all");
+            props.put(ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG, true);
+            props.put(ProducerConfig.MAX_IN_FLIGHT_REQUESTS_PER_CONNECTION, 5);
+            props.put(ProducerConfig.REQUEST_TIMEOUT_MS_CONFIG, 30_000);
+            props.put(ProducerConfig.MAX_BLOCK_MS_CONFIG, 30_000);
+
+            int recordCount = 10;
+            long minTimestampBefore = System.currentTimeMillis();
+            try (KafkaProducer<byte[], byte[]> producer = new KafkaProducer<>(props)) {
+                Future<RecordMetadata> last = null;
+                for (int i = 0; i < recordCount; i++) {
+                    byte[] key = ("k-" + i).getBytes();
+                    byte[] value = ("v-" + i).getBytes();
+                    last = producer.send(new ProducerRecord<>(topic, 0, key, value));
+                }
+                // Await every in-flight send so WriterStateManager sees all 10 appends.
+                producer.flush();
+                if (last != null) {
+                    last.get();
+                }
+            }
+
+            // Invoke transcoder on the leader server with a catalog stub that resolves the topic
+            // to the real tableId so the transcoder hits getProducerStates.
+            PartitionResponse pr = invokeTranscoder(rm, topic, tableId, 0);
+            assertThat(pr.errorCode()).isEqualTo(Errors.NONE.code());
+            assertThat(pr.activeProducers())
+                    .as("active idempotent producers for bucket %s", tb)
+                    .hasSize(1);
+            DescribeProducersResponseData.ProducerState state = pr.activeProducers().get(0);
+            assertThat(state.producerId()).as("producerId").isGreaterThan(0L);
+            assertThat(state.producerEpoch())
+                    .as("producerEpoch filler — Fluss has no epoch concept")
+                    .isEqualTo(0);
+            assertThat(state.lastSequence())
+                    .as("lastSequence = recordCount - 1 (Kafka sequences are zero-based)")
+                    .isEqualTo(recordCount - 1);
+            assertThat(state.lastTimestamp())
+                    .as("lastTimestamp is a real wall-clock millis reading")
+                    .isGreaterThanOrEqualTo(minTimestampBefore);
+            assertThat(state.coordinatorEpoch())
+                    .as("coordinatorEpoch filler — Fluss has no txn coordinator")
+                    .isEqualTo(-1);
+            assertThat(state.currentTxnStartOffset())
+                    .as("currentTxnStartOffset filler — Fluss has no txn producer")
+                    .isEqualTo(-1L);
         } finally {
             admin.deleteTopics(Collections.singletonList(topic)).all().get();
         }
