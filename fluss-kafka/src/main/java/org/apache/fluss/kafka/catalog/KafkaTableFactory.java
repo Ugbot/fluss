@@ -18,12 +18,17 @@
 package org.apache.fluss.kafka.catalog;
 
 import org.apache.fluss.annotation.Internal;
+import org.apache.fluss.kafka.admin.KafkaConfigTier;
+import org.apache.fluss.kafka.admin.KafkaTopicConfigs;
 import org.apache.fluss.kafka.metadata.KafkaDataTable;
 import org.apache.fluss.metadata.TableDescriptor;
 
 import org.apache.kafka.common.Uuid;
 
 import javax.annotation.Nullable;
+
+import java.util.Collections;
+import java.util.Map;
 
 /**
  * Builds the {@link TableDescriptor} for a new Kafka-managed data table, stamped with the custom
@@ -40,14 +45,16 @@ public final class KafkaTableFactory {
             KafkaTopicInfo.TimestampType timestampType,
             @Nullable KafkaTopicInfo.Compression compression,
             Uuid topicId) {
-        return buildDescriptor(topic, numPartitions, timestampType, compression, topicId, false);
+        return buildDescriptor(
+                topic,
+                numPartitions,
+                timestampType,
+                compression,
+                topicId,
+                false,
+                Collections.emptyMap());
     }
 
-    /**
-     * Build a table descriptor. When {@code compacted == true} the schema makes {@code record_key}
-     * the primary key, giving the backing Fluss table upsert-by-key semantics that map directly to
-     * Kafka's {@code cleanup.policy=compact}.
-     */
     public static TableDescriptor buildDescriptor(
             String topic,
             int numPartitions,
@@ -55,6 +62,35 @@ public final class KafkaTableFactory {
             @Nullable KafkaTopicInfo.Compression compression,
             Uuid topicId,
             boolean compacted) {
+        return buildDescriptor(
+                topic,
+                numPartitions,
+                timestampType,
+                compression,
+                topicId,
+                compacted,
+                Collections.emptyMap());
+    }
+
+    /**
+     * Build a table descriptor. When {@code compacted == true} the schema makes {@code record_key}
+     * the primary key, giving the backing Fluss table upsert-by-key semantics that map directly to
+     * Kafka's {@code cleanup.policy=compact}.
+     *
+     * <p>{@code kafkaTopicConfigs} carries the entries from {@code NewTopic.configs()} that aren't
+     * already consumed by the transcoder (timestamp type, compression, cleanup.policy). MAPPED
+     * catalogue keys (e.g. {@code retention.ms}) are translated to their Fluss table-property
+     * counterparts; STORED and unknown keys land on the {@code customProperties} map so
+     * DescribeConfigs round-trips them. Phase K-CFG (plan §28.5).
+     */
+    public static TableDescriptor buildDescriptor(
+            String topic,
+            int numPartitions,
+            KafkaTopicInfo.TimestampType timestampType,
+            @Nullable KafkaTopicInfo.Compression compression,
+            Uuid topicId,
+            boolean compacted,
+            Map<String, String> kafkaTopicConfigs) {
         TableDescriptor.Builder builder =
                 TableDescriptor.builder()
                         .schema(KafkaDataTable.schema(compacted))
@@ -88,6 +124,55 @@ public final class KafkaTableFactory {
                             org.apache.fluss.config.ConfigOptions.TABLE_KV_FORMAT.key(),
                             org.apache.fluss.metadata.KvFormat.INDEXED.name());
         }
+        applyKafkaTopicConfigs(builder, kafkaTopicConfigs);
         return builder.build();
+    }
+
+    /**
+     * Translate catalogued Kafka topic configs from a {@code NewTopic.configs()} map into Fluss
+     * properties. Special-cased: {@code retention.ms} → {@code table.log.ttl} (MAPPED at
+     * create-time only; see the tier note in {@link KafkaTopicConfigs}). Other catalogued entries
+     * and unknown keys pass through to {@code customProperties} so DescribeConfigs reads them back
+     * cleanly.
+     */
+    private static void applyKafkaTopicConfigs(
+            TableDescriptor.Builder builder, Map<String, String> kafkaTopicConfigs) {
+        if (kafkaTopicConfigs == null || kafkaTopicConfigs.isEmpty()) {
+            return;
+        }
+        for (Map.Entry<String, String> e : kafkaTopicConfigs.entrySet()) {
+            String key = e.getKey();
+            String value = e.getValue();
+            if (key == null || value == null) {
+                continue;
+            }
+            // Skip already-consumed keys (the transcoder extracted timestamp type / compression
+            // / cleanup.policy into dedicated custom properties).
+            if ("message.timestamp.type".equals(key)
+                    || "compression.type".equals(key)
+                    || "cleanup.policy".equals(key)) {
+                continue;
+            }
+            KafkaTopicConfigs.Entry entry = KafkaTopicConfigs.get(key);
+            if (entry != null && entry.tier == KafkaConfigTier.READONLY_DEFAULT) {
+                // READONLY_DEFAULT entries are rejected upstream in the transcoder, but be
+                // defensive: skip silently here rather than persisting a value we can't honour.
+                continue;
+            }
+            if ("retention.ms".equals(key)) {
+                // Create-time only: translate to Fluss's table-level retention so the runtime
+                // honours the value. Also record the raw kafka key as a custom property so
+                // DescribeConfigs reads back the caller's exact value (including the "-1 =
+                // forever" edge case).
+                String flussTtl = KafkaTopicConfigs.millisToDuration(value);
+                if (flussTtl != null) {
+                    builder.property(
+                            org.apache.fluss.config.ConfigOptions.TABLE_LOG_TTL.key(), flussTtl);
+                }
+                builder.customProperty(key, value);
+                continue;
+            }
+            builder.customProperty(key, value);
+        }
     }
 }

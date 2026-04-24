@@ -164,6 +164,40 @@ public final class KafkaAdminTranscoder {
         boolean compacted = "compact".equalsIgnoreCase(cleanupPolicy);
         Uuid topicId = Uuid.randomUuid();
 
+        // Collect catalogued topic configs for KafkaTableFactory (plan §28.5). Validate each entry
+        // against the catalogue first so bad values produce a clean INVALID_CONFIG instead of a
+        // runtime rejection from the Fluss coordinator.
+        java.util.Map<String, String> extraConfigs = new java.util.LinkedHashMap<>();
+        if (topic.configs() != null) {
+            for (CreatableTopicConfig cfg : topic.configs()) {
+                if (cfg.name() == null || cfg.value() == null) {
+                    continue;
+                }
+                org.apache.fluss.kafka.admin.KafkaTopicConfigs.Entry entry =
+                        org.apache.fluss.kafka.admin.KafkaTopicConfigs.get(cfg.name());
+                if (entry != null
+                        && entry.tier
+                                == org.apache.fluss.kafka.admin.KafkaConfigTier.READONLY_DEFAULT) {
+                    return result.setErrorCode(Errors.INVALID_CONFIG.code())
+                            .setErrorMessage(
+                                    "Config '"
+                                            + cfg.name()
+                                            + "' is read-only on this broker; cannot be set at"
+                                            + " CreateTopic time.");
+                }
+                if (entry != null) {
+                    String err =
+                            org.apache.fluss.kafka.admin.KafkaTopicConfigs.validateValue(
+                                    entry, cfg.value());
+                    if (err != null) {
+                        return result.setErrorCode(Errors.INVALID_CONFIG.code())
+                                .setErrorMessage(err);
+                    }
+                }
+                extraConfigs.put(cfg.name(), cfg.value());
+            }
+        }
+
         TableDescriptor descriptor =
                 KafkaTableFactory.buildDescriptor(
                         topic.name(),
@@ -171,7 +205,8 @@ public final class KafkaAdminTranscoder {
                         timestampType,
                         compression,
                         topicId,
-                        compacted);
+                        compacted,
+                        extraConfigs);
 
         if (validateOnly) {
             return result.setErrorCode(Errors.NONE.code())

@@ -1720,8 +1720,15 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
     }
 
     private KafkaConfigsTranscoder newConfigsTranscoder() {
+        // Pass the running server config + broker id so DescribeConfigs(BROKER, ...) can reflect
+        // real values (listeners, log retention, replication factor) instead of always-default
+        // Kafka placeholders. Phase K-CFG.
         return new KafkaConfigsTranscoder(
-                context.metadataManager(), newCatalog(), context.kafkaDatabase());
+                context.metadataManager(),
+                newCatalog(),
+                context.kafkaDatabase(),
+                context.serverConf(),
+                context.ownServerId().orElse(0));
     }
 
     void handleElectLeadersRequest(KafkaRequest request) {
