@@ -52,6 +52,7 @@ import org.apache.fluss.security.acl.Resource;
 
 import org.apache.kafka.common.message.AlterClientQuotasRequestData;
 import org.apache.kafka.common.message.AlterClientQuotasResponseData;
+import org.apache.kafka.common.message.AlterConfigsRequestData;
 import org.apache.kafka.common.message.AlterConfigsResponseData;
 import org.apache.kafka.common.message.ApiVersionsResponseData;
 import org.apache.kafka.common.message.CreatePartitionsRequestData;
@@ -65,13 +66,16 @@ import org.apache.kafka.common.message.DeleteTopicsRequestData;
 import org.apache.kafka.common.message.DeleteTopicsResponseData;
 import org.apache.kafka.common.message.DescribeClientQuotasResponseData;
 import org.apache.kafka.common.message.DescribeClusterResponseData;
+import org.apache.kafka.common.message.DescribeConfigsRequestData;
 import org.apache.kafka.common.message.DescribeConfigsResponseData;
 import org.apache.kafka.common.message.DescribeGroupsResponseData;
+import org.apache.kafka.common.message.DescribeProducersRequestData;
 import org.apache.kafka.common.message.DescribeProducersResponseData;
 import org.apache.kafka.common.message.ElectLeadersResponseData;
 import org.apache.kafka.common.message.FetchRequestData;
 import org.apache.kafka.common.message.FindCoordinatorResponseData;
 import org.apache.kafka.common.message.HeartbeatResponseData;
+import org.apache.kafka.common.message.IncrementalAlterConfigsRequestData;
 import org.apache.kafka.common.message.IncrementalAlterConfigsResponseData;
 import org.apache.kafka.common.message.InitProducerIdResponseData;
 import org.apache.kafka.common.message.LeaveGroupResponseData;
@@ -1284,9 +1288,32 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
         }
         try {
             DescribeConfigsRequest req = request.request();
+            DescribeConfigsRequestData data = req.data();
+            Map<String, Boolean> allowed =
+                    authorizeConfigsByTopic(request, data.resources(), OperationType.DESCRIBE);
+            DescribeConfigsRequestData filtered = data.duplicate();
+            filtered.resources().clear();
+            for (DescribeConfigsRequestData.DescribeConfigsResource r : data.resources()) {
+                if (r.resourceType() != CONFIG_RESOURCE_TYPE_TOPIC
+                        || allowed.getOrDefault(r.resourceName(), Boolean.TRUE)) {
+                    filtered.resources().add(r.duplicate());
+                }
+            }
             KafkaConfigsTranscoder transcoder = newConfigsTranscoder();
-            DescribeConfigsResponseData data = transcoder.describeConfigs(req.data());
-            request.complete(new DescribeConfigsResponse(data));
+            DescribeConfigsResponseData result = transcoder.describeConfigs(filtered);
+            short authzErr = Errors.TOPIC_AUTHORIZATION_FAILED.code();
+            for (DescribeConfigsRequestData.DescribeConfigsResource r : data.resources()) {
+                if (r.resourceType() == CONFIG_RESOURCE_TYPE_TOPIC
+                        && !allowed.getOrDefault(r.resourceName(), Boolean.TRUE)) {
+                    result.results()
+                            .add(
+                                    new DescribeConfigsResponseData.DescribeConfigsResult()
+                                            .setResourceType(r.resourceType())
+                                            .setResourceName(r.resourceName())
+                                            .setErrorCode(authzErr));
+                }
+            }
+            request.complete(new DescribeConfigsResponse(result));
         } catch (Throwable t) {
             LOG.error("DescribeConfigs handler threw", t);
             request.fail(t);
@@ -1303,9 +1330,43 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
         }
         try {
             AlterConfigsRequest req = request.request();
+            AlterConfigsRequestData data = req.data();
+            java.util.List<String> topics = new java.util.ArrayList<>();
+            for (AlterConfigsRequestData.AlterConfigsResource r : data.resources()) {
+                if (r.resourceType() == CONFIG_RESOURCE_TYPE_TOPIC) {
+                    topics.add(r.resourceName());
+                }
+            }
+            Map<String, Boolean> allowed =
+                    AuthzHelper.authorizeTopicBatch(
+                            context.authorizer(),
+                            AuthzHelper.sessionOf(request),
+                            OperationType.ALTER,
+                            topics,
+                            context.kafkaDatabase());
+            AlterConfigsRequestData filtered = data.duplicate();
+            filtered.resources().clear();
+            for (AlterConfigsRequestData.AlterConfigsResource r : data.resources()) {
+                if (r.resourceType() != CONFIG_RESOURCE_TYPE_TOPIC
+                        || allowed.getOrDefault(r.resourceName(), Boolean.TRUE)) {
+                    filtered.resources().add(r.duplicate());
+                }
+            }
             KafkaConfigsTranscoder transcoder = newConfigsTranscoder();
-            AlterConfigsResponseData data = transcoder.alterConfigs(req.data());
-            request.complete(new AlterConfigsResponse(data));
+            AlterConfigsResponseData result = transcoder.alterConfigs(filtered);
+            short authzErr = Errors.TOPIC_AUTHORIZATION_FAILED.code();
+            for (AlterConfigsRequestData.AlterConfigsResource r : data.resources()) {
+                if (r.resourceType() == CONFIG_RESOURCE_TYPE_TOPIC
+                        && !allowed.getOrDefault(r.resourceName(), Boolean.TRUE)) {
+                    result.responses()
+                            .add(
+                                    new AlterConfigsResponseData.AlterConfigsResourceResponse()
+                                            .setResourceType(r.resourceType())
+                                            .setResourceName(r.resourceName())
+                                            .setErrorCode(authzErr));
+                }
+            }
+            request.complete(new AlterConfigsResponse(result));
         } catch (Throwable t) {
             LOG.error("AlterConfigs handler threw", t);
             request.fail(t);
@@ -1322,14 +1383,72 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
         }
         try {
             IncrementalAlterConfigsRequest req = request.request();
+            IncrementalAlterConfigsRequestData data = req.data();
+            java.util.List<String> topics = new java.util.ArrayList<>();
+            for (IncrementalAlterConfigsRequestData.AlterConfigsResource r : data.resources()) {
+                if (r.resourceType() == CONFIG_RESOURCE_TYPE_TOPIC) {
+                    topics.add(r.resourceName());
+                }
+            }
+            Map<String, Boolean> allowed =
+                    AuthzHelper.authorizeTopicBatch(
+                            context.authorizer(),
+                            AuthzHelper.sessionOf(request),
+                            OperationType.ALTER,
+                            topics,
+                            context.kafkaDatabase());
+            IncrementalAlterConfigsRequestData filtered = data.duplicate();
+            filtered.resources().clear();
+            for (IncrementalAlterConfigsRequestData.AlterConfigsResource r : data.resources()) {
+                if (r.resourceType() != CONFIG_RESOURCE_TYPE_TOPIC
+                        || allowed.getOrDefault(r.resourceName(), Boolean.TRUE)) {
+                    filtered.resources().add(r.duplicate());
+                }
+            }
             KafkaConfigsTranscoder transcoder = newConfigsTranscoder();
-            IncrementalAlterConfigsResponseData data =
-                    transcoder.incrementalAlterConfigs(req.data());
-            request.complete(new IncrementalAlterConfigsResponse(data));
+            IncrementalAlterConfigsResponseData result =
+                    transcoder.incrementalAlterConfigs(filtered);
+            short authzErr = Errors.TOPIC_AUTHORIZATION_FAILED.code();
+            for (IncrementalAlterConfigsRequestData.AlterConfigsResource r : data.resources()) {
+                if (r.resourceType() == CONFIG_RESOURCE_TYPE_TOPIC
+                        && !allowed.getOrDefault(r.resourceName(), Boolean.TRUE)) {
+                    result.responses()
+                            .add(
+                                    new IncrementalAlterConfigsResponseData
+                                                    .AlterConfigsResourceResponse()
+                                            .setResourceType(r.resourceType())
+                                            .setResourceName(r.resourceName())
+                                            .setErrorCode(authzErr));
+                }
+            }
+            request.complete(new IncrementalAlterConfigsResponse(result));
         } catch (Throwable t) {
             LOG.error("IncrementalAlterConfigs handler threw", t);
             request.fail(t);
         }
+    }
+
+    /**
+     * Kafka wire-encoded resource type for TOPIC (matches {@code ConfigResource.Type.TOPIC.id()}).
+     */
+    private static final byte CONFIG_RESOURCE_TYPE_TOPIC = (byte) 2;
+
+    private Map<String, Boolean> authorizeConfigsByTopic(
+            KafkaRequest request,
+            java.util.List<DescribeConfigsRequestData.DescribeConfigsResource> resources,
+            OperationType op) {
+        java.util.List<String> topics = new java.util.ArrayList<>();
+        for (DescribeConfigsRequestData.DescribeConfigsResource r : resources) {
+            if (r.resourceType() == CONFIG_RESOURCE_TYPE_TOPIC) {
+                topics.add(r.resourceName());
+            }
+        }
+        return AuthzHelper.authorizeTopicBatch(
+                context.authorizer(),
+                AuthzHelper.sessionOf(request),
+                op,
+                topics,
+                context.kafkaDatabase());
     }
 
     private KafkaConfigsTranscoder newConfigsTranscoder() {
@@ -1492,10 +1611,45 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
         }
         try {
             DescribeProducersRequest req = request.request();
+            DescribeProducersRequestData data = req.data();
+            java.util.List<String> topics = new java.util.ArrayList<>();
+            for (DescribeProducersRequestData.TopicRequest t : data.topics()) {
+                topics.add(t.name());
+            }
+            Map<String, Boolean> allowed =
+                    AuthzHelper.authorizeTopicBatch(
+                            context.authorizer(),
+                            AuthzHelper.sessionOf(request),
+                            OperationType.READ,
+                            topics,
+                            context.kafkaDatabase());
+            DescribeProducersRequestData filtered = data.duplicate();
+            filtered.topics().clear();
+            for (DescribeProducersRequestData.TopicRequest t : data.topics()) {
+                if (allowed.getOrDefault(t.name(), Boolean.TRUE)) {
+                    filtered.topics().add(t.duplicate());
+                }
+            }
             KafkaDescribeProducersTranscoder transcoder =
                     new KafkaDescribeProducersTranscoder(newCatalog(), context.replicaManager());
-            DescribeProducersResponseData data = transcoder.describeProducers(req.data());
-            request.complete(new DescribeProducersResponse(data));
+            DescribeProducersResponseData result = transcoder.describeProducers(filtered);
+            short authzErr = Errors.TOPIC_AUTHORIZATION_FAILED.code();
+            for (DescribeProducersRequestData.TopicRequest t : data.topics()) {
+                if (allowed.getOrDefault(t.name(), Boolean.TRUE)) {
+                    continue;
+                }
+                DescribeProducersResponseData.TopicResponse topic =
+                        new DescribeProducersResponseData.TopicResponse().setName(t.name());
+                for (Integer partIdx : t.partitionIndexes()) {
+                    topic.partitions()
+                            .add(
+                                    new DescribeProducersResponseData.PartitionResponse()
+                                            .setPartitionIndex(partIdx)
+                                            .setErrorCode(authzErr));
+                }
+                result.topics().add(topic);
+            }
+            request.complete(new DescribeProducersResponse(result));
         } catch (Throwable t) {
             LOG.error("DescribeProducers handler threw", t);
             request.fail(t);
