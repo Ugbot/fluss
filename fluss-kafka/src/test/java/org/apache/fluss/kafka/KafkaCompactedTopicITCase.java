@@ -105,6 +105,23 @@ class KafkaCompactedTopicITCase {
         }
     }
 
+    // NOTE: Kafka-consumer read-back from a compacted (PK-backed) topic is deferred to a
+    // follow-up phase. The produce path is working — records land in the PK table via
+    // putRecordsToKv — but the fetch path (KafkaFetchTranscoder) today reads the log-offset
+    // space that log-table appends use. A PK table's CDC changelog uses a different record
+    // framing; bridging it to Kafka wire records needs a dedicated translator. An attempt to
+    // consume here today fails with "Encountered corrupt message" because kafka-clients sees
+    // raw KV-format bytes.
+    //
+    // Follow-up (Compacted-topic Phase 2):
+    //   - Extend KafkaFetchTranscoder to detect PK-backed topics and read from the table's CDC
+    //     stream, converting ChangeType.{APPEND, UPDATE_AFTER, DELETE} into Kafka records
+    //     (DELETE → null-value tombstone).
+    //   - Then re-enable a consume IT here that produces 5 records across 2 keys and reads the
+    //     changelog back, asserting the materialised-per-key view is last-writer-wins.
+    // For now, Fluss-native consumers (Table API, Flink) already see the snapshot correctly —
+    // they read the PK table directly.
+
     @Test
     void defaultTopicIsLog_notPkTable() throws Exception {
         // Sanity: creating a topic without cleanup.policy=compact must NOT produce a PK-backed
