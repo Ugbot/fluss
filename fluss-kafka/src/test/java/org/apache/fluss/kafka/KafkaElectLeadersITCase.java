@@ -20,6 +20,8 @@ package org.apache.fluss.kafka;
 import org.apache.fluss.cluster.ServerNode;
 import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.config.Configuration;
+import org.apache.fluss.metadata.TableBucket;
+import org.apache.fluss.metadata.TablePath;
 import org.apache.fluss.server.testutils.FlussClusterExtension;
 import org.apache.fluss.server.testutils.RpcMessageTestUtils;
 
@@ -32,6 +34,7 @@ import org.apache.kafka.common.ElectionType;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.errors.ElectionNotNeededException;
 import org.apache.kafka.common.errors.InvalidRequestException;
+import org.apache.kafka.common.errors.PreferredLeaderNotAvailableException;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -51,16 +54,19 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * End-to-end ElectLeaders test against the Fluss Kafka bolt-on. Exercises the
- * preferred-leader-already-active path ({@link ElectionNotNeededException}) and the unknown-topic
- * path. Because Fluss core does not yet expose a public election API, we cannot drive an actual
- * leader transition; the transcoder's observable contract is therefore:
+ * End-to-end ElectLeaders test against the Fluss Kafka bolt-on. Phase I.1 honest-stub contract:
  *
  * <ul>
  *   <li>Fresh topic with 3 replicas — every partition reports {@code ELECTION_NOT_NEEDED} because
- *       Fluss's default placement picks the first replica as leader.
+ *       Fluss's default placement picks the first replica as leader ({@link
+ *       ElectionNotNeededException}).
+ *   <li>Forced non-preferred leader via controlled-shutdown migration — transcoder surfaces {@link
+ *       PreferredLeaderNotAvailableException} with an explicit "does not yet expose" message, not
+ *       silent success. This is the stubbed branch Cruise Control / kafka-leader-election.sh see
+ *       until Fluss exposes a real election primitive (design 0011 §3).
  *   <li>Unknown topic — {@code UNKNOWN_TOPIC_OR_PARTITION} (or a short-timeout {@code
  *       TimeoutException} as Kafka AdminClient retries internally on the metadata lookup).
+ *   <li>Null topic-partitions ("elect everything") — no-op success, empty map.
  *   <li>Unclean election — {@code INVALID_REQUEST}.
  * </ul>
  */
@@ -172,6 +178,90 @@ class KafkaElectLeadersITCase {
                                                     org.apache.kafka.common.errors.TimeoutException
                                                             .class));
         }
+    }
+
+    @Test
+    void nonPreferredLeaderSurfacesExplicitUnsupportedError() throws Exception {
+        // Phase I.1 honest-stub pin: when the current leader is NOT the preferred replica (Fluss
+        // convention: replicas[0]), the transcoder has no public election primitive to drive and
+        // must surface the explicit PREFERRED_LEADER_NOT_AVAILABLE error with a descriptive
+        // message — otherwise Cruise Control / kafka-leader-election.sh silently decide the
+        // cluster is already balanced. Build that state by stopping the replica-0 tablet server
+        // while the topic is healthy, wait for the controlled-shutdown election to migrate
+        // leadership off it, then restart the server so it rejoins as a follower. The preferred
+        // replica is now alive but NOT leader — exactly the stubbed branch.
+        String topic = "electleaders_stub_" + System.nanoTime();
+        admin.createTopics(Collections.singletonList(new NewTopic(topic, 1, (short) 3)))
+                .all()
+                .get();
+        try {
+            // Resolve the bucket id so we can wait for a concrete leader transition.
+            TablePath path = TablePath.of(KAFKA_DATABASE, topic);
+            long tableId =
+                    CLUSTER.newCoordinatorClient()
+                            .getTableInfo(RpcMessageTestUtils.newGetTableInfoRequest(path))
+                            .get()
+                            .getTableId();
+            TableBucket tb = new TableBucket(tableId, 0);
+            int initialLeader = CLUSTER.waitAndGetLeader(tb);
+            // Fluss placement: replica 0 is preferred and becomes the initial leader.
+            assertThat(initialLeader).isZero();
+
+            // Force a non-preferred leader via controlled shutdown of tablet server 0. The
+            // coordinator's ControlledShutdownLeaderElection migrates leadership to replica 1 or
+            // 2; after the server restarts it rejoins ISR as a follower.
+            CLUSTER.stopTabletServer(0);
+            long deadlineMs = System.currentTimeMillis() + 30_000L;
+            int migratedLeader = -1;
+            while (System.currentTimeMillis() < deadlineMs) {
+                try {
+                    int cur = CLUSTER.waitAndGetLeader(tb);
+                    if (cur != 0) {
+                        migratedLeader = cur;
+                        break;
+                    }
+                } catch (Throwable ignore) {
+                    // zk may briefly miss the leader node during transition; loop.
+                }
+                Thread.sleep(50);
+            }
+            assertThat(migratedLeader)
+                    .as("leader migrated away from preferred replica 0")
+                    .isIn(1, 2);
+            CLUSTER.startTabletServer(0);
+            CLUSTER.waitUntilReplicaExpandToIsr(tb, 0);
+
+            // Now fire electLeaders — transcoder must classify this as
+            // PREFERRED_LEADER_NOT_AVAILABLE with the explicit stub-error message.
+            TopicPartition tp = new TopicPartition(topic, 0);
+            Map<TopicPartition, Optional<Throwable>> result =
+                    admin.electLeaders(ElectionType.PREFERRED, Collections.singleton(tp))
+                            .partitions()
+                            .get();
+            Optional<Throwable> err = result.get(tp);
+            assertThat(err).isPresent();
+            assertThat(err.get())
+                    .isInstanceOf(PreferredLeaderNotAvailableException.class)
+                    .hasMessageContaining("design 0011");
+        } finally {
+            try {
+                admin.deleteTopics(Collections.singletonList(topic)).all().get();
+            } catch (Throwable ignore) {
+                // best-effort cleanup; the cluster is shared across tests.
+            }
+        }
+    }
+
+    @Test
+    void electLeadersForEmptyPartitionSetSucceeds() throws Exception {
+        // kafka-leader-election.sh --all-topic-partitions routes through
+        // AdminClient.electLeaders(PREFERRED, null) which translates to an ElectLeaders request
+        // with no topicPartitions. Transcoder short-circuits to NONE / empty list; AdminClient
+        // surfaces an empty map. Pin that to avoid regressing into a wire-level error that would
+        // break Cruise Control's bootstrap.
+        Map<TopicPartition, Optional<Throwable>> result =
+                admin.electLeaders(ElectionType.PREFERRED, null).partitions().get();
+        assertThat(result).isEmpty();
     }
 
     @Test

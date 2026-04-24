@@ -43,26 +43,36 @@ import java.util.Optional;
  * Handles Kafka {@code ELECT_LEADERS} (API key 43) by inspecting each bucket's replica assignment
  * and reporting whether a preferred-replica election is needed.
  *
- * <p>Fluss core does not yet expose a public preferred-leader-election entry-point — leader
- * transitions happen implicitly through the coordinator's {@code TableBucketStateMachine} and its
- * {@code ReplicaLeaderElection} strategies, all of which are package-private to the coordinator.
- * Per Phase I scope, this transcoder therefore implements the read-only half of the contract:
+ * <p><b>Phase I.1 — honest stub.</b> Fluss core does not yet expose a public preferred-leader
+ * election primitive: leader transitions are driven implicitly by the coordinator's {@code
+ * TableBucketStateMachine} through the package-private {@code ReplicaLeaderElection} strategies
+ * (see {@code fluss-server/.../coordinator/statemachine/ReplicaLeaderElection.java}). Landing a
+ * real election primitive requires a new {@code CoordinatorGateway.electLeaders} RPC plus a new
+ * {@code PreferredReplicaPartitionLeaderElection} strategy — roughly 400 LOC of core changes
+ * documented in {@code dev-docs/design/0011-kafka-admin-polish.md} §3 / §9. This transcoder
+ * therefore implements the read-only half of the contract and surfaces the stub case explicitly:
  *
  * <ul>
  *   <li>Unknown topic / partition — {@link Errors#UNKNOWN_TOPIC_OR_PARTITION}.
  *   <li>Preferred replica (first entry in the assignment list, Fluss convention) already the
- *       current leader — {@link Errors#ELECTION_NOT_NEEDED}.
+ *       current leader — {@link Errors#ELECTION_NOT_NEEDED}. Kafka AdminClient tools treat this as
+ *       "no-op, cluster balanced".
  *   <li>Preferred replica differs from current leader — {@link
- *       Errors#PREFERRED_LEADER_NOT_AVAILABLE}. TODO (Phase I owner): once Fluss exposes a public
- *       preferred-leader-election API, drive a real election here and only fall back to this error
- *       when the election itself fails.
- *   <li>Unclean election type (electionType=1) — {@link Errors#INVALID_REQUEST}. Fluss does not
- *       support unclean leader election.
+ *       Errors#PREFERRED_LEADER_NOT_AVAILABLE}. The error message explicitly names the missing core
+ *       primitive so Cruise Control / {@code kafka-leader-election.sh} operators do not silently
+ *       believe a re-balance completed. Once Fluss exposes a public election primitive, this branch
+ *       should be replaced by the actual RPC and the error reserved for "election fired but could
+ *       not complete" (preferred replica not in ISR, coordinator timeout).
+ *   <li>Unclean election type (electionType=1) — {@link Errors#INVALID_REQUEST}. Fluss has no
+ *       analogue for unclean leader election and will not add one; refuse explicitly.
  * </ul>
  *
  * <p>When the caller omits {@code topicPartitions} entirely (Kafka convention: "elect everything"),
- * we short-circuit and advertise {@link Errors#NONE} with an empty per-topic list. AdminClient
- * treats that as a no-op success and it keeps tooling like kafka-reassign-partitions happy.
+ * we short-circuit and advertise {@link Errors#NONE} with an empty per-topic list. kafka-clients'
+ * {@code DescribeClusterOptions} / {@code AdminClient.electLeaders(PREFERRED, null)} accepts that
+ * shape as a no-op, and {@code kafka-leader-election.sh --all-topic-partitions} falls back to
+ * per-partition calls. Surfacing a wire error on the "elect everything" shape would break Cruise
+ * Control's bootstrap path.
  */
 @Internal
 public final class KafkaElectLeadersTranscoder {
@@ -176,10 +186,11 @@ public final class KafkaElectLeadersTranscoder {
         if (preferred == currentLeader) {
             return pr.setErrorCode(Errors.ELECTION_NOT_NEEDED.code()).setErrorMessage(null);
         }
-        // Fluss core has no public preferred-leader-election entry-point yet. Surface the Kafka
-        // wire-level error that signals "preferred replica exists but isn't currently the leader";
-        // AdminClient treats this as a transient failure and the caller can retry. TODO (Phase I
-        // owner): replace this branch with a real election call once Fluss exposes one.
+        // Fluss core has no public preferred-leader-election primitive yet (see class Javadoc).
+        // Surface the Kafka wire-level error that signals "preferred replica exists but isn't
+        // currently the leader" with an explicit, greppable message so operators see the stub
+        // status rather than believe a no-op rebalance fired. AdminClient treats the error as
+        // transient and will surface it as PreferredLeaderNotAvailableException on .all().
         return pr.setErrorCode(Errors.PREFERRED_LEADER_NOT_AVAILABLE.code())
                 .setErrorMessage(
                         "Preferred replica "
@@ -187,7 +198,7 @@ public final class KafkaElectLeadersTranscoder {
                                 + " is not the current leader ("
                                 + currentLeader
                                 + "); Fluss does not yet expose a public preferred-leader"
-                                + " election API.");
+                                + " election primitive (see design 0011 §3).");
     }
 
     private static PartitionResult errorPartition(int partitionId, Errors error) {
