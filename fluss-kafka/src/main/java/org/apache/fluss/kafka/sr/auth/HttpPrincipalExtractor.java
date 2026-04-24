@@ -27,11 +27,8 @@ import org.slf4j.LoggerFactory;
 
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
-import java.net.UnknownHostException;
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
 import java.util.Base64;
-import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
 
@@ -72,25 +69,14 @@ public final class HttpPrincipalExtractor {
     /** Principal type stored on {@link FlussPrincipal} for HTTP-extracted identities. */
     private static final String PRINCIPAL_TYPE_USER = "User";
 
-    private final List<CidrRange> trustedProxyCidrs;
+    private final TrustedCidrSet trustedProxyCidrs;
     private final JaasHttpPrincipalStore basicAuthStore;
 
     public HttpPrincipalExtractor(
             List<String> trustedProxyCidrs, JaasHttpPrincipalStore basicAuthStore) {
         checkNotNull(trustedProxyCidrs, "trustedProxyCidrs");
         checkNotNull(basicAuthStore, "basicAuthStore");
-        List<CidrRange> parsed = new ArrayList<>(trustedProxyCidrs.size());
-        for (String cidr : trustedProxyCidrs) {
-            if (cidr == null) {
-                continue;
-            }
-            String trimmed = cidr.trim();
-            if (trimmed.isEmpty()) {
-                continue;
-            }
-            parsed.add(CidrRange.parse(trimmed));
-        }
-        this.trustedProxyCidrs = Collections.unmodifiableList(parsed);
+        this.trustedProxyCidrs = TrustedCidrSet.parse(trustedProxyCidrs);
         this.basicAuthStore = basicAuthStore;
     }
 
@@ -150,95 +136,6 @@ public final class HttpPrincipalExtractor {
         if (addr == null) {
             return false;
         }
-        for (CidrRange range : trustedProxyCidrs) {
-            if (range.contains(addr)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    /**
-     * IPv4/IPv6 CIDR block with a {@code contains(InetAddress)} membership test. Used to gate the
-     * {@code X-Forwarded-User} header on source-address trust.
-     */
-    static final class CidrRange {
-        private final byte[] network;
-        private final int prefixBits;
-
-        private CidrRange(byte[] network, int prefixBits) {
-            this.network = network;
-            this.prefixBits = prefixBits;
-        }
-
-        static CidrRange parse(String cidr) {
-            int slash = cidr.indexOf('/');
-            String host;
-            int prefix;
-            if (slash < 0) {
-                host = cidr;
-                // Bare IP → /32 (IPv4) or /128 (IPv6) single-host range.
-                prefix = -1;
-            } else {
-                host = cidr.substring(0, slash);
-                String prefixStr = cidr.substring(slash + 1);
-                try {
-                    prefix = Integer.parseInt(prefixStr);
-                } catch (NumberFormatException nfe) {
-                    throw new IllegalArgumentException(
-                            "Invalid CIDR prefix in '" + cidr + "'", nfe);
-                }
-            }
-            InetAddress addr;
-            try {
-                addr = InetAddress.getByName(host);
-            } catch (UnknownHostException uhe) {
-                throw new IllegalArgumentException(
-                        "Invalid CIDR host in '" + cidr + "': " + uhe.getMessage(), uhe);
-            }
-            byte[] bytes = addr.getAddress();
-            int max = bytes.length * 8;
-            if (prefix < 0) {
-                prefix = max;
-            }
-            if (prefix < 0 || prefix > max) {
-                throw new IllegalArgumentException(
-                        "CIDR prefix out of range for address family in '" + cidr + "'");
-            }
-            byte[] masked = applyMask(bytes, prefix);
-            return new CidrRange(masked, prefix);
-        }
-
-        boolean contains(InetAddress candidate) {
-            byte[] bytes = candidate.getAddress();
-            if (bytes.length * 8 != network.length * 8) {
-                // IPv4 vs IPv6 family mismatch — not in this range.
-                return false;
-            }
-            byte[] candidateMasked = applyMask(bytes, prefixBits);
-            for (int i = 0; i < network.length; i++) {
-                if (candidateMasked[i] != network[i]) {
-                    return false;
-                }
-            }
-            return true;
-        }
-
-        private static byte[] applyMask(byte[] bytes, int prefixBits) {
-            byte[] out = new byte[bytes.length];
-            int fullBytes = prefixBits / 8;
-            int remainingBits = prefixBits % 8;
-            for (int i = 0; i < bytes.length; i++) {
-                if (i < fullBytes) {
-                    out[i] = bytes[i];
-                } else if (i == fullBytes && remainingBits > 0) {
-                    int mask = (0xFF << (8 - remainingBits)) & 0xFF;
-                    out[i] = (byte) (bytes[i] & mask);
-                } else {
-                    out[i] = 0;
-                }
-            }
-            return out;
-        }
+        return trustedProxyCidrs.contains(addr);
     }
 }
