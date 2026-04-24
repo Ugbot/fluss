@@ -171,5 +171,68 @@
             <version>${curator.version}</version>
             <scope>test</scope>
         </dependency>
+
+        <!--
+            Kafka Connect + Kafka Streams test-scope dependencies that power the in-JVM
+            EmbeddedConnectCluster / EmbeddedStreamsApp harnesses (see
+            dev-docs/design/0017-kafka-connect-and-streams-test-harness.md). All are strictly
+            test-scope and never leak into the distribution jar. connect-runtime pulls in Jetty,
+            Jackson, and the reflections library — acceptable in tests only.
+        -->
+        <dependency>
+            <groupId>org.apache.kafka</groupId>
+            <artifactId>connect-api</artifactId>
+            <version>${kafka.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.kafka</groupId>
+            <artifactId>connect-runtime</artifactId>
+            <version>${kafka.version}</version>
+            <scope>test</scope>
+            <exclusions>
+                <!--
+                    connect-runtime 3.9.x ships a transitive reload4j binding; the top-level
+                    enforcer (forbid-log4j-1) bans it in favour of the log4j-1.2-api bridge. The
+                    Connect runtime talks to SLF4J only, so log routing is unaffected.
+                -->
+                <exclusion>
+                    <groupId>ch.qos.reload4j</groupId>
+                    <artifactId>reload4j</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>org.slf4j</groupId>
+                    <artifactId>slf4j-reload4j</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>log4j</groupId>
+                    <artifactId>log4j</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.kafka</groupId>
+            <artifactId>connect-json</artifactId>
+            <version>${kafka.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.kafka</groupId>
+            <artifactId>connect-file</artifactId>
+            <version>${kafka.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.kafka</groupId>
+            <artifactId>kafka-streams</artifactId>
+            <version>${kafka.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.kafka</groupId>
+            <artifactId>kafka-streams-test-utils</artifactId>
+            <version>${kafka.version}</version>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 </project>
