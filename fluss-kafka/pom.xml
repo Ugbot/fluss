@@ -40,6 +40,10 @@
         <!-- Janino: runtime Java compiler used by AvroCodecCompiler (Phase T.1) to emit
              per-schema specialised RecordCodec implementations. -->
         <janino.version>3.1.12</janino.version>
+        <!-- Protobuf: descriptor model + well-known types for the Protobuf SR translator
+             (Phase T-MF.3). We parse .proto text with a hand-rolled parser (no Wire/Kotlin
+             transitive) and use protobuf-java only for DescriptorProtos / wire-format types. -->
+        <protobuf.version>3.25.5</protobuf.version>
     </properties>
 
     <dependencies>
@@ -119,6 +123,16 @@
             <groupId>org.codehaus.janino</groupId>
             <artifactId>janino</artifactId>
             <version>${janino.version}</version>
+        </dependency>
+
+        <!-- Protobuf (Phase T-MF.3): used by ProtobufFormatTranslator's compat checker for
+             descriptor-level comparison; also provides the well-known-type descriptors
+             (google.protobuf.Timestamp, Duration, etc.) we map to Fluss logical types. Parsing
+             of .proto text is hand-rolled in ProtobufProtoParser — no Wire/Kotlin dep. -->
+        <dependency>
+            <groupId>com.google.protobuf</groupId>
+            <artifactId>protobuf-java</artifactId>
+            <version>${protobuf.version}</version>
         </dependency>
 
         <!-- test dependency -->

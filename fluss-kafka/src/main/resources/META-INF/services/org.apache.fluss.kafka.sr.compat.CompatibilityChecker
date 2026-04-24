@@ -1,2 +1,3 @@
 org.apache.fluss.kafka.sr.compat.AvroCompatibilityChecker
 org.apache.fluss.kafka.sr.compat.JsonCompatibilityChecker
+org.apache.fluss.kafka.sr.compat.ProtobufCompatibilityChecker
