@@ -21,6 +21,7 @@ import org.apache.fluss.catalog.CatalogService;
 import org.apache.fluss.catalog.FlussCatalogService;
 import org.apache.fluss.client.Connection;
 import org.apache.fluss.config.ConfigOptions;
+import org.apache.fluss.exception.AuthorizationException;
 import org.apache.fluss.kafka.admin.KafkaAdminTranscoder;
 import org.apache.fluss.kafka.admin.KafkaClientQuotasTranscoder;
 import org.apache.fluss.kafka.admin.KafkaConfigsTranscoder;
@@ -28,6 +29,7 @@ import org.apache.fluss.kafka.admin.KafkaCreatePartitionsTranscoder;
 import org.apache.fluss.kafka.admin.KafkaDeleteRecordsTranscoder;
 import org.apache.fluss.kafka.admin.KafkaDescribeProducersTranscoder;
 import org.apache.fluss.kafka.admin.KafkaElectLeadersTranscoder;
+import org.apache.fluss.kafka.auth.AuthzHelper;
 import org.apache.fluss.kafka.catalog.CustomPropertiesTopicsCatalog;
 import org.apache.fluss.kafka.catalog.KafkaTopicsCatalog;
 import org.apache.fluss.kafka.fetch.KafkaFetchTranscoder;
@@ -45,14 +47,18 @@ import org.apache.fluss.kafka.produce.KafkaProduceTranscoder;
 import org.apache.fluss.rpc.gateway.TabletServerGateway;
 import org.apache.fluss.rpc.netty.server.RequestHandler;
 import org.apache.fluss.rpc.protocol.RequestType;
+import org.apache.fluss.security.acl.OperationType;
+import org.apache.fluss.security.acl.Resource;
 
 import org.apache.kafka.common.message.AlterClientQuotasResponseData;
 import org.apache.kafka.common.message.AlterConfigsResponseData;
 import org.apache.kafka.common.message.ApiVersionsResponseData;
 import org.apache.kafka.common.message.CreatePartitionsResponseData;
+import org.apache.kafka.common.message.CreateTopicsRequestData;
 import org.apache.kafka.common.message.CreateTopicsResponseData;
 import org.apache.kafka.common.message.DeleteGroupsResponseData;
 import org.apache.kafka.common.message.DeleteRecordsResponseData;
+import org.apache.kafka.common.message.DeleteTopicsRequestData;
 import org.apache.kafka.common.message.DeleteTopicsResponseData;
 import org.apache.kafka.common.message.DescribeClientQuotasResponseData;
 import org.apache.kafka.common.message.DescribeClusterResponseData;
@@ -139,6 +145,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.EnumSet;
+import java.util.Map;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -585,6 +592,19 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
             return;
         }
         try {
+            AuthzHelper.authorizeOrThrow(
+                    context.authorizer(),
+                    AuthzHelper.sessionOf(request),
+                    OperationType.DESCRIBE,
+                    Resource.cluster());
+        } catch (AuthorizationException denied) {
+            DescribeClusterResponseData data = new DescribeClusterResponseData();
+            data.setErrorCode(Errors.CLUSTER_AUTHORIZATION_FAILED.code());
+            data.setErrorMessage(denied.getMessage());
+            request.complete(new DescribeClusterResponse(data));
+            return;
+        }
+        try {
             KafkaMetadataBuilder builder =
                     new KafkaMetadataBuilder(context, newCatalog(), request.listenerName());
             DescribeClusterResponseData data = builder.buildDescribeClusterResponse();
@@ -603,8 +623,28 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
                                     + " gateway; the plugin is not fully wired."));
             return;
         }
+        CreateTopicsRequest req = request.request();
         try {
-            CreateTopicsRequest req = request.request();
+            AuthzHelper.authorizeOrThrow(
+                    context.authorizer(),
+                    AuthzHelper.sessionOf(request),
+                    OperationType.CREATE,
+                    Resource.database(context.kafkaDatabase()));
+        } catch (AuthorizationException denied) {
+            CreateTopicsResponseData data = new CreateTopicsResponseData();
+            short errCode = Errors.CLUSTER_AUTHORIZATION_FAILED.code();
+            for (CreateTopicsRequestData.CreatableTopic t : req.data().topics()) {
+                data.topics()
+                        .add(
+                                new CreateTopicsResponseData.CreatableTopicResult()
+                                        .setName(t.name())
+                                        .setErrorCode(errCode)
+                                        .setErrorMessage(denied.getMessage()));
+            }
+            request.complete(new CreateTopicsResponse(data));
+            return;
+        }
+        try {
             KafkaAdminTranscoder transcoder = new KafkaAdminTranscoder(context, newCatalog());
             CreateTopicsResponseData data = transcoder.createTopics(req.data());
             request.complete(new CreateTopicsResponse(data));
@@ -624,13 +664,74 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
         }
         try {
             DeleteTopicsRequest req = request.request();
+            DeleteTopicsRequestData reqData = req.data();
+            Map<String, Boolean> allowed =
+                    AuthzHelper.authorizeTopicBatch(
+                            context.authorizer(),
+                            AuthzHelper.sessionOf(request),
+                            OperationType.DROP,
+                            collectDeleteTopicNames(reqData),
+                            context.kafkaDatabase());
+
+            DeleteTopicsRequestData filtered = filterDeleteTopicsByAllowed(reqData, allowed);
             KafkaAdminTranscoder transcoder = new KafkaAdminTranscoder(context, newCatalog());
-            DeleteTopicsResponseData data = transcoder.deleteTopics(req.data());
+            DeleteTopicsResponseData data = transcoder.deleteTopics(filtered);
+
+            // Append a TOPIC_AUTHORIZATION_FAILED entry for every denied topic we filtered out.
+            short authzDenied = Errors.TOPIC_AUTHORIZATION_FAILED.code();
+            for (Map.Entry<String, Boolean> e : allowed.entrySet()) {
+                if (!e.getValue()) {
+                    data.responses()
+                            .add(
+                                    new org.apache.kafka.common.message.DeleteTopicsResponseData
+                                                    .DeletableTopicResult()
+                                            .setName(e.getKey())
+                                            .setErrorCode(authzDenied));
+                }
+            }
             request.complete(new DeleteTopicsResponse(data));
         } catch (Throwable t) {
             LOG.error("DeleteTopics handler threw", t);
             request.fail(t);
         }
+    }
+
+    private static java.util.List<String> collectDeleteTopicNames(DeleteTopicsRequestData data) {
+        java.util.List<String> names = new java.util.ArrayList<>();
+        if (data.topicNames() != null) {
+            names.addAll(data.topicNames());
+        }
+        if (data.topics() != null) {
+            for (DeleteTopicsRequestData.DeleteTopicState t : data.topics()) {
+                if (t.name() != null) {
+                    names.add(t.name());
+                }
+            }
+        }
+        return names;
+    }
+
+    private static DeleteTopicsRequestData filterDeleteTopicsByAllowed(
+            DeleteTopicsRequestData in, Map<String, Boolean> allowed) {
+        DeleteTopicsRequestData out = new DeleteTopicsRequestData();
+        out.setTimeoutMs(in.timeoutMs());
+        if (in.topicNames() != null) {
+            for (String n : in.topicNames()) {
+                if (allowed.getOrDefault(n, Boolean.TRUE)) {
+                    out.topicNames().add(n);
+                }
+            }
+        }
+        if (in.topics() != null) {
+            for (DeleteTopicsRequestData.DeleteTopicState t : in.topics()) {
+                // Delete-by-id stays passed through unchanged (transcoder returns
+                // UNSUPPORTED_VERSION for those anyway).
+                if (t.name() == null || allowed.getOrDefault(t.name(), Boolean.TRUE)) {
+                    out.topics().add(t.duplicate());
+                }
+            }
+        }
+        return out;
     }
 
     void handleProduceRequest(KafkaRequest request) {
