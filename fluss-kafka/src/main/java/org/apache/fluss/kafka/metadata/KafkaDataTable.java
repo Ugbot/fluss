@@ -48,19 +48,43 @@ public final class KafkaDataTable {
     /** Inner ROW field name for a header element's value. */
     public static final String HEADER_FIELD_VALUE = "value";
 
-    /** Build the Fluss {@link Schema} used by every Kafka-managed data table. */
+    /**
+     * Build the Fluss {@link Schema} used by every Kafka-managed data table. When {@code compacted
+     * == true} the {@link #COL_RECORD_KEY} column is marked non-null and made the primary key,
+     * giving Fluss upsert-by-key semantics that match Kafka's {@code cleanup.policy=compact}.
+     */
+    public static Schema schema(boolean compacted) {
+        Schema.Builder builder = Schema.newBuilder();
+        if (compacted) {
+            builder.column(COL_RECORD_KEY, DataTypes.BYTES().copy(false))
+                    .column(COL_PAYLOAD, DataTypes.BYTES())
+                    .column(COL_EVENT_TIME, DataTypes.TIMESTAMP_LTZ(3).copy(false))
+                    .column(
+                            COL_HEADERS,
+                            DataTypes.ARRAY(
+                                    DataTypes.ROW(
+                                            DataTypes.FIELD(HEADER_FIELD_NAME, DataTypes.STRING()),
+                                            DataTypes.FIELD(
+                                                    HEADER_FIELD_VALUE, DataTypes.BYTES()))))
+                    .primaryKey(COL_RECORD_KEY);
+        } else {
+            builder.column(COL_RECORD_KEY, DataTypes.BYTES())
+                    .column(COL_PAYLOAD, DataTypes.BYTES())
+                    .column(COL_EVENT_TIME, DataTypes.TIMESTAMP_LTZ(3).copy(false))
+                    .column(
+                            COL_HEADERS,
+                            DataTypes.ARRAY(
+                                    DataTypes.ROW(
+                                            DataTypes.FIELD(HEADER_FIELD_NAME, DataTypes.STRING()),
+                                            DataTypes.FIELD(
+                                                    HEADER_FIELD_VALUE, DataTypes.BYTES()))));
+        }
+        return builder.build();
+    }
+
+    /** Legacy / default accessor — log-shaped (non-compacted) table. */
     public static Schema schema() {
-        return Schema.newBuilder()
-                .column(COL_RECORD_KEY, DataTypes.BYTES())
-                .column(COL_PAYLOAD, DataTypes.BYTES())
-                .column(COL_EVENT_TIME, DataTypes.TIMESTAMP_LTZ(3).copy(false))
-                .column(
-                        COL_HEADERS,
-                        DataTypes.ARRAY(
-                                DataTypes.ROW(
-                                        DataTypes.FIELD(HEADER_FIELD_NAME, DataTypes.STRING()),
-                                        DataTypes.FIELD(HEADER_FIELD_VALUE, DataTypes.BYTES()))))
-                .build();
+        return schema(false);
     }
 
     /** Build a {@link TableDescriptor} for the data table behind a Kafka topic. */

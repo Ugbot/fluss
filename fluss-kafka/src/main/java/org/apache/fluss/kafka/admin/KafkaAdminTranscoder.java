@@ -160,11 +160,18 @@ public final class KafkaAdminTranscoder {
         KafkaTopicInfo.Compression compression =
                 KafkaTopicInfo.Compression.fromWireName(
                         configOr(topic.configs(), "compression.type", "NONE"));
+        String cleanupPolicy = configOr(topic.configs(), "cleanup.policy", "delete");
+        boolean compacted = "compact".equalsIgnoreCase(cleanupPolicy);
         Uuid topicId = Uuid.randomUuid();
 
         TableDescriptor descriptor =
                 KafkaTableFactory.buildDescriptor(
-                        topic.name(), numPartitions, timestampType, compression, topicId);
+                        topic.name(),
+                        numPartitions,
+                        timestampType,
+                        compression,
+                        topicId,
+                        compacted);
 
         if (validateOnly) {
             return result.setErrorCode(Errors.NONE.code())

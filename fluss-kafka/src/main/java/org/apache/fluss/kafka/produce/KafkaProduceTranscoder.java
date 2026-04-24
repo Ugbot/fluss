@@ -168,18 +168,32 @@ public final class KafkaProduceTranscoder {
                             fieldTypes[i], BinaryRow.BinaryRowFormat.INDEXED);
         }
 
+        boolean compacted = tableInfo.hasPrimaryKey();
         List<CompletableFuture<PartitionProduceResponse>> partitionFutures = new ArrayList<>();
         for (PartitionProduceData partition : topicData.partitionData()) {
-            partitionFutures.add(
-                    producePartition(
-                            info,
-                            tableInfo.getTableId(),
-                            schemaId,
-                            rowType,
-                            valueWriters,
-                            partition,
-                            acks,
-                            timeoutMs));
+            if (compacted) {
+                partitionFutures.add(
+                        producePartitionKv(
+                                info,
+                                tableInfo.getTableId(),
+                                schemaId,
+                                rowType,
+                                valueWriters,
+                                partition,
+                                acks,
+                                timeoutMs));
+            } else {
+                partitionFutures.add(
+                        producePartition(
+                                info,
+                                tableInfo.getTableId(),
+                                schemaId,
+                                rowType,
+                                valueWriters,
+                                partition,
+                                acks,
+                                timeoutMs));
+            }
         }
         return CompletableFuture.allOf(partitionFutures.toArray(new CompletableFuture[0]))
                 .thenApply(
@@ -246,6 +260,150 @@ public final class KafkaProduceTranscoder {
                             .setBaseOffset(-1));
         }
         return future;
+    }
+
+    /**
+     * Produce path for compacted topics (Fluss PK tables): each Kafka record becomes a KvRecord
+     * with {@code record_key} as the row key. Null-valued Kafka records become tombstones (row=null
+     * → delete the key). Uses {@link ReplicaManager#putRecordsToKv} under {@link
+     * org.apache.fluss.rpc.protocol.MergeMode#OVERWRITE} so last-writer-wins by key.
+     */
+    private CompletableFuture<PartitionProduceResponse> producePartitionKv(
+            KafkaTopicInfo info,
+            long tableId,
+            int schemaId,
+            RowType rowType,
+            BinaryWriter.ValueWriter[] valueWriters,
+            PartitionProduceData partition,
+            short acks,
+            int timeoutMs) {
+        int partitionIndex = partition.index();
+        PartitionProduceResponse response = new PartitionProduceResponse().setIndex(partitionIndex);
+
+        MemoryRecords kafkaRecords = (MemoryRecords) partition.records();
+        if (kafkaRecords == null || kafkaRecords.sizeInBytes() == 0) {
+            return CompletableFuture.completedFuture(
+                    response.setErrorCode(Errors.NONE.code()).setBaseOffset(-1));
+        }
+
+        org.apache.fluss.record.KvRecordBatch kvBatch;
+        try {
+            kvBatch = buildFlussKvRecords(kafkaRecords, schemaId, rowType, valueWriters);
+        } catch (Exception e) {
+            LOG.error(
+                    "Transcode failed for compacted topic '{}' partition {}",
+                    info.topic(),
+                    partitionIndex,
+                    e);
+            return CompletableFuture.completedFuture(
+                    response.setErrorCode(Errors.CORRUPT_MESSAGE.code())
+                            .setErrorMessage(e.getMessage())
+                            .setBaseOffset(-1));
+        }
+
+        CompletableFuture<PartitionProduceResponse> future = new CompletableFuture<>();
+        org.apache.fluss.metadata.TableBucket bucket =
+                new org.apache.fluss.metadata.TableBucket(tableId, partitionIndex);
+        try {
+            replicaManager.putRecordsToKv(
+                    Math.max(timeoutMs, 1),
+                    acks,
+                    Collections.singletonMap(bucket, kvBatch),
+                    /* targetColumns */ null,
+                    org.apache.fluss.rpc.protocol.MergeMode.OVERWRITE,
+                    /* apiVersion */ (short) 0,
+                    results -> future.complete(translateKv(results, partitionIndex, response)));
+        } catch (Throwable t) {
+            LOG.error("putRecordsToKv threw", t);
+            future.complete(
+                    response.setErrorCode(Errors.UNKNOWN_SERVER_ERROR.code())
+                            .setErrorMessage(t.getMessage())
+                            .setBaseOffset(-1));
+        }
+        return future;
+    }
+
+    /**
+     * Build a Fluss {@link org.apache.fluss.record.KvRecordBatch} from a Kafka {@link
+     * MemoryRecords}. The {@code record_key} column in the row mirrors the separate {@code key}
+     * byte array the KV batch builder expects — Fluss's row-format constraint is satisfied by using
+     * {@link org.apache.fluss.metadata.KvFormat#INDEXED} on the table descriptor (see {@link
+     * org.apache.fluss.kafka.catalog.KafkaTableFactory#buildDescriptor(String, int,
+     * KafkaTopicInfo.TimestampType, KafkaTopicInfo.Compression, org.apache.kafka.common.Uuid,
+     * boolean)}).
+     */
+    private org.apache.fluss.record.KvRecordBatch buildFlussKvRecords(
+            MemoryRecords kafkaRecords,
+            int schemaId,
+            RowType rowType,
+            BinaryWriter.ValueWriter[] valueWriters)
+            throws Exception {
+        UnmanagedPagedOutputView outputView = new UnmanagedPagedOutputView(INITIAL_SEGMENT_BYTES);
+        org.apache.fluss.record.KvRecordBatchBuilder builder =
+                org.apache.fluss.record.KvRecordBatchBuilder.builder(
+                        schemaId,
+                        Integer.MAX_VALUE,
+                        outputView,
+                        org.apache.fluss.metadata.KvFormat.INDEXED);
+
+        DataType[] fieldTypes = rowType.getChildren().toArray(new DataType[0]);
+        IndexedRowWriter rowWriter = new IndexedRowWriter(rowType);
+        IndexedRow row = new IndexedRow(fieldTypes);
+
+        long writerId = -1L;
+        int baseSequence = -1;
+
+        for (RecordBatch batch : kafkaRecords.batches()) {
+            if (batch.hasProducerId()) {
+                writerId = batch.producerId();
+                baseSequence = batch.baseSequence();
+            }
+            for (Record kafkaRecord : batch) {
+                byte[] key =
+                        kafkaRecord.hasKey() ? byteBufferToBytes(kafkaRecord.key()) : new byte[0];
+                if (kafkaRecord.hasValue()) {
+                    writeRow(kafkaRecord, rowWriter, valueWriters);
+                    row.pointTo(rowWriter.segment(), 0, rowWriter.position());
+                    builder.append(key, row);
+                } else {
+                    // Kafka tombstone (null value on a compacted topic) → delete the key.
+                    builder.append(key, null);
+                }
+            }
+        }
+
+        if (writerId >= 0) {
+            builder.setWriterState(writerId, baseSequence);
+        }
+
+        org.apache.fluss.record.bytesview.BytesView built = builder.build();
+        builder.close();
+        return org.apache.fluss.record.DefaultKvRecordBatch.pointToByteBuffer(
+                built.getByteBuf().nioBuffer());
+    }
+
+    private PartitionProduceResponse translateKv(
+            List<org.apache.fluss.rpc.entity.PutKvResultForBucket> results,
+            int partitionIndex,
+            PartitionProduceResponse response) {
+        for (org.apache.fluss.rpc.entity.PutKvResultForBucket result : results) {
+            if (result.getBucketId() != partitionIndex) {
+                continue;
+            }
+            if (result.failed()) {
+                String msg =
+                        result.getErrorMessage() != null
+                                ? result.getErrorMessage()
+                                : result.getError().toString();
+                return response.setErrorCode(Errors.UNKNOWN_SERVER_ERROR.code())
+                        .setErrorMessage(msg)
+                        .setBaseOffset(-1);
+            }
+            return response.setErrorCode(Errors.NONE.code()).setBaseOffset(0);
+        }
+        return response.setErrorCode(Errors.UNKNOWN_SERVER_ERROR.code())
+                .setErrorMessage("no KV result for partition " + partitionIndex)
+                .setBaseOffset(-1);
     }
 
     /** Build a Fluss {@link MemoryLogRecords} from a Kafka {@link MemoryRecords}. */

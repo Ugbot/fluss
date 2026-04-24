@@ -40,9 +40,24 @@ public final class KafkaTableFactory {
             KafkaTopicInfo.TimestampType timestampType,
             @Nullable KafkaTopicInfo.Compression compression,
             Uuid topicId) {
+        return buildDescriptor(topic, numPartitions, timestampType, compression, topicId, false);
+    }
+
+    /**
+     * Build a table descriptor. When {@code compacted == true} the schema makes {@code record_key}
+     * the primary key, giving the backing Fluss table upsert-by-key semantics that map directly to
+     * Kafka's {@code cleanup.policy=compact}.
+     */
+    public static TableDescriptor buildDescriptor(
+            String topic,
+            int numPartitions,
+            KafkaTopicInfo.TimestampType timestampType,
+            @Nullable KafkaTopicInfo.Compression compression,
+            Uuid topicId,
+            boolean compacted) {
         TableDescriptor.Builder builder =
                 TableDescriptor.builder()
-                        .schema(KafkaDataTable.schema())
+                        .schema(KafkaDataTable.schema(compacted))
                         .distributedBy(numPartitions)
                         .customProperty(CustomPropertiesTopicsCatalog.PROP_BINDING_MARKER, "true")
                         .customProperty(CustomPropertiesTopicsCatalog.PROP_TOPIC_NAME, topic)
@@ -54,6 +69,14 @@ public final class KafkaTableFactory {
         if (compression != null) {
             builder.customProperty(
                     CustomPropertiesTopicsCatalog.PROP_COMPRESSION, compression.name());
+        }
+        if (compacted) {
+            builder.customProperty("kafka.cleanup.policy", "compact")
+                    // IndexedRow for row storage keeps the Kafka bolt-on's produce-path row
+                    // construction the same for both log and compacted topics.
+                    .property(
+                            org.apache.fluss.config.ConfigOptions.TABLE_KV_FORMAT.key(),
+                            org.apache.fluss.metadata.KvFormat.INDEXED.name());
         }
         return builder.build();
     }
