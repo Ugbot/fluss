@@ -56,7 +56,14 @@ public enum ResourceType {
     ANY((byte) 1),
     CLUSTER((byte) 2),
     DATABASE((byte) 3),
-    TABLE((byte) 4);
+    TABLE((byte) 4),
+    /**
+     * Consumer-group resource. Kafka-compat bolt-on maps Kafka's {@code GROUP} resource onto this
+     * type; Fluss-native callers currently don't use it. A GROUP is a direct child of {@link
+     * #CLUSTER} (it doesn't live inside a database), so cluster-wide grants roll up to it but
+     * database grants do not.
+     */
+    GROUP((byte) 5);
 
     private final byte code;
 

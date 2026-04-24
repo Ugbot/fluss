@@ -329,7 +329,8 @@ public class DefaultAuthorizerTest {
     @Test
     void testAclInheritanceOnResourceType() throws Exception {
         testResourceTypeImplicationsOfAllow(
-                ResourceType.CLUSTER, Arrays.asList(DATABASE, ResourceType.TABLE));
+                ResourceType.CLUSTER,
+                Arrays.asList(DATABASE, ResourceType.TABLE, ResourceType.GROUP));
         testResourceTypeImplicationsOfAllow(DATABASE, Collections.singleton(ResourceType.TABLE));
     }
 
@@ -366,6 +367,8 @@ public class DefaultAuthorizerTest {
                 return Resource.database("database1");
             case TABLE:
                 return Resource.table("database1", "table1");
+            case GROUP:
+                return Resource.group("group1");
             default:
                 return null;
         }

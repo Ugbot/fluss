@@ -89,4 +89,12 @@ public class Resource {
     public static Resource table(TablePath tablePath) {
         return table(tablePath.getDatabaseName(), tablePath.getTableName());
     }
+
+    /**
+     * Consumer-group resource. Kafka-compat consumers use this to grant per-group READ / DESCRIBE /
+     * DROP on a specific {@code groupId}; native Fluss callers don't currently use it.
+     */
+    public static Resource group(String groupId) {
+        return new Resource(ResourceType.GROUP, groupId);
+    }
 }
