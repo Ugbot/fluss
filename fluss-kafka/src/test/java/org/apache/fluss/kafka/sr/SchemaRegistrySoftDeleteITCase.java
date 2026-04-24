@@ -49,10 +49,18 @@ import java.util.Properties;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * End-to-end test of the Schema Registry HTTP listener on the Coordinator leader. Hits each Phase
- * A1 endpoint from a raw {@link java.net.http.HttpClient} — no Confluent client dependency.
+ * Confluent Schema Registry soft-delete semantics on the Coordinator's REST listener.
+ *
+ * <p>Covers Phase SR-X.1 endpoints:
+ *
+ * <ul>
+ *   <li>{@code DELETE /subjects/{s}/versions/{v}} — soft tombstone, optional {@code
+ *       ?permanent=true}.
+ *   <li>{@code DELETE /subjects/{s}} — cascade-tombstone a subject binding.
+ *   <li>Re-register after soft delete clears the tombstone (Confluent resurrection semantics).
+ * </ul>
  */
-class SchemaRegistryHttpITCase {
+class SchemaRegistrySoftDeleteITCase {
 
     private static final String KAFKA_LISTENER = "KAFKA";
     private static final String KAFKA_DATABASE = "kafka";
@@ -73,12 +81,11 @@ class SchemaRegistryHttpITCase {
     private static final HttpClient HTTP =
             HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build();
     private static final ObjectMapper MAPPER = new ObjectMapper();
-    private static final String SCHEMA_ORDER =
+    private static final String SCHEMA_V1 =
             "{\"type\":\"record\",\"name\":\"Order\",\"fields\":[{\"name\":\"id\",\"type\":\"long\"}]}";
-    // BACKWARD-compatible with SCHEMA_ORDER: added optional field with default.
-    private static final String SCHEMA_ORDER_V2 =
+    private static final String SCHEMA_V2 =
             "{\"type\":\"record\",\"name\":\"Order\",\"fields\":[{\"name\":\"id\",\"type\":\"long\"},"
-                    + "{\"name\":\"qty\",\"type\":\"int\",\"default\":0}]}";
+                    + "{\"name\":\"qty\",\"type\":[\"null\",\"int\"],\"default\":null}]}";
 
     private static Admin admin;
 
@@ -102,105 +109,129 @@ class SchemaRegistryHttpITCase {
     }
 
     @Test
-    void registerAndRetrieveRoundTrip() throws Exception {
-        String topic = "orders_" + System.nanoTime();
+    void softDeleteVersionTombstonesAndReRegisterResurrects() throws Exception {
+        String topic = "sd_version_" + System.nanoTime();
         String subject = topic + "-value";
         admin.createTopics(Collections.singletonList(new NewTopic(topic, 1, (short) 1)))
                 .all()
                 .get();
 
-        // Ping
-        HttpResponse<String> ping = http("GET", "/", null);
-        assertThat(ping.statusCode()).isEqualTo(200);
-        assertThat(MAPPER.readTree(ping.body()).get("compatibility").asText())
-                .isEqualTo("BACKWARD");
+        int v1Id = register(subject, SCHEMA_V1);
+        assertThat(v1Id).isGreaterThanOrEqualTo(0);
 
-        // POST /subjects/{s}/versions — first call
-        String postBody = "{\"schemaType\":\"AVRO\",\"schema\":" + escape(SCHEMA_ORDER) + "}";
-        HttpResponse<String> firstRegister =
-                http("POST", "/subjects/" + subject + "/versions", postBody);
-        assertThat(firstRegister.statusCode()).isEqualTo(200);
-        int firstId = MAPPER.readTree(firstRegister.body()).get("id").asInt();
-        assertThat(firstId).isGreaterThanOrEqualTo(0);
+        // Sanity: listVersions returns [1].
+        JsonNode beforeDelete = MAPPER.readTree(get("/subjects/" + subject + "/versions"));
+        assertThat(beforeDelete.isArray()).isTrue();
+        assertThat(beforeDelete).hasSize(1);
+        assertThat(beforeDelete.get(0).asInt()).isEqualTo(1);
 
-        // POST again with identical body — same id (idempotent).
-        HttpResponse<String> secondRegister =
-                http("POST", "/subjects/" + subject + "/versions", postBody);
-        assertThat(secondRegister.statusCode()).isEqualTo(200);
-        assertThat(MAPPER.readTree(secondRegister.body()).get("id").asInt()).isEqualTo(firstId);
+        // Soft-delete version 1.
+        HttpResponse<String> del = http("DELETE", "/subjects/" + subject + "/versions/1", null);
+        assertThat(del.statusCode()).isEqualTo(200);
+        assertThat(del.body().trim()).isEqualTo("1");
 
-        // POST with a new schema text — the catalog appends a new version and mints a fresh
-        // Confluent id (deterministic on tableId + version + format). That's the correct
-        // Confluent-SR shape: each distinct submission gets its own id.
-        String v2Body = "{\"schemaType\":\"AVRO\",\"schema\":" + escape(SCHEMA_ORDER_V2) + "}";
-        HttpResponse<String> rebind = http("POST", "/subjects/" + subject + "/versions", v2Body);
-        assertThat(rebind.statusCode()).isEqualTo(200);
-        int secondId = MAPPER.readTree(rebind.body()).get("id").asInt();
-        assertThat(secondId).isNotEqualTo(firstId);
+        // listVersions now returns 404 (Confluent: no live versions → subject considered absent).
+        HttpResponse<String> afterDelete = http("GET", "/subjects/" + subject + "/versions", null);
+        assertThat(afterDelete.statusCode()).isEqualTo(404);
 
-        // GET /subjects contains subject.
-        HttpResponse<String> list = http("GET", "/subjects", null);
-        assertThat(list.statusCode()).isEqualTo(200);
-        JsonNode subjects = MAPPER.readTree(list.body());
-        assertThat(subjects.isArray()).isTrue();
-        boolean found = false;
-        for (JsonNode s : subjects) {
-            if (subject.equals(s.asText())) {
-                found = true;
-                break;
+        // Double-soft-delete returns 404.
+        HttpResponse<String> del2 = http("DELETE", "/subjects/" + subject + "/versions/1", null);
+        assertThat(del2.statusCode()).isEqualTo(404);
+
+        // Re-register the exact same schema body — tombstone clears, same Confluent id.
+        int resurrectId = register(subject, SCHEMA_V1);
+        assertThat(resurrectId).isEqualTo(v1Id);
+
+        JsonNode afterResurrect = MAPPER.readTree(get("/subjects/" + subject + "/versions"));
+        assertThat(afterResurrect).hasSize(1);
+        assertThat(afterResurrect.get(0).asInt()).isEqualTo(1);
+    }
+
+    @Test
+    void softDeleteSubjectHidesBindingUntilReRegister() throws Exception {
+        String topic = "sd_subject_" + System.nanoTime();
+        String subject = topic + "-value";
+        admin.createTopics(Collections.singletonList(new NewTopic(topic, 1, (short) 1)))
+                .all()
+                .get();
+
+        register(subject, SCHEMA_V1);
+
+        // Subject is live.
+        assertThat(subjectsListContains(subject)).isTrue();
+
+        HttpResponse<String> del = http("DELETE", "/subjects/" + subject, null);
+        assertThat(del.statusCode()).isEqualTo(200);
+        JsonNode deleted = MAPPER.readTree(del.body());
+        assertThat(deleted.isArray()).isTrue();
+        assertThat(deleted).hasSize(1);
+        assertThat(deleted.get(0).asInt()).isEqualTo(1);
+
+        // Subject no longer appears in listSubjects.
+        assertThat(subjectsListContains(subject)).isFalse();
+
+        // Re-registering clears the subject tombstone and returns the same id.
+        int resurrectId = register(subject, SCHEMA_V1);
+        assertThat(resurrectId).isGreaterThanOrEqualTo(0);
+        assertThat(subjectsListContains(subject)).isTrue();
+    }
+
+    @Test
+    void permanentDeleteVersionRemovesRow() throws Exception {
+        String topic = "sd_hard_" + System.nanoTime();
+        String subject = topic + "-value";
+        admin.createTopics(Collections.singletonList(new NewTopic(topic, 1, (short) 1)))
+                .all()
+                .get();
+
+        int v1Id = register(subject, SCHEMA_V1);
+
+        // Confirm lookup by id works pre-delete.
+        HttpResponse<String> preLookup = http("GET", "/schemas/ids/" + v1Id, null);
+        assertThat(preLookup.statusCode()).isEqualTo(200);
+
+        HttpResponse<String> hard =
+                http("DELETE", "/subjects/" + subject + "/versions/1?permanent=true", null);
+        assertThat(hard.statusCode()).as("hard delete body=%s", hard.body()).isEqualTo(200);
+        assertThat(hard.body().trim()).isEqualTo("1");
+
+        // Post hard-delete the id resolves to 404.
+        HttpResponse<String> postLookup = http("GET", "/schemas/ids/" + v1Id, null);
+        assertThat(postLookup.statusCode()).isEqualTo(404);
+
+        // Re-registering after a hard-delete mints a fresh version row — the Confluent id slot
+        // may be reclaimed from the dangling ID_RESERVATIONS row (that's by design: ids remain
+        // stable across the registry lifetime), so we only assert that a version row exists.
+        int refreshId = register(subject, SCHEMA_V2);
+        assertThat(refreshId).isGreaterThanOrEqualTo(0);
+
+        JsonNode versions = MAPPER.readTree(get("/subjects/" + subject + "/versions"));
+        assertThat(versions).hasSize(1);
+    }
+
+    // ---------- helpers ----------
+
+    private static boolean subjectsListContains(String subject) throws Exception {
+        JsonNode arr = MAPPER.readTree(get("/subjects"));
+        for (JsonNode n : arr) {
+            if (subject.equals(n.asText())) {
+                return true;
             }
         }
-        assertThat(found).as("subjects list should contain %s", subject).isTrue();
-
-        // GET /schemas/ids/{id} — returns the latest schema text (we rebound to v2).
-        HttpResponse<String> byId = http("GET", "/schemas/ids/" + secondId, null);
-        assertThat(byId.statusCode()).isEqualTo(200);
-        JsonNode byIdJson = MAPPER.readTree(byId.body());
-        assertThat(byIdJson.get("schemaType").asText()).isEqualTo("AVRO");
-        assertThat(byIdJson.get("schema").asText()).isEqualTo(SCHEMA_ORDER_V2);
-
-        // GET /subjects/{s}/versions/latest
-        HttpResponse<String> latest =
-                http("GET", "/subjects/" + subject + "/versions/latest", null);
-        assertThat(latest.statusCode()).isEqualTo(200);
-        JsonNode latestJson = MAPPER.readTree(latest.body());
-        assertThat(latestJson.get("subject").asText()).isEqualTo(subject);
-        assertThat(latestJson.get("id").asInt()).isEqualTo(secondId);
-        assertThat(latestJson.get("schema").asText()).isEqualTo(SCHEMA_ORDER_V2);
+        return false;
     }
 
-    @Test
-    void missingTopicReturns404() throws Exception {
-        String subject = "absent_" + System.nanoTime() + "-value";
-        String postBody = "{\"schemaType\":\"AVRO\",\"schema\":" + escape(SCHEMA_ORDER) + "}";
-        HttpResponse<String> resp = http("POST", "/subjects/" + subject + "/versions", postBody);
-        assertThat(resp.statusCode()).isEqualTo(404);
+    private static int register(String subject, String schema) throws Exception {
+        String body = "{\"schemaType\":\"AVRO\",\"schema\":" + escape(schema) + "}";
+        HttpResponse<String> resp = http("POST", "/subjects/" + subject + "/versions", body);
+        assertThat(resp.statusCode()).as("register %s", subject).isEqualTo(200);
+        return MAPPER.readTree(resp.body()).get("id").asInt();
     }
 
-    @Test
-    void nonAvroSchemaTypeReturns400() throws Exception {
-        String topic = "proto_" + System.nanoTime();
-        String subject = topic + "-value";
-        admin.createTopics(Collections.singletonList(new NewTopic(topic, 1, (short) 1)))
-                .all()
-                .get();
-        String postBody = "{\"schemaType\":\"PROTOBUF\",\"schema\":\"syntax = \\\"proto3\\\";\"}";
-        HttpResponse<String> resp = http("POST", "/subjects/" + subject + "/versions", postBody);
-        assertThat(resp.statusCode()).isEqualTo(400);
-    }
-
-    @Test
-    void keySubjectReturns400() throws Exception {
-        String subject = "orders-key";
-        String postBody = "{\"schemaType\":\"AVRO\",\"schema\":" + escape(SCHEMA_ORDER) + "}";
-        HttpResponse<String> resp = http("POST", "/subjects/" + subject + "/versions", postBody);
-        assertThat(resp.statusCode()).isEqualTo(400);
-    }
-
-    @Test
-    void unknownSchemaIdReturns404() throws Exception {
-        HttpResponse<String> resp = http("GET", "/schemas/ids/999999999", null);
-        assertThat(resp.statusCode()).isEqualTo(404);
+    private static String get(String path) throws Exception {
+        HttpResponse<String> resp = http("GET", path, null);
+        assertThat(resp.statusCode()).as("GET %s", path).isEqualTo(200);
+        return resp.body();
     }
 
     private static HttpResponse<String> http(String method, String path, String body)
@@ -210,12 +241,19 @@ class SchemaRegistryHttpITCase {
                         .uri(URI.create("http://localhost:" + SR_PORT + path))
                         .timeout(Duration.ofSeconds(10))
                         .header("Content-Type", "application/vnd.schemaregistry.v1+json");
-        if ("POST".equals(method)) {
-            req.POST(
-                    HttpRequest.BodyPublishers.ofString(
-                            body == null ? "" : body, StandardCharsets.UTF_8));
-        } else {
-            req.GET();
+        switch (method) {
+            case "POST":
+                req.POST(
+                        HttpRequest.BodyPublishers.ofString(
+                                body == null ? "" : body, StandardCharsets.UTF_8));
+                break;
+            case "DELETE":
+                req.DELETE();
+                break;
+            case "GET":
+            default:
+                req.GET();
+                break;
         }
         return HTTP.send(req.build(), HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
     }

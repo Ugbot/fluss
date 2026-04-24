@@ -22,6 +22,8 @@ import org.apache.fluss.cluster.ServerType;
 import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.config.Configuration;
 import org.apache.fluss.kafka.auth.KafkaListenerAuthConfig;
+import org.apache.fluss.kafka.metrics.KafkaMetricGroup;
+import org.apache.fluss.metrics.groups.AbstractMetricGroup;
 import org.apache.fluss.rpc.RpcGatewayService;
 import org.apache.fluss.rpc.gateway.TabletServerGateway;
 import org.apache.fluss.rpc.netty.server.RequestChannel;
@@ -29,6 +31,7 @@ import org.apache.fluss.rpc.netty.server.RequestHandler;
 import org.apache.fluss.rpc.protocol.NetworkProtocolPlugin;
 import org.apache.fluss.server.authorizer.Authorizer;
 import org.apache.fluss.server.metrics.ServerMetricUtils;
+import org.apache.fluss.server.replica.ReplicaManager;
 import org.apache.fluss.server.tablet.TabletService;
 import org.apache.fluss.shaded.netty4.io.netty.channel.ChannelHandler;
 
@@ -39,6 +42,8 @@ import java.lang.reflect.Field;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 
 import static org.apache.fluss.utils.Preconditions.checkArgument;
 
@@ -48,6 +53,30 @@ public class KafkaProtocolPlugin implements NetworkProtocolPlugin {
     private static final Logger LOG = LoggerFactory.getLogger(KafkaProtocolPlugin.class);
 
     private Configuration conf;
+
+    /**
+     * Shared metric group across every listener + request handler this plugin owns. Resolved lazily
+     * on the first {@link #createRequestHandler} call (when we have a {@link TabletService}) and
+     * read by the {@link KafkaChannelInitializer} the next time a channel opens.
+     */
+    private volatile KafkaMetricGroup sharedMetrics;
+
+    /**
+     * VisibleForTesting registry of every {@link KafkaMetricGroup} active in this JVM, keyed by
+     * tablet-server id. In-process integration tests use this to assert metric values without
+     * reaching through {@link ReplicaManager}'s private fields.
+     */
+    private static final ConcurrentMap<Integer, KafkaMetricGroup> METRIC_GROUPS_BY_SERVER_ID =
+            new ConcurrentHashMap<>();
+
+    /**
+     * Return the Kafka bolt-on's metric group for the given tablet-server id, or {@code null} when
+     * the plugin is not active for that server. In-process tests only.
+     */
+    @org.apache.fluss.annotation.VisibleForTesting
+    public static KafkaMetricGroup metricGroupForServer(int serverId) {
+        return METRIC_GROUPS_BY_SERVER_ID.get(serverId);
+    }
 
     @Override
     public String name() {
@@ -80,7 +109,8 @@ public class KafkaProtocolPlugin implements NetworkProtocolPlugin {
                 conf.get(ConfigOptions.KAFKA_CONNECTION_MAX_IDLE_TIME).getSeconds(),
                 (int) conf.get(ConfigOptions.NETTY_SERVER_MAX_REQUEST_SIZE).getBytes(),
                 conf.getBoolean(ConfigOptions.NETTY_CLIENT_ALLOCATOR_HEAP_BUFFER_FIRST),
-                authConfig);
+                authConfig,
+                () -> sharedMetrics);
     }
 
     @Override
@@ -106,6 +136,16 @@ public class KafkaProtocolPlugin implements NetworkProtocolPlugin {
         String kafkaDatabase = conf.get(ConfigOptions.KAFKA_DATABASE);
         if (service instanceof TabletService) {
             TabletService ts = (TabletService) service;
+            KafkaMetricGroup metrics = buildMetricGroup(ts);
+            this.sharedMetrics = metrics;
+            if (metrics != null) {
+                METRIC_GROUPS_BY_SERVER_ID.put(ts.getServerId(), metrics);
+            }
+            LOG.info(
+                    "Kafka bolt-on attached (serverId={}, authorizer={}, metrics={})",
+                    ts.getServerId(),
+                    extractAuthorizer(ts) != null ? "enabled" : "disabled",
+                    metrics != null ? "enabled" : "disabled");
             return new KafkaServerContext(
                     ts.getMetadataCache(),
                     ts.getMetadataManager(),
@@ -113,6 +153,7 @@ public class KafkaProtocolPlugin implements NetworkProtocolPlugin {
                     ts.getReplicaManager(),
                     ts.getZooKeeperClient(),
                     extractAuthorizer(ts),
+                    metrics,
                     clusterId,
                     kafkaDatabase,
                     ts.getServerId(),
@@ -124,6 +165,63 @@ public class KafkaProtocolPlugin implements NetworkProtocolPlugin {
                         + "Metadata and DescribeCluster requests will fail until a full TabletService is used.",
                 service.getClass().getSimpleName());
         return new KafkaServerContext(null, null, null, null, null, clusterId, kafkaDatabase);
+    }
+
+    /**
+     * Builds a {@link KafkaMetricGroup} parented on the {@link
+     * org.apache.fluss.server.metrics.group.TabletServerMetricGroup} owned by the server's {@link
+     * ReplicaManager}. We reach the metric group through the replica manager rather than modifying
+     * the TabletService API surface; the reflection stays contained here and mirrors the {@link
+     * #extractAuthorizer} pattern. Returns {@code null} when the metric group isn't wired (test
+     * harnesses, metric-less test servers) — handlers no-op their metric calls in that case.
+     */
+    @javax.annotation.Nullable
+    private KafkaMetricGroup buildMetricGroup(TabletService service) {
+        ReplicaManager rm = service.getReplicaManager();
+        if (rm == null) {
+            return null;
+        }
+        AbstractMetricGroup parent = extractServerMetricGroup(rm);
+        if (parent == null) {
+            LOG.warn(
+                    "Kafka bolt-on could not locate the TabletServerMetricGroup via reflection;"
+                            + " per-request metrics will be disabled.");
+            return null;
+        }
+        int topicCap = conf.get(ConfigOptions.KAFKA_METRICS_PER_TOPIC_MAX_CARDINALITY);
+        int groupCap = conf.get(ConfigOptions.KAFKA_METRICS_PER_GROUP_MAX_CARDINALITY);
+        boolean topicEnabled = conf.getBoolean(ConfigOptions.KAFKA_METRICS_PER_TOPIC_ENABLED);
+        boolean groupEnabled = conf.getBoolean(ConfigOptions.KAFKA_METRICS_PER_GROUP_ENABLED);
+        if (!topicEnabled) {
+            topicCap = 0;
+        }
+        if (!groupEnabled) {
+            groupCap = 0;
+        }
+        return new KafkaMetricGroup(parent.getMetricRegistry(), parent, topicCap, groupCap);
+    }
+
+    /**
+     * Pulls the server-side metric group off {@link ReplicaManager}. The field is private and has
+     * no public accessor, so we reach through reflection rather than expanding the fluss-server API
+     * surface (same rationale as {@link #extractAuthorizer}).
+     */
+    @javax.annotation.Nullable
+    private static AbstractMetricGroup extractServerMetricGroup(ReplicaManager rm) {
+        Class<?> c = rm.getClass();
+        while (c != null && c != Object.class) {
+            try {
+                Field f = c.getDeclaredField("serverMetricGroup");
+                f.setAccessible(true);
+                Object value = f.get(rm);
+                return value instanceof AbstractMetricGroup ? (AbstractMetricGroup) value : null;
+            } catch (NoSuchFieldException e) {
+                c = c.getSuperclass();
+            } catch (IllegalAccessException e) {
+                return null;
+            }
+        }
+        return null;
     }
 
     /**

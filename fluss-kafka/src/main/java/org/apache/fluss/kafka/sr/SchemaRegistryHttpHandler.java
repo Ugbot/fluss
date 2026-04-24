@@ -18,6 +18,9 @@
 package org.apache.fluss.kafka.sr;
 
 import org.apache.fluss.annotation.Internal;
+import org.apache.fluss.kafka.sr.auth.HttpPrincipalExtractor;
+import org.apache.fluss.kafka.sr.compat.CompatibilityResult;
+import org.apache.fluss.security.acl.FlussPrincipal;
 import org.apache.fluss.shaded.jackson2.com.fasterxml.jackson.databind.JsonNode;
 import org.apache.fluss.shaded.jackson2.com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.fluss.shaded.jackson2.com.fasterxml.jackson.databind.node.ArrayNode;
@@ -40,6 +43,8 @@ import org.apache.fluss.shaded.netty4.io.netty.handler.codec.http.QueryStringDec
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.net.InetSocketAddress;
+import java.net.SocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Optional;
@@ -63,38 +68,66 @@ public final class SchemaRegistryHttpHandler extends SimpleChannelInboundHandler
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     private final SchemaRegistryService service;
+    private final HttpPrincipalExtractor principalExtractor;
 
-    public SchemaRegistryHttpHandler(SchemaRegistryService service) {
+    public SchemaRegistryHttpHandler(
+            SchemaRegistryService service, HttpPrincipalExtractor principalExtractor) {
         this.service = service;
+        this.principalExtractor = principalExtractor;
     }
 
     @Override
     protected void channelRead0(ChannelHandlerContext ctx, FullHttpRequest request) {
         FullHttpResponse response;
-        try {
-            response = dispatch(request);
-        } catch (SchemaRegistryException sre) {
-            if (LOG.isDebugEnabled()) {
-                LOG.debug(
-                        "SR {} {} → {} ({})",
-                        request.method(),
-                        request.uri(),
-                        toHttpStatus(sre.kind()),
-                        sre.getMessage());
-            }
-            response = errorResponse(toHttpStatus(sre.kind()), sre.getMessage());
-        } catch (Throwable t) {
-            LOG.error("Unexpected error serving SR request {}", request.uri(), t);
-            response = errorResponse(HttpResponseStatus.INTERNAL_SERVER_ERROR, t.getMessage());
+        FlussPrincipal principal = resolvePrincipal(ctx, request);
+        if (principal != null) {
+            SchemaRegistryCallContext.set(principal);
         }
-        boolean keepAlive = HttpUtil.isKeepAlive(request);
-        HttpUtil.setKeepAlive(response, keepAlive);
-        HttpUtil.setContentLength(response, response.content().readableBytes());
-        ctx.writeAndFlush(response);
+        try {
+            try {
+                response = dispatch(request);
+            } catch (SchemaRegistryException sre) {
+                if (LOG.isDebugEnabled()) {
+                    LOG.debug(
+                            "SR {} {} → {} ({})",
+                            request.method(),
+                            request.uri(),
+                            toHttpStatus(sre.kind()),
+                            sre.getMessage());
+                }
+                response = errorResponse(toHttpStatus(sre.kind()), sre.getMessage());
+            } catch (Throwable t) {
+                LOG.error("Unexpected error serving SR request {}", request.uri(), t);
+                response = errorResponse(HttpResponseStatus.INTERNAL_SERVER_ERROR, t.getMessage());
+            }
+            boolean keepAlive = HttpUtil.isKeepAlive(request);
+            HttpUtil.setKeepAlive(response, keepAlive);
+            HttpUtil.setContentLength(response, response.content().readableBytes());
+            ctx.writeAndFlush(response);
+        } finally {
+            SchemaRegistryCallContext.clear();
+        }
+    }
+
+    private FlussPrincipal resolvePrincipal(ChannelHandlerContext ctx, FullHttpRequest request) {
+        if (principalExtractor == null) {
+            return null;
+        }
+        SocketAddress remote = ctx.channel().remoteAddress();
+        InetSocketAddress inet =
+                remote instanceof InetSocketAddress ? (InetSocketAddress) remote : null;
+        try {
+            return principalExtractor.extract(request, inet).orElse(null);
+        } catch (RuntimeException e) {
+            // A broken extractor must not take the SR down — log and fall back to anonymous.
+            LOG.warn("Principal extraction threw; treating request as anonymous", e);
+            return null;
+        }
     }
 
     private FullHttpResponse dispatch(FullHttpRequest request) throws Exception {
-        String path = new QueryStringDecoder(request.uri()).path();
+        QueryStringDecoder decoder = new QueryStringDecoder(request.uri());
+        String path = decoder.path();
         HttpMethod method = request.method();
 
         if (HttpMethod.GET.equals(method) && path.equals("/")) {
@@ -249,6 +282,84 @@ public final class SchemaRegistryHttpHandler extends SimpleChannelInboundHandler
             body.put("schema", found.get().schema());
             return jsonResponse(HttpResponseStatus.OK, body);
         }
+        // DELETE /subjects/{s}/versions/{v} — soft by default, ?permanent=true hard-deletes.
+        if (HttpMethod.DELETE.equals(method)
+                && path.startsWith("/subjects/")
+                && path.contains("/versions/")) {
+            int versionsIdx = path.indexOf("/versions/");
+            String subject = path.substring("/subjects/".length(), versionsIdx);
+            String versionPart = path.substring(versionsIdx + "/versions/".length());
+            int version = parseIntOr400(versionPart, "version");
+            boolean permanent = isPermanent(decoder);
+            int deleted = service.deleteVersion(subject, version, permanent);
+            ByteBuf buf =
+                    Unpooled.wrappedBuffer(
+                            Integer.toString(deleted).getBytes(StandardCharsets.UTF_8));
+            FullHttpResponse resp =
+                    new DefaultFullHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.OK, buf);
+            resp.headers()
+                    .set(HttpHeaderNames.CONTENT_TYPE, "application/vnd.schemaregistry.v1+json");
+            return resp;
+        }
+        // DELETE /subjects/{s} — soft by default, ?permanent=true cascades into version rows.
+        if (HttpMethod.DELETE.equals(method)
+                && path.startsWith("/subjects/")
+                && !path.contains("/versions")) {
+            String subject = path.substring("/subjects/".length());
+            boolean permanent = isPermanent(decoder);
+            List<Integer> deleted = service.deleteSubject(subject, permanent);
+            ArrayNode arr = MAPPER.createArrayNode();
+            for (Integer v : deleted) {
+                arr.add(v);
+            }
+            return jsonResponse(HttpResponseStatus.OK, arr);
+        }
+        // POST /compatibility/subjects/{s}/versions/{v} — run compat check without registering.
+        if (HttpMethod.POST.equals(method)
+                && path.startsWith("/compatibility/subjects/")
+                && path.contains("/versions/")) {
+            String afterPrefix = path.substring("/compatibility/subjects/".length());
+            int versionsIdx = afterPrefix.indexOf("/versions/");
+            if (versionsIdx < 0) {
+                throw new SchemaRegistryException(
+                        SchemaRegistryException.Kind.INVALID_INPUT,
+                        "compatibility path must be /compatibility/subjects/{s}/versions/{v}");
+            }
+            String subject = afterPrefix.substring(0, versionsIdx);
+            String versionPart = afterPrefix.substring(versionsIdx + "/versions/".length());
+            int version;
+            if ("latest".equalsIgnoreCase(versionPart)) {
+                version = -1;
+            } else {
+                version = parseIntOr400(versionPart, "version");
+            }
+            JsonNode body = MAPPER.readTree(readUtf8(request));
+            if (!body.hasNonNull("schema")) {
+                throw new SchemaRegistryException(
+                        SchemaRegistryException.Kind.INVALID_INPUT,
+                        "'schema' field is required in POST body");
+            }
+            String schemaType =
+                    body.hasNonNull("schemaType") ? body.get("schemaType").asText() : "AVRO";
+            if (!"AVRO".equalsIgnoreCase(schemaType)) {
+                throw new SchemaRegistryException(
+                        SchemaRegistryException.Kind.UNSUPPORTED,
+                        "schemaType '"
+                                + schemaType
+                                + "' is not supported in Phase SR-X.2 (only AVRO)");
+            }
+            CompatibilityResult result =
+                    service.checkCompatibility(subject, version, body.get("schema").asText());
+            ObjectNode response = MAPPER.createObjectNode();
+            response.put("is_compatible", result.isCompatible());
+            if (!result.messages().isEmpty()) {
+                ArrayNode messages = response.putArray("messages");
+                for (String m : result.messages()) {
+                    messages.add(m);
+                }
+            }
+            return jsonResponse(HttpResponseStatus.OK, response);
+        }
         if (HttpMethod.POST.equals(method)
                 && path.startsWith("/subjects/")
                 && !path.contains("/versions")) {
@@ -397,6 +508,18 @@ public final class SchemaRegistryHttpHandler extends SimpleChannelInboundHandler
                 method + " " + path + " is not a Schema Registry endpoint");
     }
 
+    /**
+     * Inspect {@code ?permanent=true|false} on the decoded query string. Absent / any non-{@code
+     * true} value → {@code false} (Confluent default: soft delete).
+     */
+    private static boolean isPermanent(QueryStringDecoder decoder) {
+        List<String> values = decoder.parameters().get("permanent");
+        if (values == null || values.isEmpty()) {
+            return false;
+        }
+        return Boolean.parseBoolean(values.get(0));
+    }
+
     private static int parseIntOr400(String raw, String fieldName) {
         try {
             return Integer.parseInt(raw);
@@ -452,6 +575,8 @@ public final class SchemaRegistryHttpHandler extends SimpleChannelInboundHandler
                 return HttpResponseStatus.NOT_FOUND;
             case CONFLICT:
                 return HttpResponseStatus.CONFLICT;
+            case FORBIDDEN:
+                return HttpResponseStatus.FORBIDDEN;
             case INTERNAL:
             default:
                 return HttpResponseStatus.INTERNAL_SERVER_ERROR;

@@ -104,23 +104,42 @@ public final class AuthzHelper {
             OperationType operationType,
             Collection<String> topics,
             String kafkaDatabase) {
+        return authorizeTopicBatch(authorizer, session, operationType, topics, kafkaDatabase, null);
+    }
+
+    /** Metered variant: records an authz outcome on {@code metrics} for every topic checked. */
+    public static Map<String, Boolean> authorizeTopicBatch(
+            @Nullable Authorizer authorizer,
+            Session session,
+            OperationType operationType,
+            Collection<String> topics,
+            String kafkaDatabase,
+            @Nullable org.apache.fluss.kafka.metrics.KafkaMetricGroup metrics) {
         Map<String, Boolean> out = new LinkedHashMap<>(topics.size());
         if (authorizer == null) {
             for (String t : topics) {
                 out.put(t, true);
+                if (metrics != null) {
+                    metrics.onAuthzOutcome(true, operationType, null);
+                }
             }
             return out;
         }
         for (String t : topics) {
+            boolean ok;
             try {
-                boolean ok =
+                ok =
                         authorizer.isAuthorized(
                                 session, operationType, Resource.table(kafkaDatabase, t));
-                out.put(t, ok);
             } catch (Throwable ignore) {
                 // A broken ACL check must deny, not succeed; surfacing as denied gives the
                 // client a clean TOPIC_AUTHORIZATION_FAILED rather than UNKNOWN_SERVER_ERROR.
-                out.put(t, false);
+                ok = false;
+            }
+            out.put(t, ok);
+            if (metrics != null) {
+                metrics.onAuthzOutcome(
+                        ok, operationType, org.apache.fluss.security.acl.ResourceType.TABLE);
             }
         }
         return out;
@@ -139,9 +158,33 @@ public final class AuthzHelper {
             OperationType operationType,
             Resource resource)
             throws AuthorizationException {
+        authorizeOrThrow(authorizer, session, operationType, resource, null);
+    }
+
+    /** Metered variant of {@link #authorizeOrThrow}. */
+    public static void authorizeOrThrow(
+            @Nullable Authorizer authorizer,
+            Session session,
+            OperationType operationType,
+            Resource resource,
+            @Nullable org.apache.fluss.kafka.metrics.KafkaMetricGroup metrics)
+            throws AuthorizationException {
         if (authorizer == null) {
+            if (metrics != null) {
+                metrics.onAuthzOutcome(true, operationType, resource.getType());
+            }
             return;
         }
-        authorizer.authorize(session, operationType, resource);
+        try {
+            authorizer.authorize(session, operationType, resource);
+            if (metrics != null) {
+                metrics.onAuthzOutcome(true, operationType, resource.getType());
+            }
+        } catch (AuthorizationException denied) {
+            if (metrics != null) {
+                metrics.onAuthzOutcome(false, operationType, resource.getType());
+            }
+            throw denied;
+        }
     }
 }

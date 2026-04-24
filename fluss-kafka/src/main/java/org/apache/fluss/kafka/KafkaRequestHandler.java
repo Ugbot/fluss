@@ -44,6 +44,7 @@ import org.apache.fluss.kafka.group.OffsetStore;
 import org.apache.fluss.kafka.group.OffsetStoreConnections;
 import org.apache.fluss.kafka.group.ZkOffsetStore;
 import org.apache.fluss.kafka.metadata.KafkaMetadataBuilder;
+import org.apache.fluss.kafka.metrics.KafkaMetricGroup;
 import org.apache.fluss.kafka.produce.KafkaProduceTranscoder;
 import org.apache.fluss.rpc.gateway.TabletServerGateway;
 import org.apache.fluss.rpc.netty.server.RequestHandler;
@@ -222,6 +223,8 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
                     ApiKeys.DESCRIBE_ACLS,
                     ApiKeys.CREATE_ACLS,
                     ApiKeys.DELETE_ACLS,
+                    ApiKeys.DESCRIBE_USER_SCRAM_CREDENTIALS,
+                    ApiKeys.ALTER_USER_SCRAM_CREDENTIALS,
                     // SASL APIs are intercepted in KafkaCommandDecoder and never reach the handler,
                     // but we list them here so ApiVersions advertises their true implementation
                     // status to clients that consult IMPLEMENTED_APIS.
@@ -334,7 +337,9 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
                     ApiKeys.ALTER_CLIENT_QUOTAS,
                     ApiKeys.DESCRIBE_ACLS,
                     ApiKeys.CREATE_ACLS,
-                    ApiKeys.DELETE_ACLS);
+                    ApiKeys.DELETE_ACLS,
+                    ApiKeys.DESCRIBE_USER_SCRAM_CREDENTIALS,
+                    ApiKeys.ALTER_USER_SCRAM_CREDENTIALS);
 
     // TODO: we may need a new abstraction between TabletService and ReplicaManager to avoid
     //  affecting Fluss protocol when supporting compatibility with Kafka.
@@ -456,6 +461,37 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
 
     @Override
     public void processRequest(KafkaRequest request) {
+        // Measure and record per-request metrics + log.
+        // Hook completion of the request's future so we capture true end-to-end latency
+        // (handlers hand off to async writes/fetches, so just wrapping the dispatch switch
+        // below would mis-report).
+        final long startNanos = System.nanoTime();
+        final KafkaMetricGroup metrics = context.metrics();
+        if (metrics != null) {
+            request.future()
+                    .whenComplete(
+                            (resp, err) -> {
+                                long elapsed = System.nanoTime() - startNanos;
+                                boolean isError = err != null || isErrorResponse(resp);
+                                metrics.onRequest(request.apiKey().name(), elapsed, isError);
+                            });
+        }
+        if (LOG.isDebugEnabled()) {
+            request.future()
+                    .whenComplete(
+                            (resp, err) -> {
+                                long elapsedMs = (System.nanoTime() - startNanos) / 1_000_000L;
+                                LOG.debug(
+                                        "kafka.request api={} v={} correlationId={} principal={}"
+                                                + " elapsedMs={} error={}",
+                                        request.apiKey(),
+                                        request.apiVersion(),
+                                        request.header().correlationId(),
+                                        request.principal().getName(),
+                                        elapsedMs,
+                                        err != null ? err.toString() : "none");
+                            });
+        }
         // See kafka.server.KafkaApis#handle
         switch (request.apiKey()) {
             case API_VERSIONS:
@@ -557,9 +593,37 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
             case DELETE_ACLS:
                 handleDeleteAclsRequest(request);
                 break;
+            case DESCRIBE_USER_SCRAM_CREDENTIALS:
+                handleDescribeUserScramCredentialsRequest(request);
+                break;
+            case ALTER_USER_SCRAM_CREDENTIALS:
+                handleAlterUserScramCredentialsRequest(request);
+                break;
             default:
                 handleUnsupportedRequest(request);
         }
+    }
+
+    void handleDescribeUserScramCredentialsRequest(KafkaRequest request) {
+        org.apache.fluss.security.auth.sasl.scram.ScramCredentialStore store =
+                org.apache.fluss.security.auth.sasl.jaas.SaslServerFactory.scramCredentialStore();
+        org.apache.kafka.common.message.DescribeUserScramCredentialsRequestData req =
+                request.request();
+        request.complete(
+                new org.apache.kafka.common.requests.DescribeUserScramCredentialsResponse(
+                        org.apache.fluss.kafka.admin.KafkaScramCredentialsTranscoder.handleDescribe(
+                                req, store)));
+    }
+
+    void handleAlterUserScramCredentialsRequest(KafkaRequest request) {
+        org.apache.fluss.security.auth.sasl.scram.ScramCredentialStore store =
+                org.apache.fluss.security.auth.sasl.jaas.SaslServerFactory.scramCredentialStore();
+        org.apache.kafka.common.message.AlterUserScramCredentialsRequestData req =
+                request.request();
+        request.complete(
+                new org.apache.kafka.common.requests.AlterUserScramCredentialsResponse(
+                        org.apache.fluss.kafka.admin.KafkaScramCredentialsTranscoder.handleAlter(
+                                req, store)));
     }
 
     private void handleUnsupportedRequest(KafkaRequest request) {
@@ -567,6 +631,27 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
         AbstractResponse response =
                 abstractRequest.getErrorResponse(Errors.UNSUPPORTED_VERSION.exception());
         request.complete(response);
+    }
+
+    /**
+     * Returns {@code true} when the response contains at least one non-success error code. Uses
+     * Kafka's standard {@link AbstractResponse#errorCounts()} reduction so a partial error inside a
+     * batched response (e.g. one topic denied on Produce) counts as an error for metric purposes.
+     */
+    private static boolean isErrorResponse(AbstractResponse response) {
+        if (response == null) {
+            return true;
+        }
+        Map<Errors, Integer> errorCounts = response.errorCounts();
+        if (errorCounts == null || errorCounts.isEmpty()) {
+            return false;
+        }
+        for (Map.Entry<Errors, Integer> entry : errorCounts.entrySet()) {
+            if (entry.getKey() != Errors.NONE && entry.getValue() != null && entry.getValue() > 0) {
+                return true;
+            }
+        }
+        return false;
     }
 
     void handleApiVersionsRequest(KafkaRequest request) {
@@ -790,7 +875,8 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
                             AuthzHelper.sessionOf(request),
                             OperationType.WRITE,
                             topics,
-                            context.kafkaDatabase());
+                            context.kafkaDatabase(),
+                            context.metrics());
 
             ProduceRequestData filtered = filterProduceByAllowed(data, allowed);
             KafkaProduceTranscoder transcoder =
@@ -805,6 +891,7 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
                                     return;
                                 }
                                 appendDeniedProduceTopics(data, allowed, result);
+                                recordProduceMetrics(filtered, result);
                                 request.complete(completedProduceResponse(result));
                             });
         } catch (Throwable t) {
@@ -851,6 +938,46 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
         return new ProduceResponse(data);
     }
 
+    /**
+     * Aggregate produce-side counters + per-topic metrics. {@code filtered} carries the record
+     * batches that were actually written; {@code result} carries the per-partition outcomes so we
+     * can distinguish success vs error for the topic-level error counter.
+     */
+    private void recordProduceMetrics(ProduceRequestData filtered, ProduceResponseData result) {
+        KafkaMetricGroup metrics = context.metrics();
+        if (metrics == null) {
+            return;
+        }
+        // Build a per-topic error flag from the response.
+        java.util.Map<String, Boolean> errorByTopic = new java.util.HashMap<>();
+        for (ProduceResponseData.TopicProduceResponse t : result.responses()) {
+            boolean topicErr = false;
+            for (ProduceResponseData.PartitionProduceResponse p : t.partitionResponses()) {
+                if (p.errorCode() != Errors.NONE.code()) {
+                    topicErr = true;
+                    break;
+                }
+            }
+            errorByTopic.put(t.name(), topicErr);
+        }
+        for (ProduceRequestData.TopicProduceData t : filtered.topicData()) {
+            long bytes = 0L;
+            long records = 0L;
+            for (ProduceRequestData.PartitionProduceData p : t.partitionData()) {
+                if (p.records() instanceof org.apache.kafka.common.record.MemoryRecords) {
+                    org.apache.kafka.common.record.MemoryRecords recs =
+                            (org.apache.kafka.common.record.MemoryRecords) p.records();
+                    bytes += recs.sizeInBytes();
+                    for (org.apache.kafka.common.record.RecordBatch b : recs.batches()) {
+                        records += Math.max(0, b.countOrNull() == null ? 0 : b.countOrNull());
+                    }
+                }
+            }
+            boolean err = errorByTopic.getOrDefault(t.name(), Boolean.FALSE);
+            metrics.recordProduce(t.name(), bytes, records, err);
+        }
+    }
+
     void handleFindCoordinatorRequest(KafkaRequest request) {
         if (!context.hasServerState()) {
             request.fail(
@@ -892,6 +1019,23 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
                     new KafkaGroupTranscoder(
                             context, groupOffsets, groupRegistry, request.listenerName());
             OffsetCommitResponseData data = transcoder.offsetCommit(req.data());
+            KafkaMetricGroup m = context.metrics();
+            if (m != null) {
+                boolean err = false;
+                for (OffsetCommitResponseData.OffsetCommitResponseTopic t : data.topics()) {
+                    for (OffsetCommitResponseData.OffsetCommitResponsePartition p :
+                            t.partitions()) {
+                        if (p.errorCode() != Errors.NONE.code()) {
+                            err = true;
+                            break;
+                        }
+                    }
+                    if (err) {
+                        break;
+                    }
+                }
+                m.recordOffsetCommit(req.data().groupId(), err);
+            }
             request.complete(new OffsetCommitResponse(data));
         } catch (Throwable t) {
             LOG.error("OffsetCommit handler threw", t);
@@ -952,7 +1096,11 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
                         : Resource.group(groupId);
         try {
             AuthzHelper.authorizeOrThrow(
-                    context.authorizer(), AuthzHelper.sessionOf(request), op, resource);
+                    context.authorizer(),
+                    AuthzHelper.sessionOf(request),
+                    op,
+                    resource,
+                    context.metrics());
             return false;
         } catch (AuthorizationException denied) {
             AbstractRequest req = request.request();
@@ -980,6 +1128,7 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
         }
         try {
             JoinGroupRequest req = jgReq;
+            final long joinStart = System.nanoTime();
             KafkaGroupTranscoder transcoder =
                     new KafkaGroupTranscoder(
                             context, groupOffsets, groupRegistry, request.listenerName());
@@ -991,6 +1140,11 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
                                     LOG.error("JoinGroup handler failed", err);
                                     request.fail(err);
                                     return;
+                                }
+                                KafkaMetricGroup m = context.metrics();
+                                if (m != null) {
+                                    long elapsedMs = (System.nanoTime() - joinStart) / 1_000_000L;
+                                    m.recordJoin(req.data().groupId(), elapsedMs);
                                 }
                                 request.complete(new JoinGroupResponse(data, request.apiVersion()));
                             });
@@ -1050,6 +1204,10 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
                     new KafkaGroupTranscoder(
                             context, groupOffsets, groupRegistry, request.listenerName());
             HeartbeatResponseData data = transcoder.heartbeat(req.data());
+            KafkaMetricGroup m = context.metrics();
+            if (m != null) {
+                m.recordHeartbeat(req.data().groupId(), data.errorCode() != Errors.NONE.code());
+            }
             request.complete(new HeartbeatResponse(data));
         } catch (Throwable t) {
             LOG.error("Heartbeat handler threw", t);
@@ -1871,7 +2029,8 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
                             AuthzHelper.sessionOf(request),
                             OperationType.READ,
                             topics,
-                            context.kafkaDatabase());
+                            context.kafkaDatabase(),
+                            context.metrics());
             DescribeProducersRequestData filtered = data.duplicate();
             filtered.topics().clear();
             for (DescribeProducersRequestData.TopicRequest t : data.topics()) {
@@ -1925,7 +2084,8 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
                             AuthzHelper.sessionOf(request),
                             OperationType.READ,
                             topics,
-                            context.kafkaDatabase());
+                            context.kafkaDatabase(),
+                            context.metrics());
 
             FetchRequestData filtered = filterFetchByAllowed(data, allowed);
             KafkaFetchTranscoder transcoder =
@@ -1940,6 +2100,7 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
                                     return;
                                 }
                                 appendDeniedFetchTopics(data, allowed, result);
+                                recordFetchMetrics(result);
                                 request.complete(new FetchResponse(result));
                             });
         } catch (Throwable t) {
@@ -1958,6 +2119,31 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
             }
         }
         return out;
+    }
+
+    private void recordFetchMetrics(org.apache.kafka.common.message.FetchResponseData result) {
+        KafkaMetricGroup metrics = context.metrics();
+        if (metrics == null) {
+            return;
+        }
+        for (org.apache.kafka.common.message.FetchResponseData.FetchableTopicResponse t :
+                result.responses()) {
+            long bytes = 0L;
+            boolean err = false;
+            for (org.apache.kafka.common.message.FetchResponseData.PartitionData p :
+                    t.partitions()) {
+                if (p.errorCode() != Errors.NONE.code()) {
+                    err = true;
+                }
+                Object records = p.records();
+                if (records instanceof org.apache.kafka.common.record.MemoryRecords) {
+                    bytes += ((org.apache.kafka.common.record.MemoryRecords) records).sizeInBytes();
+                } else if (records instanceof org.apache.kafka.common.record.BaseRecords) {
+                    bytes += ((org.apache.kafka.common.record.BaseRecords) records).sizeInBytes();
+                }
+            }
+            metrics.recordFetch(t.topic(), bytes, err);
+        }
     }
 
     private static void appendDeniedFetchTopics(

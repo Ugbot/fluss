@@ -23,6 +23,8 @@ import org.apache.fluss.catalog.CatalogServices;
 import org.apache.fluss.cluster.Endpoint;
 import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.config.Configuration;
+import org.apache.fluss.kafka.sr.auth.HttpPrincipalExtractor;
+import org.apache.fluss.kafka.sr.auth.JaasHttpPrincipalStore;
 import org.apache.fluss.server.coordinator.MetadataManager;
 import org.apache.fluss.server.coordinator.spi.CoordinatorLeaderBootstrap;
 import org.apache.fluss.server.metadata.ServerMetadataCache;
@@ -75,9 +77,16 @@ public final class SchemaRegistryBootstrap implements CoordinatorLeaderBootstrap
         int port = conf.get(ConfigOptions.KAFKA_SCHEMA_REGISTRY_PORT);
         String kafkaDatabase = conf.get(ConfigOptions.KAFKA_DATABASE);
         boolean rbacEnforced = conf.getBoolean(ConfigOptions.KAFKA_SCHEMA_REGISTRY_RBAC_ENFORCED);
+        List<String> trustedProxyCidrs =
+                conf.get(ConfigOptions.KAFKA_SCHEMA_REGISTRY_TRUSTED_PROXY_CIDRS);
+        String basicAuthJaas = conf.get(ConfigOptions.KAFKA_SCHEMA_REGISTRY_BASIC_AUTH_JAAS_CONFIG);
+        JaasHttpPrincipalStore basicAuthStore = JaasHttpPrincipalStore.fromJaasText(basicAuthJaas);
+        HttpPrincipalExtractor principalExtractor =
+                new HttpPrincipalExtractor(trustedProxyCidrs, basicAuthStore);
         SchemaRegistryService service =
                 new SchemaRegistryService(metadataManager, catalog, kafkaDatabase, rbacEnforced);
-        SchemaRegistryHttpServer server = new SchemaRegistryHttpServer(host, port, service);
+        SchemaRegistryHttpServer server =
+                new SchemaRegistryHttpServer(host, port, service, principalExtractor);
         server.start();
         return server;
     }

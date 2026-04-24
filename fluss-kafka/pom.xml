@@ -31,6 +31,15 @@
 
     <properties>
         <kafka.version>3.9.2</kafka.version>
+        <!--
+            Apache Avro: used by the Schema Registry compatibility checker
+            (org.apache.avro.SchemaCompatibility, Phase SR-X.2) and by the typed-table translator
+            + JMH baseline (Phase T.1). Direct non-shaded dep; shading can follow with Phase T.4.
+        -->
+        <avro.version>1.11.4</avro.version>
+        <!-- Janino: runtime Java compiler used by AvroCodecCompiler (Phase T.1) to emit
+             per-schema specialised RecordCodec implementations. -->
+        <janino.version>3.1.12</janino.version>
     </properties>
 
     <dependencies>
@@ -85,6 +94,31 @@
             <groupId>${project.groupId}</groupId>
             <artifactId>fluss-catalog</artifactId>
             <version>${project.version}</version>
+        </dependency>
+
+        <!--
+            Apache Avro — used by SchemaRegistry's compatibility checker (Phase SR-X.2) and by the
+            typed-table translator + codec compiler (Phase T.1). Exclude slf4j-api to avoid binding
+            drift. Keep it tight: avro-core only, no ipc/compiler/reflect.
+        -->
+        <dependency>
+            <groupId>org.apache.avro</groupId>
+            <artifactId>avro</artifactId>
+            <version>${avro.version}</version>
+            <exclusions>
+                <exclusion>
+                    <groupId>org.slf4j</groupId>
+                    <artifactId>slf4j-api</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+
+        <!-- Janino runtime compiler — used by AvroCodecCompiler (Phase T.1) to emit
+             per-schema specialised RecordCodec implementations. -->
+        <dependency>
+            <groupId>org.codehaus.janino</groupId>
+            <artifactId>janino</artifactId>
+            <version>${janino.version}</version>
         </dependency>
 
         <!-- test dependency -->

@@ -19,6 +19,7 @@ package org.apache.fluss.kafka;
 
 import org.apache.fluss.annotation.Internal;
 import org.apache.fluss.config.Configuration;
+import org.apache.fluss.kafka.metrics.KafkaMetricGroup;
 import org.apache.fluss.rpc.gateway.CoordinatorGateway;
 import org.apache.fluss.server.authorizer.Authorizer;
 import org.apache.fluss.server.coordinator.MetadataManager;
@@ -45,6 +46,7 @@ public final class KafkaServerContext {
     private final @Nullable ReplicaManager replicaManager;
     private final @Nullable ZooKeeperClient zooKeeperClient;
     private final @Nullable Authorizer authorizer;
+    private final @Nullable KafkaMetricGroup metrics;
     private final String clusterId;
     private final String kafkaDatabase;
     private final Configuration serverConf;
@@ -70,6 +72,7 @@ public final class KafkaServerContext {
                 replicaManager,
                 zooKeeperClient,
                 null,
+                null,
                 clusterId,
                 kafkaDatabase,
                 Integer.MIN_VALUE,
@@ -93,6 +96,7 @@ public final class KafkaServerContext {
                 replicaManager,
                 zooKeeperClient,
                 null,
+                null,
                 clusterId,
                 kafkaDatabase,
                 ownServerId,
@@ -110,12 +114,39 @@ public final class KafkaServerContext {
             String kafkaDatabase,
             int ownServerId,
             Configuration serverConf) {
+        this(
+                metadataCache,
+                metadataManager,
+                coordinatorGateway,
+                replicaManager,
+                zooKeeperClient,
+                authorizer,
+                null,
+                clusterId,
+                kafkaDatabase,
+                ownServerId,
+                serverConf);
+    }
+
+    public KafkaServerContext(
+            @Nullable ClusterMetadataProvider metadataCache,
+            @Nullable MetadataManager metadataManager,
+            @Nullable CoordinatorGateway coordinatorGateway,
+            @Nullable ReplicaManager replicaManager,
+            @Nullable ZooKeeperClient zooKeeperClient,
+            @Nullable Authorizer authorizer,
+            @Nullable KafkaMetricGroup metrics,
+            String clusterId,
+            String kafkaDatabase,
+            int ownServerId,
+            Configuration serverConf) {
         this.metadataCache = metadataCache;
         this.metadataManager = metadataManager;
         this.coordinatorGateway = coordinatorGateway;
         this.replicaManager = replicaManager;
         this.zooKeeperClient = zooKeeperClient;
         this.authorizer = authorizer;
+        this.metrics = metrics;
         this.clusterId = checkNotNull(clusterId, "clusterId");
         this.kafkaDatabase = checkNotNull(kafkaDatabase, "kafkaDatabase");
         this.ownServerId = ownServerId;
@@ -206,5 +237,15 @@ public final class KafkaServerContext {
     @Nullable
     public Authorizer authorizer() {
         return authorizer;
+    }
+
+    /**
+     * Metrics surface for this Kafka bolt-on. {@code null} when the plugin is attached to a
+     * test-only gateway or the tablet server started without a metric registry; handlers must no-op
+     * their metric calls in that case.
+     */
+    @Nullable
+    public KafkaMetricGroup metrics() {
+        return metrics;
     }
 }

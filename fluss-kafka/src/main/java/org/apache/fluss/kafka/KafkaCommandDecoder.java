@@ -19,6 +19,7 @@ package org.apache.fluss.kafka;
 
 import org.apache.fluss.kafka.auth.KafkaListenerAuthConfig;
 import org.apache.fluss.kafka.auth.KafkaSaslTranscoder;
+import org.apache.fluss.kafka.metrics.KafkaMetricGroup;
 import org.apache.fluss.rpc.netty.server.RequestChannel;
 import org.apache.fluss.security.acl.FlussPrincipal;
 import org.apache.fluss.shaded.netty4.io.netty.buffer.ByteBuf;
@@ -48,6 +49,7 @@ import java.nio.ByteBuffer;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Supplier;
 
 import static org.apache.fluss.utils.Preconditions.checkNotNull;
 import static org.apache.kafka.common.protocol.ApiKeys.API_VERSIONS;
@@ -73,6 +75,7 @@ public class KafkaCommandDecoder extends SimpleChannelInboundHandler<ByteBuf> {
     private final int numChannels;
     private final String listenerName;
     private final KafkaListenerAuthConfig authConfig;
+    private final Supplier<KafkaMetricGroup> metricsSupplier;
 
     // Need to use a Queue to store the inflight responses, because Kafka clients require the
     // responses to be sent in order.
@@ -82,6 +85,7 @@ public class KafkaCommandDecoder extends SimpleChannelInboundHandler<ByteBuf> {
     protected final AtomicBoolean isActive = new AtomicBoolean(true);
     protected volatile ChannelHandlerContext ctx;
     protected SocketAddress remoteAddress;
+    private boolean connectionCounted = false;
 
     /**
      * SASL state machine for this connection. {@code null} on PLAINTEXT listeners; lazily created
@@ -93,11 +97,25 @@ public class KafkaCommandDecoder extends SimpleChannelInboundHandler<ByteBuf> {
             RequestChannel[] requestChannels,
             String listenerName,
             KafkaListenerAuthConfig authConfig) {
+        this(requestChannels, listenerName, authConfig, () -> null);
+    }
+
+    public KafkaCommandDecoder(
+            RequestChannel[] requestChannels,
+            String listenerName,
+            KafkaListenerAuthConfig authConfig,
+            Supplier<KafkaMetricGroup> metricsSupplier) {
         super(false);
         this.requestChannels = requestChannels;
         this.numChannels = requestChannels.length;
         this.listenerName = listenerName;
         this.authConfig = checkNotNull(authConfig, "authConfig");
+        this.metricsSupplier = checkNotNull(metricsSupplier, "metricsSupplier");
+    }
+
+    @javax.annotation.Nullable
+    private KafkaMetricGroup metrics() {
+        return metricsSupplier.get();
     }
 
     @Override
@@ -127,6 +145,22 @@ public class KafkaCommandDecoder extends SimpleChannelInboundHandler<ByteBuf> {
                 if (apiKey == SASL_AUTHENTICATE) {
                     SaslAuthenticateRequest ar = request.request();
                     AbstractResponse resp = saslTranscoder.handleSaslAuthenticate(ar);
+                    KafkaMetricGroup m = metrics();
+                    if (m != null) {
+                        boolean ok =
+                                resp
+                                                instanceof
+                                                org.apache.kafka.common.requests
+                                                        .SaslAuthenticateResponse
+                                        && ((org.apache.kafka.common.requests
+                                                                        .SaslAuthenticateResponse)
+                                                                resp)
+                                                        .data()
+                                                        .errorCode()
+                                                == org.apache.kafka.common.protocol.Errors.NONE
+                                                        .code();
+                        m.onSaslOutcome(ok, saslTranscoder.mechanism());
+                    }
                     completeInline(request, resp);
                     needRelease = false;
                     return;
@@ -185,19 +219,35 @@ public class KafkaCommandDecoder extends SimpleChannelInboundHandler<ByteBuf> {
         this.ctx = ctx;
         this.remoteAddress = ctx.channel().remoteAddress();
         isActive.set(true);
-        LOG.info("New connection from {}", ctx.channel().remoteAddress());
-        // TODO Channel metrics
+        LOG.info(
+                "Kafka listener '{}' accepted connection from {}",
+                listenerName,
+                ctx.channel().remoteAddress());
+        KafkaMetricGroup m = metrics();
+        if (m != null) {
+            m.onConnectionOpened();
+            connectionCounted = true;
+        }
     }
 
     @Override
     public void channelInactive(ChannelHandlerContext ctx) throws Exception {
         super.channelInactive(ctx);
-        LOG.info("Connection closed from {}", ctx.channel().remoteAddress());
+        LOG.info(
+                "Kafka listener '{}' connection closed from {}",
+                listenerName,
+                ctx.channel().remoteAddress());
         if (saslTranscoder != null) {
             saslTranscoder.close();
             saslTranscoder = null;
         }
-        // TODO Channel metrics
+        if (connectionCounted) {
+            KafkaMetricGroup m = metrics();
+            if (m != null) {
+                m.onConnectionClosed();
+            }
+            connectionCounted = false;
+        }
     }
 
     @Override

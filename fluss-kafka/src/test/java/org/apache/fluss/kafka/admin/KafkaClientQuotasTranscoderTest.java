@@ -383,6 +383,12 @@ class KafkaClientQuotasTranscoderTest {
         }
 
         @Override
+        public void unbindKafkaSubject(String subject) {}
+
+        @Override
+        public void deleteSchemaVersion(String schemaId) {}
+
+        @Override
         public PrincipalEntity ensurePrincipal(String n, String t) {
             throw new UnsupportedOperationException();
         }
@@ -414,5 +420,19 @@ class KafkaClientQuotasTranscoderTest {
         public boolean checkPrivilege(String p, String k, String id, String pr) {
             return false;
         }
+
+        @Override
+        public Optional<org.apache.fluss.catalog.entities.SrConfigEntry> getSrConfig(String key) {
+            return Optional.empty();
+        }
+
+        @Override
+        public org.apache.fluss.catalog.entities.SrConfigEntry setSrConfig(
+                String key, String value) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public void deleteSrConfig(String key) {}
     }
 }

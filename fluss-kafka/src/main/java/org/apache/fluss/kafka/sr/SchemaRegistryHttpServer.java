@@ -18,6 +18,7 @@
 package org.apache.fluss.kafka.sr;
 
 import org.apache.fluss.annotation.Internal;
+import org.apache.fluss.kafka.sr.auth.HttpPrincipalExtractor;
 import org.apache.fluss.rpc.netty.NettyUtils;
 import org.apache.fluss.shaded.netty4.io.netty.bootstrap.ServerBootstrap;
 import org.apache.fluss.shaded.netty4.io.netty.channel.Channel;
@@ -49,6 +50,7 @@ public final class SchemaRegistryHttpServer implements AutoCloseable {
     private final String host;
     private final int requestedPort;
     private final SchemaRegistryService service;
+    private final HttpPrincipalExtractor principalExtractor;
 
     private final AtomicBoolean started = new AtomicBoolean(false);
     private volatile EventLoopGroup acceptorGroup;
@@ -56,10 +58,15 @@ public final class SchemaRegistryHttpServer implements AutoCloseable {
     private volatile Channel bindChannel;
     private volatile int boundPort = -1;
 
-    public SchemaRegistryHttpServer(String host, int port, SchemaRegistryService service) {
+    public SchemaRegistryHttpServer(
+            String host,
+            int port,
+            SchemaRegistryService service,
+            HttpPrincipalExtractor principalExtractor) {
         this.host = host;
         this.requestedPort = port;
         this.service = service;
+        this.principalExtractor = principalExtractor;
     }
 
     /** Bind and begin serving. Blocks until the port is bound (or fails). */
@@ -86,7 +93,8 @@ public final class SchemaRegistryHttpServer implements AutoCloseable {
                                                                 MAX_HTTP_BODY_BYTES))
                                                 .addLast(
                                                         "sr-handler",
-                                                        new SchemaRegistryHttpHandler(service));
+                                                        new SchemaRegistryHttpHandler(
+                                                                service, principalExtractor));
                                     }
                                 });
         bindChannel = bootstrap.bind(new InetSocketAddress(host, requestedPort)).sync().channel();

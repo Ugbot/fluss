@@ -235,6 +235,14 @@ public final class KafkaSaslTranscoder {
     }
 
     /**
+     * The mechanism chosen by the client in {@code SASL_HANDSHAKE}. Returns {@code null} before a
+     * handshake is received.
+     */
+    public String mechanism() {
+        return chosenMechanism;
+    }
+
+    /**
      * {@code true} iff this listener requires SASL but the connection has not completed it yet —
      * used by the decoder to gate non-SASL, non-ApiVersions APIs.
      */

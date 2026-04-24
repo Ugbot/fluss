@@ -25,7 +25,11 @@ import org.apache.fluss.catalog.entities.KafkaSubjectBinding;
 import org.apache.fluss.catalog.entities.PrincipalEntity;
 import org.apache.fluss.catalog.entities.SchemaVersionEntity;
 import org.apache.fluss.exception.TableNotExistException;
+import org.apache.fluss.kafka.sr.compat.AvroCompatibilityChecker;
+import org.apache.fluss.kafka.sr.compat.CompatLevel;
+import org.apache.fluss.kafka.sr.compat.CompatibilityResult;
 import org.apache.fluss.metadata.TablePath;
+import org.apache.fluss.security.acl.FlussPrincipal;
 import org.apache.fluss.server.coordinator.MetadataManager;
 
 import org.slf4j.Logger;
@@ -96,6 +100,18 @@ public final class SchemaRegistryService {
     private static final String KEY_SUBJECT_COMPAT_PREFIX = "subject_compatibility:";
     private static final String KEY_GLOBAL_MODE = "global_mode";
     private static final String KEY_SUBJECT_MODE_PREFIX = "subject_mode:";
+
+    /**
+     * Tombstone keys stored in {@code _sr_config}. Presence of either key marks the corresponding
+     * entity as soft-deleted. Re-registering the subject or version clears the tombstone. The
+     * per-schema key is the catalog schema UUID (not the Confluent id) so that a hard-delete of the
+     * row doesn't orphan a tombstone.
+     */
+    private static final String KEY_TOMBSTONE_SUBJECT_PREFIX = "tombstone_subject:";
+
+    private static final String KEY_TOMBSTONE_SCHEMA_PREFIX = "tombstone_schema:";
+
+    private final AvroCompatibilityChecker compatibilityChecker = new AvroCompatibilityChecker();
 
     /** Effective global compatibility level; persisted via {@link #setGlobalCompatibility}. */
     public String defaultCompatibility() {
@@ -237,12 +253,17 @@ public final class SchemaRegistryService {
     }
 
     /**
-     * Resolve the caller principal. Until authentication (SASL, HTTP forwarded-headers) lands every
-     * request is {@link PrincipalEntity#ANONYMOUS}. A single point to rewire once auth arrives —
-     * none of the call sites need to change.
+     * Resolve the caller principal. Reads the per-request principal extracted by {@link
+     * SchemaRegistryHttpHandler} (see {@link SchemaRegistryCallContext}); falls back to {@link
+     * PrincipalEntity#ANONYMOUS} when no principal was extracted — either because no trust path
+     * fired, or because callers (tests) reach this service outside the HTTP path.
      */
     private String callerPrincipal() {
-        return PrincipalEntity.ANONYMOUS;
+        FlussPrincipal current = SchemaRegistryCallContext.current();
+        if (current == null || current.getName() == null || current.getName().isEmpty()) {
+            return PrincipalEntity.ANONYMOUS;
+        }
+        return current.getName();
     }
 
     /**
@@ -263,7 +284,7 @@ public final class SchemaRegistryService {
                             privilege);
             if (!allowed) {
                 throw new SchemaRegistryException(
-                        SchemaRegistryException.Kind.UNSUPPORTED,
+                        SchemaRegistryException.Kind.FORBIDDEN,
                         "principal '"
                                 + callerPrincipal()
                                 + "' is not granted "
@@ -287,9 +308,15 @@ public final class SchemaRegistryService {
         // Fail fast if the Kafka data table doesn't exist — keeps the 404 clean.
         requireKafkaTable(topic, subject);
         try {
-            // Idempotent fast path: if the subject is already bound and the latest schema text
-            // matches, return the existing Confluent id without appending a new version. This
-            // avoids relying on catalog-side scan consistency for read-after-write semantics.
+            // Clear a subject tombstone first so the idempotent fast path and compat check see the
+            // subject as live again (Confluent SR behaviour: re-registering a soft-deleted subject
+            // resurrects it).
+            clearSubjectTombstone(subject);
+
+            // Idempotent fast path: if the subject is already bound and the latest <live> schema
+            // text matches, return the existing Confluent id without appending a new version.
+            // latestForSubject already filters out tombstoned versions, so a soft-deleted match
+            // will not short-circuit here; instead we'll clear its tombstone and re-register.
             Optional<RegisteredSchema> latest = latestForSubject(subject);
             if (LOG.isDebugEnabled()) {
                 LOG.debug(
@@ -301,6 +328,23 @@ public final class SchemaRegistryService {
             if (latest.isPresent() && avroSchema.equals(latest.get().schema())) {
                 return latest.get().id();
             }
+
+            // Resurrect soft-deleted version if the text matches an existing (tombstoned) row —
+            // clears the tombstone and returns that row's Confluent id rather than minting a new
+            // version.
+            Optional<RegisteredSchema> resurrected =
+                    resurrectTombstonedSchemaIfMatches(subject, topic, avroSchema);
+            if (resurrected.isPresent()) {
+                // The binding may also be soft-deleted / absent — re-bind to be safe.
+                ensureCatalogEntities(topic);
+                catalog.bindKafkaSubject(
+                        subject, kafkaDatabase, topic, KEY_OR_VALUE_VALUE, NAMING_STRATEGY);
+                return resurrected.get().id();
+            }
+
+            // Compatibility gate — runs before registration when there's a live prior history.
+            enforceCompatibilityOrThrow(subject, topic, avroSchema);
+
             ensureCatalogEntities(topic);
             SchemaVersionEntity version =
                     catalog.registerSchema(
@@ -313,18 +357,255 @@ public final class SchemaRegistryService {
         }
     }
 
+    // ---------- soft-delete ----------
+
+    /**
+     * Soft-delete one version under {@code subject}. {@code permanent=true} hard-deletes the schema
+     * row instead of tombstoning it. Returns the deleted version number (Confluent's behaviour —
+     * the HTTP response body is the integer version).
+     */
+    public int deleteVersion(String subject, int version, boolean permanent) {
+        authorize(GrantEntity.PRIVILEGE_WRITE);
+        try {
+            String topic = SubjectResolver.topicFromValueSubject(subject);
+            Optional<KafkaSubjectBinding> binding = catalog.resolveKafkaSubject(subject);
+            if (!binding.isPresent()) {
+                throw new SchemaRegistryException(
+                        SchemaRegistryException.Kind.NOT_FOUND,
+                        "Subject '" + subject + "' not found");
+            }
+            Optional<SchemaVersionEntity> schema =
+                    catalog.getSchemaVersion(kafkaDatabase, topic, version);
+            if (!schema.isPresent()) {
+                throw new SchemaRegistryException(
+                        SchemaRegistryException.Kind.NOT_FOUND,
+                        "Subject '" + subject + "' version " + version + " not found");
+            }
+            String schemaId = schema.get().schemaId();
+            boolean alreadyTombstoned = isSchemaTombstoned(schemaId);
+            if (permanent) {
+                catalog.deleteSchemaVersion(schemaId);
+                // Always clear the tombstone on permanent delete so stale rows don't linger.
+                catalog.deleteSrConfig(KEY_TOMBSTONE_SCHEMA_PREFIX + schemaId);
+            } else {
+                if (alreadyTombstoned) {
+                    // Confluent SR returns 404 when the same version is soft-deleted twice.
+                    throw new SchemaRegistryException(
+                            SchemaRegistryException.Kind.NOT_FOUND,
+                            "Subject '"
+                                    + subject
+                                    + "' version "
+                                    + version
+                                    + " is already soft-deleted");
+                }
+                catalog.setSrConfig(KEY_TOMBSTONE_SCHEMA_PREFIX + schemaId, "1");
+            }
+            return version;
+        } catch (Exception e) {
+            throw translate(e);
+        }
+    }
+
+    /**
+     * Soft-delete {@code subject} (tombstone its binding). {@code permanent=true} hard-deletes the
+     * binding and cascades into every schema version bound to its table. Returns the list of
+     * versions that were deleted, in ascending order — mirrors Confluent's {@code DELETE
+     * /subjects/{s}} response body.
+     */
+    public List<Integer> deleteSubject(String subject, boolean permanent) {
+        authorize(GrantEntity.PRIVILEGE_WRITE);
+        try {
+            Optional<KafkaSubjectBinding> binding = catalog.resolveKafkaSubject(subject);
+            if (!binding.isPresent()) {
+                throw new SchemaRegistryException(
+                        SchemaRegistryException.Kind.NOT_FOUND,
+                        "Subject '" + subject + "' not found");
+            }
+            String topic = SubjectResolver.topicFromValueSubject(subject);
+            List<SchemaVersionEntity> versions = catalog.listSchemaVersions(kafkaDatabase, topic);
+            boolean alreadyTombstoned = isSubjectTombstoned(subject);
+
+            List<Integer> out = new ArrayList<>();
+            if (permanent) {
+                for (SchemaVersionEntity v : versions) {
+                    catalog.deleteSchemaVersion(v.schemaId());
+                    catalog.deleteSrConfig(KEY_TOMBSTONE_SCHEMA_PREFIX + v.schemaId());
+                    out.add(v.version());
+                }
+                catalog.unbindKafkaSubject(subject);
+                catalog.deleteSrConfig(KEY_TOMBSTONE_SUBJECT_PREFIX + subject);
+                catalog.deleteSrConfig(KEY_SUBJECT_COMPAT_PREFIX + subject);
+                catalog.deleteSrConfig(KEY_SUBJECT_MODE_PREFIX + subject);
+            } else {
+                if (alreadyTombstoned) {
+                    throw new SchemaRegistryException(
+                            SchemaRegistryException.Kind.NOT_FOUND,
+                            "Subject '" + subject + "' is already soft-deleted");
+                }
+                catalog.setSrConfig(KEY_TOMBSTONE_SUBJECT_PREFIX + subject, "1");
+                for (SchemaVersionEntity v : versions) {
+                    if (!isSchemaTombstoned(v.schemaId())) {
+                        out.add(v.version());
+                    }
+                }
+            }
+            Collections.sort(out);
+            return out;
+        } catch (Exception e) {
+            throw translate(e);
+        }
+    }
+
+    /**
+     * Check the proposed {@code schemaText} against {@code subject}'s existing versions at the
+     * effective compatibility level. Does <b>not</b> register — backs {@code POST
+     * /compatibility/subjects/{s}/versions/{v}}. {@code version == -1} is Confluent's alias for
+     * "latest".
+     */
+    public CompatibilityResult checkCompatibility(String subject, int version, String schemaText) {
+        authorize(GrantEntity.PRIVILEGE_READ);
+        if (schemaText == null || schemaText.isEmpty()) {
+            throw new SchemaRegistryException(
+                    SchemaRegistryException.Kind.INVALID_INPUT, "schema body is required");
+        }
+        try {
+            String topic = SubjectResolver.topicFromValueSubject(subject);
+            Optional<KafkaSubjectBinding> binding = catalog.resolveKafkaSubject(subject);
+            if (!binding.isPresent() || isSubjectTombstoned(subject)) {
+                throw new SchemaRegistryException(
+                        SchemaRegistryException.Kind.NOT_FOUND,
+                        "Subject '" + subject + "' not found");
+            }
+            List<SchemaVersionEntity> liveVersions = liveVersionsAscending(topic);
+            if (liveVersions.isEmpty()) {
+                // No prior history → vacuously compatible.
+                return CompatibilityResult.compatible();
+            }
+            // The {version} path segment scopes which priors participate; Confluent lets callers
+            // target any live version. For non-"latest" values we ensure the requested version
+            // actually exists (returns 404 otherwise).
+            if (version != -1) {
+                boolean found = false;
+                for (SchemaVersionEntity v : liveVersions) {
+                    if (v.version() == version) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    throw new SchemaRegistryException(
+                            SchemaRegistryException.Kind.NOT_FOUND,
+                            "Subject '" + subject + "' version " + version + " not found");
+                }
+            }
+            List<String> priorTexts = new ArrayList<>(liveVersions.size());
+            for (SchemaVersionEntity v : liveVersions) {
+                priorTexts.add(v.schemaText());
+            }
+            CompatLevel level = effectiveLevel(subject);
+            return compatibilityChecker.check(schemaText, priorTexts, level);
+        } catch (Exception e) {
+            throw translate(e);
+        }
+    }
+
+    private CompatLevel effectiveLevel(String subject) throws Exception {
+        Optional<String> subjectLevel =
+                catalog.getSrConfig(KEY_SUBJECT_COMPAT_PREFIX + subject).map(e -> e.value());
+        if (subjectLevel.isPresent()) {
+            return CompatLevel.fromString(subjectLevel.get());
+        }
+        Optional<String> globalLevel = catalog.getSrConfig(KEY_GLOBAL_COMPAT).map(e -> e.value());
+        if (globalLevel.isPresent()) {
+            return CompatLevel.fromString(globalLevel.get());
+        }
+        return CompatLevel.fromString(DEFAULT_COMPATIBILITY);
+    }
+
+    private void enforceCompatibilityOrThrow(String subject, String topic, String proposed)
+            throws Exception {
+        CompatLevel level = effectiveLevel(subject);
+        if (level == CompatLevel.NONE) {
+            return;
+        }
+        List<SchemaVersionEntity> liveVersions = liveVersionsAscending(topic);
+        if (liveVersions.isEmpty()) {
+            return;
+        }
+        List<String> priorTexts = new ArrayList<>(liveVersions.size());
+        for (SchemaVersionEntity v : liveVersions) {
+            priorTexts.add(v.schemaText());
+        }
+        CompatibilityResult result = compatibilityChecker.check(proposed, priorTexts, level);
+        if (!result.isCompatible()) {
+            StringBuilder sb = new StringBuilder();
+            sb.append("Schema is incompatible with ")
+                    .append(level.name())
+                    .append(" for subject '")
+                    .append(subject)
+                    .append("':");
+            for (String m : result.messages()) {
+                sb.append("\n  ").append(m);
+            }
+            throw new SchemaRegistryException(SchemaRegistryException.Kind.CONFLICT, sb.toString());
+        }
+    }
+
+    private List<SchemaVersionEntity> liveVersionsAscending(String topic) throws Exception {
+        List<SchemaVersionEntity> all = catalog.listSchemaVersions(kafkaDatabase, topic);
+        List<SchemaVersionEntity> live = new ArrayList<>(all.size());
+        for (SchemaVersionEntity v : all) {
+            if (!isSchemaTombstoned(v.schemaId())) {
+                live.add(v);
+            }
+        }
+        live.sort((a, b) -> Integer.compare(a.version(), b.version()));
+        return live;
+    }
+
+    private Optional<RegisteredSchema> resurrectTombstonedSchemaIfMatches(
+            String subject, String topic, String schemaText) throws Exception {
+        List<SchemaVersionEntity> all = catalog.listSchemaVersions(kafkaDatabase, topic);
+        for (SchemaVersionEntity v : all) {
+            if (schemaText.equals(v.schemaText()) && isSchemaTombstoned(v.schemaId())) {
+                catalog.deleteSrConfig(KEY_TOMBSTONE_SCHEMA_PREFIX + v.schemaId());
+                return Optional.of(
+                        new RegisteredSchema(
+                                v.confluentId(), subject, v.version(), v.format(), v.schemaText()));
+            }
+        }
+        return Optional.empty();
+    }
+
+    private void clearSubjectTombstone(String subject) throws Exception {
+        if (isSubjectTombstoned(subject)) {
+            catalog.deleteSrConfig(KEY_TOMBSTONE_SUBJECT_PREFIX + subject);
+        }
+    }
+
+    private boolean isSubjectTombstoned(String subject) throws Exception {
+        return catalog.getSrConfig(KEY_TOMBSTONE_SUBJECT_PREFIX + subject).isPresent();
+    }
+
+    private boolean isSchemaTombstoned(String schemaId) throws Exception {
+        return catalog.getSrConfig(KEY_TOMBSTONE_SCHEMA_PREFIX + schemaId).isPresent();
+    }
+
     public Optional<RegisteredSchema> schemaById(int id) {
         authorize(GrantEntity.PRIVILEGE_READ);
         try {
-            return catalog.getSchemaById(id)
-                    .map(
-                            s ->
-                                    new RegisteredSchema(
-                                            s.confluentId(),
-                                            /* subject unused by GET /schemas/ids */ "",
-                                            s.version(),
-                                            s.format(),
-                                            s.schemaText()));
+            Optional<SchemaVersionEntity> schema = catalog.getSchemaById(id);
+            if (!schema.isPresent() || isSchemaTombstoned(schema.get().schemaId())) {
+                return Optional.empty();
+            }
+            SchemaVersionEntity s = schema.get();
+            return Optional.of(
+                    new RegisteredSchema(
+                            s.confluentId(),
+                            /* subject unused by GET /schemas/ids */ "",
+                            s.version(),
+                            s.format(),
+                            s.schemaText()));
         } catch (Exception e) {
             throw translate(e);
         }
@@ -335,6 +616,9 @@ public final class SchemaRegistryService {
         try {
             List<String> out = new ArrayList<>();
             for (KafkaSubjectBinding b : catalog.listKafkaSubjects()) {
+                if (isSubjectTombstoned(b.subject())) {
+                    continue;
+                }
                 out.add(b.subject());
             }
             Collections.sort(out);
@@ -360,13 +644,13 @@ public final class SchemaRegistryService {
         authorize(GrantEntity.PRIVILEGE_READ);
         try {
             Optional<SchemaVersionEntity> schema = catalog.getSchemaById(id);
-            if (!schema.isPresent()) {
+            if (!schema.isPresent() || isSchemaTombstoned(schema.get().schemaId())) {
                 return Collections.emptyList();
             }
             String tableId = schema.get().tableId();
             List<String> out = new ArrayList<>();
             for (KafkaSubjectBinding b : catalog.listKafkaSubjects()) {
-                if (tableId.equals(b.tableId())) {
+                if (tableId.equals(b.tableId()) && !isSubjectTombstoned(b.subject())) {
                     out.add(b.subject());
                 }
             }
@@ -385,7 +669,7 @@ public final class SchemaRegistryService {
         authorize(GrantEntity.PRIVILEGE_READ);
         try {
             Optional<SchemaVersionEntity> schema = catalog.getSchemaById(id);
-            if (!schema.isPresent()) {
+            if (!schema.isPresent() || isSchemaTombstoned(schema.get().schemaId())) {
                 return Collections.emptyList();
             }
             SchemaVersionEntity s = schema.get();
@@ -393,7 +677,7 @@ public final class SchemaRegistryService {
             int version = s.version();
             List<SubjectVersion> out = new ArrayList<>();
             for (KafkaSubjectBinding b : catalog.listKafkaSubjects()) {
-                if (tableId.equals(b.tableId())) {
+                if (tableId.equals(b.tableId()) && !isSubjectTombstoned(b.subject())) {
                     out.add(new SubjectVersion(b.subject(), version));
                 }
             }
@@ -428,13 +712,16 @@ public final class SchemaRegistryService {
         authorize(GrantEntity.PRIVILEGE_READ);
         try {
             Optional<KafkaSubjectBinding> binding = catalog.resolveKafkaSubject(subject);
-            if (!binding.isPresent()) {
+            if (!binding.isPresent() || isSubjectTombstoned(subject)) {
                 return Collections.emptyList();
             }
             String topic = SubjectResolver.topicFromValueSubject(subject);
             List<SchemaVersionEntity> versions = catalog.listSchemaVersions(kafkaDatabase, topic);
             List<Integer> out = new ArrayList<>(versions.size());
             for (SchemaVersionEntity v : versions) {
+                if (isSchemaTombstoned(v.schemaId())) {
+                    continue;
+                }
                 out.add(v.version());
             }
             Collections.sort(out);
@@ -455,13 +742,13 @@ public final class SchemaRegistryService {
         authorize(GrantEntity.PRIVILEGE_READ);
         try {
             Optional<KafkaSubjectBinding> binding = catalog.resolveKafkaSubject(subject);
-            if (!binding.isPresent()) {
+            if (!binding.isPresent() || isSubjectTombstoned(subject)) {
                 return Optional.empty();
             }
             String topic = SubjectResolver.topicFromValueSubject(subject);
             Optional<SchemaVersionEntity> schema =
                     catalog.getSchemaVersion(kafkaDatabase, topic, version);
-            if (!schema.isPresent()) {
+            if (!schema.isPresent() || isSchemaTombstoned(schema.get().schemaId())) {
                 return Optional.empty();
             }
             SchemaVersionEntity s = schema.get();
@@ -485,13 +772,13 @@ public final class SchemaRegistryService {
         }
         try {
             Optional<KafkaSubjectBinding> binding = catalog.resolveKafkaSubject(subject);
-            if (!binding.isPresent()) {
+            if (!binding.isPresent() || isSubjectTombstoned(subject)) {
                 return Optional.empty();
             }
             String topic = SubjectResolver.topicFromValueSubject(subject);
             List<SchemaVersionEntity> versions = catalog.listSchemaVersions(kafkaDatabase, topic);
             for (SchemaVersionEntity v : versions) {
-                if (schemaText.equals(v.schemaText())) {
+                if (schemaText.equals(v.schemaText()) && !isSchemaTombstoned(v.schemaId())) {
                     return Optional.of(
                             new RegisteredSchema(
                                     v.confluentId(),
@@ -511,9 +798,11 @@ public final class SchemaRegistryService {
         authorize(GrantEntity.PRIVILEGE_READ);
         try {
             // PK-lookup chain: binding → table.currentSchemaId → schema. Every hop is a Fluss
-            // PK lookup (read-after-write consistent); no scans involved.
+            // PK lookup (read-after-write consistent); no scans involved. Falls through to a
+            // version-scan when the table pointer lands on a tombstoned row, so the caller sees
+            // the greatest live version rather than a phantom "no schema".
             Optional<KafkaSubjectBinding> binding = catalog.resolveKafkaSubject(subject);
-            if (!binding.isPresent()) {
+            if (!binding.isPresent() || isSubjectTombstoned(subject)) {
                 return Optional.empty();
             }
             Optional<org.apache.fluss.catalog.entities.CatalogTableEntity> table =
@@ -523,10 +812,19 @@ public final class SchemaRegistryService {
             }
             Optional<SchemaVersionEntity> schema =
                     catalog.getSchemaBySchemaId(table.get().currentSchemaId());
-            if (!schema.isPresent()) {
+            if (schema.isPresent() && !isSchemaTombstoned(schema.get().schemaId())) {
+                SchemaVersionEntity s = schema.get();
+                return Optional.of(
+                        new RegisteredSchema(
+                                s.confluentId(), subject, s.version(), s.format(), s.schemaText()));
+            }
+            // Fall back to the live history tail.
+            String topic = SubjectResolver.topicFromValueSubject(subject);
+            List<SchemaVersionEntity> live = liveVersionsAscending(topic);
+            if (live.isEmpty()) {
                 return Optional.empty();
             }
-            SchemaVersionEntity s = schema.get();
+            SchemaVersionEntity s = live.get(live.size() - 1);
             return Optional.of(
                     new RegisteredSchema(
                             s.confluentId(), subject, s.version(), s.format(), s.schemaText()));
