@@ -117,14 +117,13 @@ public final class KafkaFetchTranscoder {
                     topicInfo.timestampType() == KafkaTopicInfo.TimestampType.LOG_APPEND_TIME
                             ? TimestampType.LOG_APPEND_TIME
                             : TimestampType.CREATE_TIME;
-            // Load the topic's actual Fluss table Schema — compacted topics have a different
-            // RowType than the legacy log shape (record_key is non-null + PK). Decoding
-            // compacted-topic CDC records with the wrong RowType produces bogus field offsets
-            // and surfaces as "corrupt message" on the Kafka client.
-            org.apache.fluss.metadata.Schema topicSchema;
+            // Load the topic's actual Fluss TableInfo — compacted topics have a different
+            // RowType (record_key is non-null + PK) AND a different CDC log format
+            // (PK tables default to ARROW). Passing TableInfo into LogRecordReadContext
+            // .createReadContext lets the decoder format-branch on ARROW/INDEXED/COMPACTED.
+            org.apache.fluss.metadata.TableInfo tableInfo;
             try {
-                topicSchema =
-                        context.metadataManager().getTable(topicInfo.dataTablePath()).getSchema();
+                tableInfo = context.metadataManager().getTable(topicInfo.dataTablePath());
             } catch (Exception e) {
                 LOG.error(
                         "Failed to load TableInfo for fetch of '{}'", topicInfo.dataTablePath(), e);
@@ -138,7 +137,7 @@ public final class KafkaFetchTranscoder {
                 PartitionContext ctx =
                         new PartitionContext(
                                 topicInfo,
-                                topicSchema,
+                                tableInfo,
                                 fp.partition(),
                                 timestampType,
                                 fp.fetchOffset());
@@ -219,7 +218,7 @@ public final class KafkaFetchTranscoder {
     /** Per-partition accumulator that owns both the input shape and the output response. */
     private static final class PartitionContext {
         private final KafkaTopicInfo info;
-        private final @javax.annotation.Nullable org.apache.fluss.metadata.Schema topicSchema;
+        private final @javax.annotation.Nullable org.apache.fluss.metadata.TableInfo tableInfo;
         private final int partitionIndex;
         private final TimestampType timestampType;
         private final long fetchOffset;
@@ -230,12 +229,12 @@ public final class KafkaFetchTranscoder {
 
         PartitionContext(
                 KafkaTopicInfo info,
-                @javax.annotation.Nullable org.apache.fluss.metadata.Schema topicSchema,
+                @javax.annotation.Nullable org.apache.fluss.metadata.TableInfo tableInfo,
                 int partitionIndex,
                 TimestampType timestampType,
                 long fetchOffset) {
             this.info = info;
-            this.topicSchema = topicSchema;
+            this.tableInfo = tableInfo;
             this.partitionIndex = partitionIndex;
             this.timestampType = timestampType;
             this.fetchOffset = fetchOffset;
@@ -273,7 +272,7 @@ public final class KafkaFetchTranscoder {
                 return pd;
             }
             try {
-                pd.setRecords(encode(result.records(), fetchOffset, timestampType, topicSchema));
+                pd.setRecords(encode(result.records(), fetchOffset, timestampType, tableInfo));
             } catch (Exception e) {
                 LOG.error(
                         "Fetch transcode failed for topic '{}' partition {}",
@@ -296,13 +295,13 @@ public final class KafkaFetchTranscoder {
             LogRecords flussRecords,
             long baseOffset,
             TimestampType timestampType,
-            @javax.annotation.Nullable org.apache.fluss.metadata.Schema topicSchema) {
-        // Use the topic's real schema when available — compacted topics have
-        // record_key as a non-null PK column; decoding with the default non-
-        // compacted schema mis-aligns IndexedRow field offsets and produces a
-        // "corrupt message" error on the Kafka client.
+            @javax.annotation.Nullable org.apache.fluss.metadata.TableInfo tableInfo) {
+        // Use the topic's real schema when available — compacted topics have record_key as a
+        // non-null PK column, AND PK tables default to LogFormat.ARROW for their CDC log.
+        // Decoding with the wrong schema / format produces bogus field offsets ("corrupt
+        // message" on the Kafka client).
         org.apache.fluss.metadata.Schema effectiveSchema =
-                topicSchema != null ? topicSchema : KafkaDataTable.schema();
+                tableInfo != null ? tableInfo.getSchema() : KafkaDataTable.schema();
         org.apache.fluss.metadata.SchemaGetter schemaGetter =
                 new org.apache.fluss.metadata.SchemaGetter() {
                     @Override
@@ -334,12 +333,25 @@ public final class KafkaFetchTranscoder {
         long maxTimestamp = RecordBatch.NO_TIMESTAMP;
         long estimatedBytes = 512;
         for (LogRecordBatch batch : flussRecords.batches()) {
+            // LogRecordReadContext.createReadContext format-branches on
+            // tableInfo.getTableConfig().getLogFormat() — returns an ARROW-capable,
+            // INDEXED-capable, or COMPACTED-capable read context uniformly. Iterating with
+            // batch.records(ctx) yields CloseableIterator<LogRecord> for every format;
+            // LogRecord.getRow() returns InternalRow our existing row-inspection code already
+            // handles. When tableInfo is null (error path before we could load it) fall back
+            // to INDEXED + KafkaDataTable.schema() so legacy log-only callers still work.
+            org.apache.fluss.record.LogRecordReadContext readCtx;
+            if (tableInfo != null) {
+                readCtx =
+                        org.apache.fluss.record.LogRecordReadContext.createReadContext(
+                                tableInfo, /* readFromRemote */ false, null, schemaGetter);
+            } else {
+                readCtx =
+                        org.apache.fluss.record.LogRecordReadContext.createIndexedReadContext(
+                                effectiveSchema.getRowType(), batch.schemaId(), schemaGetter);
+            }
             try (org.apache.fluss.utils.CloseableIterator<LogRecord> iter =
-                    batch.records(
-                            org.apache.fluss.record.LogRecordReadContext.createIndexedReadContext(
-                                    effectiveSchema.getRowType(),
-                                    batch.schemaId(),
-                                    schemaGetter))) {
+                    batch.records(readCtx)) {
                 while (iter.hasNext()) {
                     LogRecord record = iter.next();
                     if (firstOffset < 0) {

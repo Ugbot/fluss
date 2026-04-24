@@ -66,6 +66,16 @@ public final class KafkaTableFactory {
                                 timestampType.wireName())
                         .customProperty(
                                 CustomPropertiesTopicsCatalog.PROP_TOPIC_ID, topicId.toString());
+        if (!compacted) {
+            // Log topics: KafkaProduceTranscoder writes records using
+            // MemoryLogRecordsIndexedBuilder, so the on-disk format is INDEXED. Fluss's default
+            // TABLE_LOG_FORMAT is ARROW — pinning INDEXED here matches reality and lets the
+            // fetch transcoder's LogRecordReadContext.createReadContext(TableInfo, ...) pick
+            // the right decoder automatically.
+            builder.property(
+                    org.apache.fluss.config.ConfigOptions.TABLE_LOG_FORMAT.key(),
+                    org.apache.fluss.metadata.LogFormat.INDEXED.name());
+        }
         if (compression != null) {
             builder.customProperty(
                     CustomPropertiesTopicsCatalog.PROP_COMPRESSION, compression.name());

@@ -46,6 +46,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Properties;
 
+import static org.assertj.core.api.Assertions.assertThat;
+
 /**
  * End-to-end coverage of Kafka compacted topics ({@code cleanup.policy=compact}) mapped onto Fluss
  * PK tables. Verifies the produce path routes through {@code ReplicaManager.putRecordsToKv}, and
@@ -107,30 +109,96 @@ class KafkaCompactedTopicITCase {
         }
     }
 
-    // KNOWN GAP — Kafka-consumer read-back from a compacted topic is deferred.
-    //
-    // Investigation found the fix is larger than initially scoped:
-    //   1. KafkaFetchTranscoder hardcodes createIndexedReadContext, but PK tables default to
-    //      LogFormat.ARROW for their CDC log; INDEXED is the only format the current reader
-    //      understands. Fix #1: use LogRecordReadContext.createReadContext(TableInfo, ...)
-    //      which branches on the configured log format.
-    //   2. Setting LogFormat=INDEXED on the compacted-topic descriptor so produce+fetch share
-    //      the format makes the Fluss-server-side KV write path reject with
-    //      "IndexWalBuilder requires the log row to be IndexedRow" — the KV engine converts
-    //      internally and expects ARROW for the CDC log. So INDEXED-log for PK tables is
-    //      effectively blocked at the core.
-    //   3. Reading ARROW via createReadContext returns ArrowRecordBatch-shaped records; the
-    //      existing RowView.of(InternalRow) path needs to be rewritten as "iterate arrow
-    //      batch → get IndexedRow-equivalent view per row". Not a one-liner.
-    //   4. The per-schema read context was the right direction but the schema mismatch wasn't
-    //      the only blocker.
-    //
-    // Scope to actually close the gap: a TableInfo-based fetch read context in
-    // KafkaFetchTranscoder + a ChangeType-aware record emitter (skip UPDATE_BEFORE, emit
-    // DELETE as null-value tombstone). Medium-sized, ~200 LOC. Follow-up.
-    //
-    // Fluss-native consumers (Table API, Flink) read the PK-table snapshot directly today;
-    // the gap is in the Kafka-wire fetch translation only.
+    @Test
+    void compactTopic_consumerReadsChangelogAndSeesLatestPerKey() throws Exception {
+        String topic = "compact_cons_" + System.nanoTime();
+        Map<String, String> configs = new HashMap<>();
+        configs.put("cleanup.policy", "compact");
+        admin.createTopics(
+                        Collections.singletonList(
+                                new NewTopic(topic, 1, (short) 1).configs(configs)))
+                .all()
+                .get();
+
+        try (KafkaProducer<String, String> producer = new KafkaProducer<>(producerProps())) {
+            producer.send(new ProducerRecord<>(topic, "k1", "v1")).get();
+            producer.send(new ProducerRecord<>(topic, "k2", "a")).get();
+            producer.send(new ProducerRecord<>(topic, "k1", "v2")).get();
+            producer.send(new ProducerRecord<>(topic, "k1", "v3")).get();
+            producer.send(new ProducerRecord<>(topic, "k2", "b")).get();
+        }
+
+        // Consume the CDC changelog. A compacted-topic consumer sees the stream of updates
+        // (INSERT / UPDATE_AFTER rows), UPDATE_BEFORE records are filtered out by the fetch
+        // transcoder, DELETE records surface as null-value Kafka tombstones. Client-side we
+        // materialise last-writer-wins per key.
+        Map<String, String> latestByKey = new java.util.LinkedHashMap<>();
+        try (org.apache.kafka.clients.consumer.KafkaConsumer<String, String> consumer =
+                new org.apache.kafka.clients.consumer.KafkaConsumer<>(consumerProps())) {
+            consumer.assign(
+                    Collections.singletonList(
+                            new org.apache.kafka.common.TopicPartition(topic, 0)));
+            consumer.seekToBeginning(
+                    Collections.singletonList(
+                            new org.apache.kafka.common.TopicPartition(topic, 0)));
+            long deadline = System.currentTimeMillis() + 20_000;
+            int seen = 0;
+            while (System.currentTimeMillis() < deadline && seen < 5) {
+                org.apache.kafka.clients.consumer.ConsumerRecords<String, String> batch =
+                        consumer.poll(Duration.ofSeconds(1));
+                for (org.apache.kafka.clients.consumer.ConsumerRecord<String, String> r : batch) {
+                    latestByKey.put(r.key(), r.value());
+                    seen++;
+                }
+            }
+        }
+
+        assertThat(latestByKey).containsEntry("k1", "v3").containsEntry("k2", "b");
+    }
+
+    @Test
+    void compactTopic_nullValueDeletesKey() throws Exception {
+        String topic = "compact_del_" + System.nanoTime();
+        Map<String, String> configs = new HashMap<>();
+        configs.put("cleanup.policy", "compact");
+        admin.createTopics(
+                        Collections.singletonList(
+                                new NewTopic(topic, 1, (short) 1).configs(configs)))
+                .all()
+                .get();
+
+        try (KafkaProducer<String, String> producer = new KafkaProducer<>(producerProps())) {
+            producer.send(new ProducerRecord<>(topic, "k1", "v1")).get();
+            // Kafka tombstone: null value on a compacted topic means "delete this key".
+            producer.send(new ProducerRecord<>(topic, "k1", null)).get();
+        }
+
+        // Consume: expect the insert record followed by a null-value tombstone. A client
+        // materialising latest-per-key drops k1 on the tombstone.
+        java.util.List<org.apache.kafka.clients.consumer.ConsumerRecord<String, String>> seen =
+                new java.util.ArrayList<>();
+        try (org.apache.kafka.clients.consumer.KafkaConsumer<String, String> consumer =
+                new org.apache.kafka.clients.consumer.KafkaConsumer<>(consumerProps())) {
+            consumer.assign(
+                    Collections.singletonList(
+                            new org.apache.kafka.common.TopicPartition(topic, 0)));
+            consumer.seekToBeginning(
+                    Collections.singletonList(
+                            new org.apache.kafka.common.TopicPartition(topic, 0)));
+            long deadline = System.currentTimeMillis() + 15_000;
+            while (System.currentTimeMillis() < deadline && seen.size() < 2) {
+                for (org.apache.kafka.clients.consumer.ConsumerRecord<String, String> r :
+                        consumer.poll(Duration.ofSeconds(1))) {
+                    seen.add(r);
+                }
+            }
+        }
+        assertThat(seen).hasSize(2);
+        assertThat(seen.get(0).key()).isEqualTo("k1");
+        assertThat(seen.get(0).value()).isEqualTo("v1");
+        assertThat(seen.get(1).key()).isEqualTo("k1");
+        assertThat(seen.get(1).value()).isNull();
+    }
 
     @Test
     void defaultTopicIsLog_notPkTable() throws Exception {
