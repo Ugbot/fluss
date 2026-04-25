@@ -55,7 +55,6 @@ import java.util.Random;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Smoke IT that proves {@link EmbeddedConnectCluster} can stand up a real Kafka Connect worker in
@@ -162,11 +161,32 @@ class KafkaConnectHarnessSmokeITCase {
                         lines.size(), topic)
                 .containsExactlyElementsOf(lines);
 
-        // 6. Stop the connector cleanly; assert the herder no longer knows about it.
+        // 6. Stop the connector cleanly; the herder's connectorInfo() forgets it asynchronously,
+        // so poll for up to 5 s for connectorInfo() to either throw or return null.
         connect.stopConnector("file-source");
-        assertThatThrownBy(() -> connect.connectorInfo("file-source"))
-                .as("stopped connector should surface as not-found")
-                .isInstanceOf(Exception.class);
+        long deadlineNanos = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
+        boolean gone = false;
+        Throwable lastSeen = null;
+        while (System.nanoTime() < deadlineNanos) {
+            try {
+                org.apache.kafka.connect.runtime.rest.entities.ConnectorInfo after =
+                        connect.connectorInfo("file-source");
+                if (after == null) {
+                    gone = true;
+                    break;
+                }
+            } catch (Exception expected) {
+                lastSeen = expected;
+                gone = true;
+                break;
+            }
+            Thread.sleep(50);
+        }
+        assertThat(gone)
+                .as(
+                        "stopped connector should surface as not-found within 5 s (last error: %s)",
+                        lastSeen)
+                .isTrue();
 
         Path stateDir = connect.stateDir();
         connect.close();
