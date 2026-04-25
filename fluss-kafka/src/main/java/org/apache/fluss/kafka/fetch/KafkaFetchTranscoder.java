@@ -18,23 +18,31 @@
 package org.apache.fluss.kafka.fetch;
 
 import org.apache.fluss.annotation.Internal;
+import org.apache.fluss.catalog.CatalogService;
+import org.apache.fluss.catalog.CatalogServices;
+import org.apache.fluss.catalog.entities.SchemaVersionEntity;
 import org.apache.fluss.kafka.KafkaServerContext;
 import org.apache.fluss.kafka.catalog.KafkaTopicInfo;
 import org.apache.fluss.kafka.catalog.KafkaTopicsCatalog;
-import org.apache.fluss.kafka.metadata.KafkaDataTable;
+import org.apache.fluss.kafka.metrics.KafkaMetricGroup;
+import org.apache.fluss.kafka.sr.typed.CompiledCodecCache;
+import org.apache.fluss.kafka.sr.typed.FormatRegistry;
+import org.apache.fluss.kafka.sr.typed.FormatTranslator;
+import org.apache.fluss.kafka.sr.typed.RecordCodec;
 import org.apache.fluss.metadata.TableBucket;
+import org.apache.fluss.metadata.TableInfo;
+import org.apache.fluss.record.ChangeType;
 import org.apache.fluss.record.LogRecord;
 import org.apache.fluss.record.LogRecordBatch;
+import org.apache.fluss.record.LogRecordReadContext;
 import org.apache.fluss.record.LogRecords;
-import org.apache.fluss.row.InternalArray;
 import org.apache.fluss.row.InternalRow;
 import org.apache.fluss.rpc.entity.FetchLogResultForBucket;
 import org.apache.fluss.rpc.log.ClientFetchRequest;
 import org.apache.fluss.server.replica.ReplicaManager;
+import org.apache.fluss.utils.CloseableIterator;
 
 import org.apache.kafka.common.compress.Compression;
-import org.apache.kafka.common.header.Header;
-import org.apache.kafka.common.header.internals.RecordHeader;
 import org.apache.kafka.common.message.FetchRequestData;
 import org.apache.kafka.common.message.FetchRequestData.FetchPartition;
 import org.apache.kafka.common.message.FetchRequestData.FetchTopic;
@@ -49,11 +57,14 @@ import org.apache.kafka.common.record.TimestampType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.annotation.Nullable;
+
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
@@ -61,10 +72,19 @@ import java.util.concurrent.CompletableFuture;
 /**
  * Transcodes Kafka {@code FetchRequest}s into Fluss {@link ReplicaManager#fetchLogRecords} calls.
  *
- * <p>Each Fluss row in the returned {@link LogRecords} is read as the {@link KafkaDataTable} shape,
- * then packed into a Kafka {@link MemoryRecords} batch (RecordBatch v2, uncompressed). Per topic we
- * respect the catalog-stored timestamp type so the re-encoded batch looks the same on the wire as
- * what the producer sent.
+ * <p>Each Fluss row is rendered into a Kafka {@link MemoryRecords} batch (RecordBatch v2,
+ * uncompressed) by a {@link KafkaFetchCodec} chosen once per partition (design 0014 §5):
+ *
+ * <ul>
+ *   <li>{@link PassthroughKafkaFetchCodec} for the byte-copy path (default; what every topic gets
+ *       when {@code kafka.typed-tables.enabled=false}).
+ *   <li>{@link TypedKafkaFetchCodec} for {@code KAFKA_TYPED_AVRO/JSON/PROTOBUF} topics — calls the
+ *       compiled {@link RecordCodec} and prepends the 5-byte Confluent frame.
+ * </ul>
+ *
+ * <p>The driver here keeps the change-type filter ({@link ChangeType#UPDATE_BEFORE} skipped, {@link
+ * ChangeType#DELETE} → tombstone) and the {@link MemoryRecordsBuilder} bookkeeping; both codec
+ * impls share that loop.
  */
 @Internal
 public final class KafkaFetchTranscoder {
@@ -77,12 +97,28 @@ public final class KafkaFetchTranscoder {
     private final KafkaServerContext context;
     private final KafkaTopicsCatalog catalog;
     private final ReplicaManager replicaManager;
+    private final KafkaTopicRouteResolver routeResolver;
 
     public KafkaFetchTranscoder(
             KafkaServerContext context, KafkaTopicsCatalog catalog, ReplicaManager replicaManager) {
+        this(
+                context,
+                catalog,
+                replicaManager,
+                KafkaTopicRouteResolver.fromCatalogServices(
+                        context.typedTablesEnabled(), context.kafkaDatabase()));
+    }
+
+    /** Test-only constructor that takes a custom {@link KafkaTopicRouteResolver}. */
+    public KafkaFetchTranscoder(
+            KafkaServerContext context,
+            KafkaTopicsCatalog catalog,
+            ReplicaManager replicaManager,
+            KafkaTopicRouteResolver routeResolver) {
         this.context = context;
         this.catalog = catalog;
         this.replicaManager = replicaManager;
+        this.routeResolver = routeResolver;
     }
 
     public CompletableFuture<FetchResponseData> fetch(FetchRequestData request) {
@@ -94,7 +130,6 @@ public final class KafkaFetchTranscoder {
         // populate each shell directly without recomputing lookups.
         Map<TableBucket, PartitionContext> requested = new LinkedHashMap<>();
         Map<String, List<PartitionContext>> pendingByTopic = new LinkedHashMap<>();
-        Map<String, Errors> topicLevelErrors = new HashMap<>();
 
         for (FetchTopic topic : request.topics()) {
             String topicName = topic.topic();
@@ -106,7 +141,6 @@ public final class KafkaFetchTranscoder {
                 info = Optional.empty();
             }
             if (!info.isPresent()) {
-                topicLevelErrors.put(topicName, Errors.UNKNOWN_TOPIC_OR_PARTITION);
                 pendingByTopic.put(
                         topicName, buildErrorShells(topic, Errors.UNKNOWN_TOPIC_OR_PARTITION));
                 continue;
@@ -121,7 +155,7 @@ public final class KafkaFetchTranscoder {
             // RowType (record_key is non-null + PK) AND a different CDC log format
             // (PK tables default to ARROW). Passing TableInfo into LogRecordReadContext
             // .createReadContext lets the decoder format-branch on ARROW/INDEXED/COMPACTED.
-            org.apache.fluss.metadata.TableInfo tableInfo;
+            TableInfo tableInfo;
             try {
                 tableInfo = context.metadataManager().getTable(topicInfo.dataTablePath());
             } catch (Exception e) {
@@ -130,6 +164,11 @@ public final class KafkaFetchTranscoder {
                 pendingByTopic.put(topicName, buildErrorShells(topic, Errors.UNKNOWN_SERVER_ERROR));
                 continue;
             }
+
+            // Resolve the topic route once, then resolve a codec for that route. Per design
+            // 0014 §3 the decision is per-topic-per-call; cache on the PartitionContext.
+            KafkaTopicRoute route = routeResolver.resolve(topicName);
+            KafkaFetchCodec codec = pickCodec(route, topicInfo, tableInfo);
 
             List<PartitionContext> contexts = new ArrayList<>(topic.partitions().size());
             pendingByTopic.put(topicName, contexts);
@@ -140,7 +179,8 @@ public final class KafkaFetchTranscoder {
                                 tableInfo,
                                 fp.partition(),
                                 timestampType,
-                                fp.fetchOffset());
+                                fp.fetchOffset(),
+                                codec);
                 contexts.add(ctx);
                 requested.put(new TableBucket(topicInfo.flussTableId(), fp.partition()), ctx);
                 ctx.bucketRead =
@@ -191,6 +231,41 @@ public final class KafkaFetchTranscoder {
         return done;
     }
 
+    /**
+     * Pick the right {@link KafkaFetchCodec} for {@code route}. Falls back to passthrough on any
+     * resolution failure (codec compile, missing schema row, etc.) — design 0014 §8 says a typed
+     * codec failure during fetch is logged at ERROR and the partition serves passthrough bytes; the
+     * consumer will see Confluent-framed bytes verbatim because passthrough is byte-copy.
+     */
+    private KafkaFetchCodec pickCodec(
+            KafkaTopicRoute route, KafkaTopicInfo topicInfo, TableInfo tableInfo) {
+        if (!route.isTyped() || !context.typedTablesEnabled()) {
+            return new PassthroughKafkaFetchCodec(tableInfo);
+        }
+        try {
+            TypedCodecBinding binding =
+                    resolveTypedCodec(route, topicInfo, tableInfo, context.metrics());
+            if (binding == null) {
+                LOG.warn(
+                        "Typed codec unavailable for topic '{}' (format={}); falling back to"
+                                + " passthrough",
+                        topicInfo.topic(),
+                        route.catalogFormat());
+                return new PassthroughKafkaFetchCodec(tableInfo);
+            }
+            return new TypedKafkaFetchCodec(
+                    tableInfo, binding.codec, binding.confluentSchemaId, context.metrics());
+        } catch (Throwable t) {
+            LOG.error(
+                    "Typed-fetch codec resolution failed for topic '{}' (format={}); serving"
+                            + " passthrough bytes for this batch",
+                    topicInfo.topic(),
+                    route.catalogFormat(),
+                    t);
+            return new PassthroughKafkaFetchCodec(tableInfo);
+        }
+    }
+
     private static void assembleResponse(
             FetchResponseData response, Map<String, List<PartitionContext>> pending) {
         for (Map.Entry<String, List<PartitionContext>> entry : pending.entrySet()) {
@@ -208,7 +283,12 @@ public final class KafkaFetchTranscoder {
         for (FetchPartition p : topic.partitions()) {
             PartitionContext ctx =
                     new PartitionContext(
-                            null, null, p.partition(), TimestampType.CREATE_TIME, p.fetchOffset());
+                            null,
+                            null,
+                            p.partition(),
+                            TimestampType.CREATE_TIME,
+                            p.fetchOffset(),
+                            null);
             ctx.failWith(error, null);
             shells.add(ctx);
         }
@@ -217,27 +297,30 @@ public final class KafkaFetchTranscoder {
 
     /** Per-partition accumulator that owns both the input shape and the output response. */
     private static final class PartitionContext {
-        private final KafkaTopicInfo info;
-        private final @javax.annotation.Nullable org.apache.fluss.metadata.TableInfo tableInfo;
+        private final @Nullable KafkaTopicInfo info;
+        private final @Nullable TableInfo tableInfo;
         private final int partitionIndex;
         private final TimestampType timestampType;
         private final long fetchOffset;
+        private final @Nullable KafkaFetchCodec codec;
         private ClientFetchRequest.BucketRead bucketRead;
         private FetchLogResultForBucket result;
         private short errorCode = Errors.NONE.code();
         private String errorMessage;
 
         PartitionContext(
-                KafkaTopicInfo info,
-                @javax.annotation.Nullable org.apache.fluss.metadata.TableInfo tableInfo,
+                @Nullable KafkaTopicInfo info,
+                @Nullable TableInfo tableInfo,
                 int partitionIndex,
                 TimestampType timestampType,
-                long fetchOffset) {
+                long fetchOffset,
+                @Nullable KafkaFetchCodec codec) {
             this.info = info;
             this.tableInfo = tableInfo;
             this.partitionIndex = partitionIndex;
             this.timestampType = timestampType;
             this.fetchOffset = fetchOffset;
+            this.codec = codec;
         }
 
         void populateFrom(FetchLogResultForBucket r) {
@@ -267,12 +350,12 @@ public final class KafkaFetchTranscoder {
                 pd.setRecords(MemoryRecords.EMPTY);
                 return pd;
             }
-            if (result == null || result.records() == null) {
+            if (result == null || result.records() == null || codec == null) {
                 pd.setRecords(MemoryRecords.EMPTY);
                 return pd;
             }
             try {
-                pd.setRecords(encode(result.records(), fetchOffset, timestampType, tableInfo));
+                pd.setRecords(encode(result.records(), fetchOffset, timestampType, codec));
             } catch (Exception e) {
                 LOG.error(
                         "Fetch transcode failed for topic '{}' partition {}",
@@ -295,63 +378,15 @@ public final class KafkaFetchTranscoder {
             LogRecords flussRecords,
             long baseOffset,
             TimestampType timestampType,
-            @javax.annotation.Nullable org.apache.fluss.metadata.TableInfo tableInfo) {
-        // Use the topic's real schema when available — compacted topics have record_key as a
-        // non-null PK column, AND PK tables default to LogFormat.ARROW for their CDC log.
-        // Decoding with the wrong schema / format produces bogus field offsets ("corrupt
-        // message" on the Kafka client).
-        org.apache.fluss.metadata.Schema effectiveSchema =
-                tableInfo != null ? tableInfo.getSchema() : KafkaDataTable.schema();
-        org.apache.fluss.metadata.SchemaGetter schemaGetter =
-                new org.apache.fluss.metadata.SchemaGetter() {
-                    @Override
-                    public org.apache.fluss.metadata.Schema getSchema(int schemaId) {
-                        return effectiveSchema;
-                    }
-
-                    @Override
-                    public java.util.concurrent.CompletableFuture<
-                                    org.apache.fluss.metadata.SchemaInfo>
-                            getSchemaInfoAsync(int schemaId) {
-                        return java.util.concurrent.CompletableFuture.completedFuture(
-                                new org.apache.fluss.metadata.SchemaInfo(
-                                        effectiveSchema, schemaId));
-                    }
-
-                    @Override
-                    public org.apache.fluss.metadata.SchemaInfo getLatestSchemaInfo() {
-                        return new org.apache.fluss.metadata.SchemaInfo(effectiveSchema, 1);
-                    }
-
-                    @Override
-                    public void release() {}
-                };
-
+            KafkaFetchCodec codec) {
         // Walk once to count bytes; we'll allocate a single buffer slightly larger than needed.
-        List<RowView> views = new ArrayList<>();
+        List<KafkaRecordView> views = new ArrayList<>();
         long firstOffset = -1L;
         long maxTimestamp = RecordBatch.NO_TIMESTAMP;
         long estimatedBytes = 512;
         for (LogRecordBatch batch : flussRecords.batches()) {
-            // LogRecordReadContext.createReadContext format-branches on
-            // tableInfo.getTableConfig().getLogFormat() — returns an ARROW-capable,
-            // INDEXED-capable, or COMPACTED-capable read context uniformly. Iterating with
-            // batch.records(ctx) yields CloseableIterator<LogRecord> for every format;
-            // LogRecord.getRow() returns InternalRow our existing row-inspection code already
-            // handles. When tableInfo is null (error path before we could load it) fall back
-            // to INDEXED + KafkaDataTable.schema() so legacy log-only callers still work.
-            org.apache.fluss.record.LogRecordReadContext readCtx;
-            if (tableInfo != null) {
-                readCtx =
-                        org.apache.fluss.record.LogRecordReadContext.createReadContext(
-                                tableInfo, /* readFromRemote */ false, null, schemaGetter);
-            } else {
-                readCtx =
-                        org.apache.fluss.record.LogRecordReadContext.createIndexedReadContext(
-                                effectiveSchema.getRowType(), batch.schemaId(), schemaGetter);
-            }
-            try (org.apache.fluss.utils.CloseableIterator<LogRecord> iter =
-                    batch.records(readCtx)) {
+            LogRecordReadContext readCtx = codec.readContext(batch.schemaId());
+            try (CloseableIterator<LogRecord> iter = batch.records(readCtx)) {
                 while (iter.hasNext()) {
                     LogRecord record = iter.next();
                     if (firstOffset < 0) {
@@ -362,13 +397,18 @@ public final class KafkaFetchTranscoder {
                     //   APPEND_ONLY + UPDATE_AFTER → regular record (current value wins)
                     //   UPDATE_BEFORE              → skip (redundant with its UPDATE_AFTER)
                     //   DELETE                     → emit with null value (Kafka tombstone)
-                    org.apache.fluss.record.ChangeType changeType = record.getChangeType();
-                    if (changeType == org.apache.fluss.record.ChangeType.UPDATE_BEFORE) {
+                    ChangeType changeType = record.getChangeType();
+                    if (changeType == ChangeType.UPDATE_BEFORE) {
                         continue;
                     }
                     InternalRow row = record.getRow();
-                    boolean isDelete = changeType == org.apache.fluss.record.ChangeType.DELETE;
-                    RowView view = RowView.of(row, record.logOffset(), isDelete);
+                    KafkaRecordView view =
+                            codec.rowToKafkaRecord(row, changeType, record.logOffset());
+                    if (view == null) {
+                        // Codec elected to skip the row (already logged); keep the rest of the
+                        // batch healthy.
+                        continue;
+                    }
                     if (view.timestamp > maxTimestamp) {
                         maxTimestamp = view.timestamp;
                     }
@@ -394,7 +434,7 @@ public final class KafkaFetchTranscoder {
                         timestampType,
                         firstOffset);
         try {
-            for (RowView view : views) {
+            for (KafkaRecordView view : views) {
                 builder.appendWithOffset(
                         view.offset, view.timestamp, view.key, view.value, view.headers);
             }
@@ -404,69 +444,119 @@ public final class KafkaFetchTranscoder {
         }
     }
 
-    /** Decoded view of a single Fluss row in the Kafka-data-table shape. */
-    private static final class RowView {
-        final long offset;
-        final long timestamp;
-        final byte[] key;
-        final byte[] value;
-        final Header[] headers;
-
-        private RowView(long offset, long timestamp, byte[] key, byte[] value, Header[] headers) {
-            this.offset = offset;
-            this.timestamp = timestamp;
-            this.key = key;
-            this.value = value;
-            this.headers = headers;
+    /**
+     * Resolve the typed codec + Confluent id for a typed-format topic. Returns {@code null} when
+     * the catalog lookup or codec compile fails; the caller falls back to passthrough.
+     */
+    @Nullable
+    public static TypedCodecBinding resolveTypedCodec(
+            KafkaTopicRoute route,
+            KafkaTopicInfo topicInfo,
+            TableInfo tableInfo,
+            @Nullable KafkaMetricGroup metrics) {
+        Optional<CatalogService> maybeCatalog = CatalogServices.current();
+        if (!maybeCatalog.isPresent()) {
+            return null;
         }
-
-        static RowView of(InternalRow row, long logOffset) {
-            return of(row, logOffset, false);
-        }
-
-        static RowView of(InternalRow row, long logOffset, boolean tombstone) {
-            // Columns: 0=record_key (BYTES), 1=payload (BYTES), 2=event_time (TIMESTAMP_LTZ),
-            //          3=headers (ARRAY<ROW<name STRING, value BYTES>>).
-            byte[] key = row.isNullAt(0) ? null : row.getBytes(0);
-            byte[] value = tombstone || row.isNullAt(1) ? null : row.getBytes(1);
-            long ts = row.getTimestampLtz(2, 3).toEpochMicros() / 1000L;
-            Header[] headers;
-            if (row.isNullAt(3)) {
-                headers = Record.EMPTY_HEADERS;
-            } else {
-                InternalArray arr = row.getArray(3);
-                headers = new Header[arr.size()];
-                for (int i = 0; i < arr.size(); i++) {
-                    if (arr.isNullAt(i)) {
-                        headers[i] = new RecordHeader((String) null, null);
-                        continue;
-                    }
-                    InternalRow headerRow = arr.getRow(i, 2);
-                    String name = headerRow.isNullAt(0) ? null : headerRow.getString(0).toString();
-                    byte[] hval = headerRow.isNullAt(1) ? null : headerRow.getBytes(1);
-                    headers[i] = new RecordHeader(name, hval);
-                }
+        CatalogService catalog = maybeCatalog.get();
+        // Pick the latest registered subject version for this topic. T.6 ('s extension to
+        // RecordNameStrategy) is out of scope here; T.2 assumes TopicNameStrategy: one schema
+        // per topic value. The latest subject is the one new producers should be framing
+        // against.
+        SchemaVersionEntity entity;
+        try {
+            List<SchemaVersionEntity> versions =
+                    catalog.listSchemaVersions(extractKafkaDatabase(tableInfo), topicInfo.topic());
+            if (versions.isEmpty()) {
+                return null;
             }
-            return new RowView(logOffset, ts, key, value, headers);
+            entity = versions.get(versions.size() - 1);
+        } catch (Exception e) {
+            LOG.warn(
+                    "Catalog read failed when resolving typed codec for topic '{}'",
+                    topicInfo.topic(),
+                    e);
+            return null;
         }
-
-        int estimatedSize() {
-            int size = 32; // record overhead approximation
-            size += key == null ? 0 : key.length;
-            size += value == null ? 0 : value.length;
-            if (headers != null) {
-                for (Header h : headers) {
-                    size += 16;
-                    size += h.key() == null ? 0 : h.key().length();
-                    size += h.value() == null ? 0 : h.value().length;
-                }
-            }
-            return size;
+        FormatTranslator translator = FormatRegistry.instance().translator(entity.format());
+        if (translator == null) {
+            LOG.error(
+                    "No FormatTranslator registered for format '{}' on topic '{}'",
+                    entity.format(),
+                    topicInfo.topic());
+            return null;
+        }
+        try {
+            CompiledCodecCache cache = FormatRegistry.instance().codecCache();
+            int confluentId = entity.confluentId();
+            String formatId = route.formatId() == null ? entity.format() : route.formatId();
+            RecordCodec codec =
+                    cache.getOrCompile(
+                            tableInfo.getTableId(),
+                            confluentId,
+                            () -> compileCodec(formatId, entity, translator, tableInfo, metrics));
+            return new TypedCodecBinding(codec, confluentId);
+        } catch (RuntimeException e) {
+            LOG.error(
+                    "Codec compile failed for topic '{}' format='{}'",
+                    topicInfo.topic(),
+                    entity.format(),
+                    e);
+            return null;
         }
     }
 
-    /** Alias for the empty-headers sentinel from Kafka's {@code Record} interface. */
-    private static final class Record {
-        static final Header[] EMPTY_HEADERS = new Header[0];
+    /**
+     * Run the format-specific codec compiler. Wired into {@link CompiledCodecCache#getOrCompile} so
+     * a successful compile is cached for the life of the cluster.
+     */
+    private static RecordCodec compileCodec(
+            String formatId,
+            SchemaVersionEntity entity,
+            FormatTranslator translator,
+            TableInfo tableInfo,
+            @Nullable KafkaMetricGroup metrics) {
+        if (metrics != null) {
+            metrics.onCodecCompile();
+            // Keep the gauge supplier pinned to the live cache. Idempotent.
+            metrics.bindCodecCacheSize(() -> FormatRegistry.instance().codecCache().size());
+        }
+        org.apache.fluss.types.RowType rowType = translator.translateTo(entity.schemaText());
+        short version = (short) Math.min(Short.MAX_VALUE, Math.max(0, entity.version()));
+        switch (formatId.toUpperCase(Locale.ROOT)) {
+            case "AVRO":
+                return org.apache.fluss.kafka.sr.typed.AvroCodecCompiler.compile(
+                        new org.apache.avro.Schema.Parser().parse(entity.schemaText()),
+                        rowType,
+                        version);
+            case "JSON":
+                return org.apache.fluss.kafka.sr.typed.JsonCodecCompiler.compile(rowType, version);
+            case "PROTOBUF":
+                return org.apache.fluss.kafka.sr.typed.ProtobufCodecCompiler.compile(
+                        rowType, version);
+            default:
+                throw new IllegalArgumentException(
+                        "Unsupported codec format: "
+                                + formatId
+                                + " (table "
+                                + tableInfo.getTablePath()
+                                + ")");
+        }
+    }
+
+    /** Extract the Kafka database from {@code tableInfo} (the table's namespace/database). */
+    private static String extractKafkaDatabase(TableInfo tableInfo) {
+        return tableInfo.getTablePath().getDatabaseName();
+    }
+
+    /** Pair returned by {@link #resolveTypedCodec}. */
+    public static final class TypedCodecBinding {
+        public final RecordCodec codec;
+        public final int confluentSchemaId;
+
+        public TypedCodecBinding(RecordCodec codec, int confluentSchemaId) {
+            this.codec = codec;
+            this.confluentSchemaId = confluentSchemaId;
+        }
     }
 }

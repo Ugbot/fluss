@@ -57,8 +57,18 @@ public final class FormatRegistry {
 
     private final ConcurrentMap<String, FormatTranslator> translators = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, CompatibilityChecker> checkers = new ConcurrentHashMap<>();
+    private final CompiledCodecCache codecCache = new CompiledCodecCache();
 
     private FormatRegistry() {}
+
+    /**
+     * The shared codec cache used by the typed Produce/Fetch hot path (design 0014). One instance
+     * per registry; the registry is a process-singleton so this is effectively the cluster-wide
+     * cache for compiled {@link RecordCodec}s.
+     */
+    public CompiledCodecCache codecCache() {
+        return codecCache;
+    }
 
     /** Global registry, seeded from {@link ServiceLoader} on first access. */
     public static FormatRegistry instance() {

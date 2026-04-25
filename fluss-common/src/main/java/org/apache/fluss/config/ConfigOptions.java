@@ -2234,6 +2234,27 @@ public class ConfigOptions {
                                     + "required user_<name>=\"<password>\";'.");
 
     /**
+     * Whether Kafka topics with a registered typed format ({@code KAFKA_TYPED_AVRO}, {@code
+     * KAFKA_TYPED_JSON}, {@code KAFKA_TYPED_PROTOBUF}) take the typed Produce/Fetch hot path
+     * (Confluent frame stripping + compiled codec decode/encode into typed columns). When {@code
+     * false} (the default), every topic — including ones whose catalog row carries a typed format —
+     * falls back to the byte-copy passthrough path. The flag is read once at server start; toggling
+     * requires a restart. See design 0014.
+     */
+    public static final ConfigOption<Boolean> KAFKA_TYPED_TABLES_ENABLED =
+            key("kafka.typed-tables.enabled")
+                    .booleanType()
+                    .defaultValue(false)
+                    .withDescription(
+                            "Whether the Kafka bolt-on routes registered typed-format topics "
+                                    + "(KAFKA_TYPED_AVRO/JSON/PROTOBUF) through the typed "
+                                    + "Produce/Fetch hot path that strips the Confluent frame "
+                                    + "and decodes / encodes via the compiled codec. Defaults to "
+                                    + "false; with the flag off, every topic takes the byte-copy "
+                                    + "passthrough path regardless of its catalog format. Read "
+                                    + "once at server start.");
+
+    /**
      * Whether the Iceberg REST Catalog HTTP endpoint is started on the coordinator leader. Second
      * projection over the Fluss catalog service, alongside the Kafka Schema Registry. Phase E
      * preview: implements {@code GET /v1/config}, {@code GET /v1/namespaces}, {@code POST

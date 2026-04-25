@@ -21,7 +21,12 @@ import org.apache.fluss.annotation.Internal;
 import org.apache.fluss.kafka.KafkaServerContext;
 import org.apache.fluss.kafka.catalog.KafkaTopicInfo;
 import org.apache.fluss.kafka.catalog.KafkaTopicsCatalog;
+import org.apache.fluss.kafka.fetch.KafkaFetchTranscoder;
+import org.apache.fluss.kafka.fetch.KafkaTopicRoute;
+import org.apache.fluss.kafka.fetch.KafkaTopicRouteResolver;
 import org.apache.fluss.kafka.metadata.KafkaDataTable;
+import org.apache.fluss.kafka.metrics.KafkaMetricGroup;
+import org.apache.fluss.kafka.sr.typed.RecordCodec;
 import org.apache.fluss.memory.UnmanagedPagedOutputView;
 import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.metadata.TableInfo;
@@ -82,12 +87,28 @@ public final class KafkaProduceTranscoder {
     private final KafkaServerContext context;
     private final KafkaTopicsCatalog catalog;
     private final ReplicaManager replicaManager;
+    private final KafkaTopicRouteResolver routeResolver;
 
     public KafkaProduceTranscoder(
             KafkaServerContext context, KafkaTopicsCatalog catalog, ReplicaManager replicaManager) {
+        this(
+                context,
+                catalog,
+                replicaManager,
+                KafkaTopicRouteResolver.fromCatalogServices(
+                        context.typedTablesEnabled(), context.kafkaDatabase()));
+    }
+
+    /** Test-only constructor that takes a custom {@link KafkaTopicRouteResolver}. */
+    public KafkaProduceTranscoder(
+            KafkaServerContext context,
+            KafkaTopicsCatalog catalog,
+            ReplicaManager replicaManager,
+            KafkaTopicRouteResolver routeResolver) {
         this.context = context;
         this.catalog = catalog;
         this.replicaManager = replicaManager;
+        this.routeResolver = routeResolver;
     }
 
     /** Main entry point. Returns a future for the aggregated Kafka response. */
@@ -168,6 +189,38 @@ public final class KafkaProduceTranscoder {
                             fieldTypes[i], BinaryRow.BinaryRowFormat.INDEXED);
         }
 
+        // Resolve the topic's typed-vs-passthrough route once per Produce call. When the
+        // typed-tables feature flag is off the resolver is wired to alwaysPassthrough() so this
+        // is a no-op string compare. Codec resolution is lazy: we only ask for it when the
+        // route is typed AND the first record arrives — avoids loading the catalog entry on
+        // every batch.
+        KafkaTopicRoute route = routeResolver.resolve(topicData.name());
+        TypedProduceBinding typedBinding = null;
+        if (route.isTyped() && context.typedTablesEnabled()) {
+            try {
+                KafkaFetchTranscoder.TypedCodecBinding fetchBinding =
+                        KafkaFetchTranscoder.resolveTypedCodec(
+                                route, info, tableInfo, context.metrics());
+                if (fetchBinding == null) {
+                    LOG.warn(
+                            "Typed Produce codec unavailable for topic '{}' (format={});"
+                                    + " falling back to passthrough",
+                            info.topic(),
+                            route.catalogFormat());
+                } else {
+                    typedBinding =
+                            new TypedProduceBinding(
+                                    fetchBinding.codec, fetchBinding.confluentSchemaId);
+                }
+            } catch (Throwable t) {
+                LOG.error(
+                        "Typed Produce codec resolution failed for topic '{}'; falling back to"
+                                + " passthrough for this batch",
+                        info.topic(),
+                        t);
+            }
+        }
+
         boolean compacted = tableInfo.hasPrimaryKey();
         List<CompletableFuture<PartitionProduceResponse>> partitionFutures = new ArrayList<>();
         for (PartitionProduceData partition : topicData.partitionData()) {
@@ -181,7 +234,8 @@ public final class KafkaProduceTranscoder {
                                 valueWriters,
                                 partition,
                                 acks,
-                                timeoutMs));
+                                timeoutMs,
+                                typedBinding));
             } else {
                 partitionFutures.add(
                         producePartition(
@@ -192,7 +246,8 @@ public final class KafkaProduceTranscoder {
                                 valueWriters,
                                 partition,
                                 acks,
-                                timeoutMs));
+                                timeoutMs,
+                                typedBinding));
             }
         }
         return CompletableFuture.allOf(partitionFutures.toArray(new CompletableFuture[0]))
@@ -213,7 +268,8 @@ public final class KafkaProduceTranscoder {
             BinaryWriter.ValueWriter[] valueWriters,
             PartitionProduceData partition,
             short acks,
-            int timeoutMs) {
+            int timeoutMs,
+            @javax.annotation.Nullable TypedProduceBinding typedBinding) {
         int partitionIndex = partition.index();
         PartitionProduceResponse response = new PartitionProduceResponse().setIndex(partitionIndex);
 
@@ -225,7 +281,24 @@ public final class KafkaProduceTranscoder {
 
         MemoryLogRecords flussRecords;
         try {
-            flussRecords = buildFlussRecords(kafkaRecords, schemaId, rowType, valueWriters, info);
+            flussRecords =
+                    buildFlussRecords(
+                            kafkaRecords, schemaId, rowType, valueWriters, info, typedBinding);
+        } catch (InvalidProduceRecordException invalid) {
+            // Per design 0014 §8: Confluent-frame failures map to per-record codes; we narrow
+            // the partition-level error code to the specific Errors enum the validator chose
+            // (CORRUPT_MESSAGE for short / malformed frames, INVALID_RECORD for magic-byte and
+            // schema-id mismatches). Logged at DEBUG since these are expected from non-SR
+            // producers misrouted to a typed topic.
+            LOG.debug(
+                    "Typed Produce frame validation failed for topic '{}' partition {}: {}",
+                    info.topic(),
+                    partitionIndex,
+                    invalid.getMessage());
+            return CompletableFuture.completedFuture(
+                    response.setErrorCode(invalid.error.code())
+                            .setErrorMessage(invalid.getMessage())
+                            .setBaseOffset(-1));
         } catch (Exception e) {
             LOG.error(
                     "Transcode failed for topic '{}' partition {}",
@@ -276,7 +349,8 @@ public final class KafkaProduceTranscoder {
             BinaryWriter.ValueWriter[] valueWriters,
             PartitionProduceData partition,
             short acks,
-            int timeoutMs) {
+            int timeoutMs,
+            @javax.annotation.Nullable TypedProduceBinding typedBinding) {
         int partitionIndex = partition.index();
         PartitionProduceResponse response = new PartitionProduceResponse().setIndex(partitionIndex);
 
@@ -288,7 +362,20 @@ public final class KafkaProduceTranscoder {
 
         org.apache.fluss.record.KvRecordBatch kvBatch;
         try {
-            kvBatch = buildFlussKvRecords(kafkaRecords, schemaId, rowType, valueWriters);
+            kvBatch =
+                    buildFlussKvRecords(
+                            kafkaRecords, schemaId, rowType, valueWriters, typedBinding);
+        } catch (InvalidProduceRecordException invalid) {
+            LOG.debug(
+                    "Typed Produce frame validation failed for compacted topic '{}' partition"
+                            + " {}: {}",
+                    info.topic(),
+                    partitionIndex,
+                    invalid.getMessage());
+            return CompletableFuture.completedFuture(
+                    response.setErrorCode(invalid.error.code())
+                            .setErrorMessage(invalid.getMessage())
+                            .setBaseOffset(-1));
         } catch (Exception e) {
             LOG.error(
                     "Transcode failed for compacted topic '{}' partition {}",
@@ -336,7 +423,8 @@ public final class KafkaProduceTranscoder {
             MemoryRecords kafkaRecords,
             int schemaId,
             RowType rowType,
-            BinaryWriter.ValueWriter[] valueWriters)
+            BinaryWriter.ValueWriter[] valueWriters,
+            @javax.annotation.Nullable TypedProduceBinding typedBinding)
             throws Exception {
         UnmanagedPagedOutputView outputView = new UnmanagedPagedOutputView(INITIAL_SEGMENT_BYTES);
         org.apache.fluss.record.KvRecordBatchBuilder builder =
@@ -349,6 +437,7 @@ public final class KafkaProduceTranscoder {
         DataType[] fieldTypes = rowType.getChildren().toArray(new DataType[0]);
         IndexedRowWriter rowWriter = new IndexedRowWriter(rowType);
         IndexedRow row = new IndexedRow(fieldTypes);
+        KafkaMetricGroup metrics = context.metrics();
 
         long writerId = -1L;
         int baseSequence = -1;
@@ -362,7 +451,10 @@ public final class KafkaProduceTranscoder {
                 byte[] key =
                         kafkaRecord.hasKey() ? byteBufferToBytes(kafkaRecord.key()) : new byte[0];
                 if (kafkaRecord.hasValue()) {
-                    writeRow(kafkaRecord, rowWriter, valueWriters);
+                    writeRow(kafkaRecord, rowWriter, valueWriters, typedBinding);
+                    if (metrics != null && typedBinding != null) {
+                        metrics.onTypedProduce(1);
+                    }
                     row.pointTo(rowWriter.segment(), 0, rowWriter.position());
                     builder.append(key, row);
                 } else {
@@ -412,7 +504,8 @@ public final class KafkaProduceTranscoder {
             int schemaId,
             RowType rowType,
             BinaryWriter.ValueWriter[] valueWriters,
-            KafkaTopicInfo info)
+            KafkaTopicInfo info,
+            @javax.annotation.Nullable TypedProduceBinding typedBinding)
             throws Exception {
         UnmanagedPagedOutputView outputView = new UnmanagedPagedOutputView(INITIAL_SEGMENT_BYTES);
         MemoryLogRecordsIndexedBuilder builder =
@@ -422,6 +515,7 @@ public final class KafkaProduceTranscoder {
         DataType[] fieldTypes = rowType.getChildren().toArray(new DataType[0]);
         IndexedRowWriter rowWriter = new IndexedRowWriter(rowType);
         IndexedRow row = new IndexedRow(fieldTypes);
+        KafkaMetricGroup metrics = context.metrics();
 
         long writerId = -1L;
         int baseSequence = -1;
@@ -432,7 +526,10 @@ public final class KafkaProduceTranscoder {
                 baseSequence = batch.baseSequence();
             }
             for (Record kafkaRecord : batch) {
-                writeRow(kafkaRecord, rowWriter, valueWriters);
+                writeRow(kafkaRecord, rowWriter, valueWriters, typedBinding);
+                if (metrics != null && typedBinding != null) {
+                    metrics.onTypedProduce(1);
+                }
                 row.pointTo(rowWriter.segment(), 0, rowWriter.position());
                 builder.append(ChangeType.APPEND_ONLY, row);
             }
@@ -450,17 +547,29 @@ public final class KafkaProduceTranscoder {
     private void writeRow(
             Record kafkaRecord,
             IndexedRowWriter rowWriter,
-            BinaryWriter.ValueWriter[] valueWriters) {
+            BinaryWriter.ValueWriter[] valueWriters,
+            @javax.annotation.Nullable TypedProduceBinding typedBinding) {
         rowWriter.reset();
 
         // Delegating through the nullable ValueWriter wrapper keeps the sequential IndexedRow
         // writer's variable-length-pointer list consistent with its null bitmap.
         valueWriters[0].writeValue(
                 rowWriter, 0, kafkaRecord.hasKey() ? byteBufferToBytes(kafkaRecord.key()) : null);
-        valueWriters[1].writeValue(
-                rowWriter,
-                1,
-                kafkaRecord.hasValue() ? byteBufferToBytes(kafkaRecord.value()) : null);
+
+        // Column 1 is the value column. For passthrough topics this is the raw Kafka bytes; for
+        // typed topics (design 0014 §4) we strip the 5-byte Confluent frame, validate the
+        // schemaId is the one this codec was compiled for, and write the body. Until T.3
+        // alters the table layout to expose typed value columns the body lives in the same
+        // BYTES column the passthrough path writes — what changes is the validation + future
+        // codec.decodeInto wiring (gated by the codec's RowType field-count matching the
+        // table's typed-column count).
+        byte[] valueBytes = kafkaRecord.hasValue() ? byteBufferToBytes(kafkaRecord.value()) : null;
+        if (typedBinding != null && valueBytes != null) {
+            byte[] body = stripConfluentFrame(valueBytes, typedBinding.confluentSchemaId);
+            valueWriters[1].writeValue(rowWriter, 1, body);
+        } else {
+            valueWriters[1].writeValue(rowWriter, 1, valueBytes);
+        }
 
         long ts = kafkaRecord.timestamp();
         if (ts == RecordBatch.NO_TIMESTAMP) {
@@ -481,6 +590,66 @@ public final class KafkaProduceTranscoder {
                                 h.value());
             }
             valueWriters[3].writeValue(rowWriter, 3, new GenericArray(rows));
+        }
+    }
+
+    /**
+     * Strip the 5-byte Confluent wire frame ({@code [0x00][int32 schemaId]}) and return the body.
+     * Throws {@link InvalidProduceRecordException} when the frame is malformed (length &lt; 5,
+     * magic byte ≠ 0x00) or when the framed schema id doesn't match the codec the topic was
+     * resolved against — per design 0014 §8 the caller turns these into per-record {@link
+     * Errors#CORRUPT_MESSAGE} / {@link Errors#INVALID_RECORD} responses.
+     *
+     * <p>Note that T.2 strips and validates the frame even when the row format hasn't yet been
+     * altered to typed columns (T.3); the body bytes are written into the payload column. Once T.3
+     * alters the layout the {@code typedBinding.codec.decodeInto(buf, offset, length, rowWriter)}
+     * call replaces the body byte-write — the frame strip + validation logic stays here.
+     */
+    private static byte[] stripConfluentFrame(byte[] framed, int expectedSchemaId) {
+        if (framed.length < 5) {
+            throw new InvalidProduceRecordException(
+                    Errors.CORRUPT_MESSAGE,
+                    "Confluent frame shorter than 5 bytes: length=" + framed.length);
+        }
+        if (framed[0] != 0x00) {
+            throw new InvalidProduceRecordException(
+                    Errors.INVALID_RECORD,
+                    "Confluent magic byte expected 0x00, got 0x"
+                            + String.format("%02X", framed[0] & 0xFF));
+        }
+        int frameId =
+                ((framed[1] & 0xFF) << 24)
+                        | ((framed[2] & 0xFF) << 16)
+                        | ((framed[3] & 0xFF) << 8)
+                        | (framed[4] & 0xFF);
+        if (frameId != expectedSchemaId) {
+            throw new InvalidProduceRecordException(
+                    Errors.INVALID_RECORD,
+                    "Schema id mismatch: framed=" + frameId + " expected=" + expectedSchemaId);
+        }
+        byte[] body = new byte[framed.length - 5];
+        System.arraycopy(framed, 5, body, 0, body.length);
+        return body;
+    }
+
+    /** Codec + Confluent id pair carried through the produce path for typed topics. */
+    static final class TypedProduceBinding {
+        final RecordCodec codec;
+        final int confluentSchemaId;
+
+        TypedProduceBinding(RecordCodec codec, int confluentSchemaId) {
+            this.codec = codec;
+            this.confluentSchemaId = confluentSchemaId;
+        }
+    }
+
+    /** Per-record produce failure that should map to a Kafka error code (no batch failure). */
+    static final class InvalidProduceRecordException extends RuntimeException {
+        final Errors error;
+
+        InvalidProduceRecordException(Errors error, String message) {
+            super(message);
+            this.error = error;
         }
     }
 

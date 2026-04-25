@@ -87,6 +87,20 @@ public final class CompiledCodecCache {
                 });
     }
 
+    /**
+     * Convenience overload that packs {@code (tableId, schemaId)} into a key and delegates to
+     * {@link #get(long, Supplier)}. T.2 hot-path entry point; mirrors the bolt-on call sites that
+     * always know the {@code tableId} / {@code schemaId} pair separately.
+     *
+     * @param tableId the Fluss table id
+     * @param schemaId the Confluent global schema id
+     * @param supplier codec factory; invoked at most once per {@code (tableId, schemaId)}
+     * @return the cached or freshly compiled codec
+     */
+    public RecordCodec getOrCompile(long tableId, int schemaId, Supplier<RecordCodec> supplier) {
+        return get(packKey(tableId, schemaId), supplier);
+    }
+
     /** Current number of cached codecs. Useful for tests and metrics. */
     public int size() {
         return codecs.size();

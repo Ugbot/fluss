@@ -18,7 +18,10 @@
 package org.apache.fluss.kafka.metrics;
 
 import org.apache.fluss.annotation.Internal;
+import org.apache.fluss.metrics.Counter;
 import org.apache.fluss.metrics.Gauge;
+import org.apache.fluss.metrics.MeterView;
+import org.apache.fluss.metrics.ThreadSafeSimpleCounter;
 import org.apache.fluss.metrics.groups.AbstractMetricGroup;
 import org.apache.fluss.metrics.registry.MetricRegistry;
 import org.apache.fluss.rpc.metrics.BoltOnMetricGroup;
@@ -31,6 +34,7 @@ import javax.annotation.Nullable;
 import java.util.Locale;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.function.IntSupplier;
 import java.util.function.ToIntFunction;
 
 /**
@@ -61,6 +65,20 @@ public final class KafkaMetricGroup extends BoltOnMetricGroup {
      */
     private final ConcurrentMap<String, Boolean> memberCountRegistered = new ConcurrentHashMap<>();
 
+    // Typed-tables hot-path counters (design 0014). Cluster-wide only.
+    private final Counter typedProduceRecords = new ThreadSafeSimpleCounter();
+    private final Counter typedFetchRecords = new ThreadSafeSimpleCounter();
+    private final Counter codecCompiles = new ThreadSafeSimpleCounter();
+
+    /**
+     * Lazily-bound supplier that reports {@link
+     * org.apache.fluss.kafka.sr.typed.CompiledCodecCache#size()}; pinned in {@link
+     * #bindCodecCacheSize(IntSupplier)} so a tablet server with no SR can register a no-op gauge
+     * (the codec cache is process-wide but its size is meaningful only after T.2 compiles
+     * something).
+     */
+    private volatile IntSupplier codecCacheSizeSupplier = () -> 0;
+
     public KafkaMetricGroup(
             MetricRegistry registry,
             AbstractMetricGroup parent,
@@ -90,6 +108,16 @@ public final class KafkaMetricGroup extends BoltOnMetricGroup {
                 perGroupEnabled ? groupMaxCardinality : 0);
         this.perTopicEnabled = perTopicEnabled;
         this.perGroupEnabled = perGroupEnabled;
+
+        // Typed-tables hot-path metrics (design 0014). The cache-size gauge reads through a
+        // mutable supplier so callers can wire the live CompiledCodecCache after this group is
+        // constructed (avoids a circular dependency in the bolt-on bring-up order).
+        meter(BoltOnMetricNames.TYPED_PRODUCE_RATE, new MeterView(typedProduceRecords));
+        meter(BoltOnMetricNames.TYPED_FETCH_RATE, new MeterView(typedFetchRecords));
+        meter(BoltOnMetricNames.CODEC_COMPILE_RATE, new MeterView(codecCompiles));
+        gauge(
+                BoltOnMetricNames.CODEC_CACHE_SIZE,
+                (Gauge<Integer>) () -> codecCacheSizeSupplier.getAsInt());
     }
 
     @Override
@@ -219,6 +247,51 @@ public final class KafkaMetricGroup extends BoltOnMetricGroup {
                 }
             }
         }
+    }
+
+    // ---- typed-tables hot-path helpers (design 0014) -------------------
+
+    /** Increment the typed-Produce records counter by {@code records} (no-op when {@code <= 0}). */
+    public void onTypedProduce(long records) {
+        if (records > 0) {
+            typedProduceRecords.inc(records);
+        }
+    }
+
+    /** Increment the typed-Fetch records counter by {@code records} (no-op when {@code <= 0}). */
+    public void onTypedFetch(long records) {
+        if (records > 0) {
+            typedFetchRecords.inc(records);
+        }
+    }
+
+    /** Record exactly one codec compile event (a Janino compile, not a cache hit). */
+    public void onCodecCompile() {
+        codecCompiles.inc();
+    }
+
+    /**
+     * Bind the {@link org.apache.fluss.kafka.sr.typed.CompiledCodecCache} that the {@code
+     * codecCacheSize} gauge should read from. Idempotent: the gauge polls the supplier on every
+     * scrape, so callers may rebind to update the source.
+     */
+    public void bindCodecCacheSize(IntSupplier supplier) {
+        this.codecCacheSizeSupplier = supplier == null ? () -> 0 : supplier;
+    }
+
+    /** Test introspection for the typed-Produce counter. */
+    public long typedProduceCount() {
+        return typedProduceRecords.getCount();
+    }
+
+    /** Test introspection for the typed-Fetch counter. */
+    public long typedFetchCount() {
+        return typedFetchRecords.getCount();
+    }
+
+    /** Test introspection for the codec-compile counter. */
+    public long codecCompileCount() {
+        return codecCompiles.getCount();
     }
 
     /** Record an authz outcome. {@code op} / {@code rt} may be null when not known. */

@@ -18,6 +18,7 @@
 package org.apache.fluss.kafka;
 
 import org.apache.fluss.annotation.Internal;
+import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.config.Configuration;
 import org.apache.fluss.kafka.metrics.KafkaMetricGroup;
 import org.apache.fluss.rpc.gateway.CoordinatorGateway;
@@ -50,6 +51,7 @@ public final class KafkaServerContext {
     private final String clusterId;
     private final String kafkaDatabase;
     private final Configuration serverConf;
+    private final boolean typedTablesEnabled;
 
     /**
      * When this context is attached to a real tablet server, the numeric id of that server. {@link
@@ -151,6 +153,10 @@ public final class KafkaServerContext {
         this.kafkaDatabase = checkNotNull(kafkaDatabase, "kafkaDatabase");
         this.ownServerId = ownServerId;
         this.serverConf = checkNotNull(serverConf, "serverConf");
+        // Read the typed-tables feature flag exactly once at context construction (design 0014
+        // §7). Toggling requires a server restart; cached as a primitive boolean so the
+        // hot-path branch in the Produce/Fetch transcoders is a single field load.
+        this.typedTablesEnabled = serverConf.get(ConfigOptions.KAFKA_TYPED_TABLES_ENABLED);
     }
 
     public ClusterMetadataProvider metadataCache() {
@@ -226,6 +232,15 @@ public final class KafkaServerContext {
     /** Returns the full server-side configuration the plugin was started with. */
     public Configuration serverConf() {
         return serverConf;
+    }
+
+    /**
+     * Whether the typed Produce/Fetch hot path is enabled (design 0014). Cached at construction
+     * from {@link ConfigOptions#KAFKA_TYPED_TABLES_ENABLED}; the value never changes for the life
+     * of the server.
+     */
+    public boolean typedTablesEnabled() {
+        return typedTablesEnabled;
     }
 
     /**

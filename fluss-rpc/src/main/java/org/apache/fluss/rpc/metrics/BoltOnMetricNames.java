@@ -67,5 +67,12 @@ public final class BoltOnMetricNames {
     public static final String AUTHZ_ALLOW_RATE = "authzAllowPerSecond";
     public static final String AUTHZ_DENY_RATE = "authzDenyPerSecond";
 
+    // Typed-tables hot-path (design 0014). Cluster-wide rates only — per-topic breakdowns are
+    // out of scope to keep cardinality bounded.
+    public static final String TYPED_PRODUCE_RATE = "typedProducePerSecond";
+    public static final String TYPED_FETCH_RATE = "typedFetchPerSecond";
+    public static final String CODEC_COMPILE_RATE = "codecCompilePerSecond";
+    public static final String CODEC_CACHE_SIZE = "codecCacheSize";
+
     private BoltOnMetricNames() {}
 }
