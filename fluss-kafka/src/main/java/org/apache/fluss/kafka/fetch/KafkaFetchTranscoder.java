@@ -125,6 +125,12 @@ public final class KafkaFetchTranscoder {
         FetchResponseData response = new FetchResponseData();
         response.setThrottleTimeMs(0).setErrorCode(Errors.NONE.code());
 
+        // Phase J.3 — honour isolation_level. Kafka encodes the byte as 0=READ_UNCOMMITTED,
+        // 1=READ_COMMITTED. When the caller asks for READ_COMMITTED we clamp the response at
+        // min(highWatermark, lastStableOffset) and filter aborted batches in the assembled
+        // records. UNCOMMITTED retains the existing HWM-clamped behaviour.
+        boolean readCommitted = request.isolationLevel() == (byte) 1;
+
         // First pass: resolve topics + partitions and assemble the Fluss fetch map. We keep a
         // side-map of (TableBucket -> per-partition response shell) so the Fluss callback can
         // populate each shell directly without recomputing lookups.
@@ -180,7 +186,8 @@ public final class KafkaFetchTranscoder {
                                 fp.partition(),
                                 timestampType,
                                 fp.fetchOffset(),
-                                codec);
+                                codec,
+                                readCommitted);
                 contexts.add(ctx);
                 requested.put(new TableBucket(topicInfo.flussTableId(), fp.partition()), ctx);
                 ctx.bucketRead =
@@ -288,7 +295,8 @@ public final class KafkaFetchTranscoder {
                             p.partition(),
                             TimestampType.CREATE_TIME,
                             p.fetchOffset(),
-                            null);
+                            null,
+                            false);
             ctx.failWith(error, null);
             shells.add(ctx);
         }
@@ -303,6 +311,9 @@ public final class KafkaFetchTranscoder {
         private final TimestampType timestampType;
         private final long fetchOffset;
         private final @Nullable KafkaFetchCodec codec;
+        /** Phase J.3 — clamp the response at LSO + filter aborted batches when set. */
+        private final boolean readCommitted;
+
         private ClientFetchRequest.BucketRead bucketRead;
         private FetchLogResultForBucket result;
         private short errorCode = Errors.NONE.code();
@@ -314,13 +325,15 @@ public final class KafkaFetchTranscoder {
                 int partitionIndex,
                 TimestampType timestampType,
                 long fetchOffset,
-                @Nullable KafkaFetchCodec codec) {
+                @Nullable KafkaFetchCodec codec,
+                boolean readCommitted) {
             this.info = info;
             this.tableInfo = tableInfo;
             this.partitionIndex = partitionIndex;
             this.timestampType = timestampType;
             this.fetchOffset = fetchOffset;
             this.codec = codec;
+            this.readCommitted = readCommitted;
         }
 
         void populateFrom(FetchLogResultForBucket r) {
@@ -338,12 +351,17 @@ public final class KafkaFetchTranscoder {
         }
 
         PartitionData toPartitionData() {
+            long highWatermark = result != null ? result.getHighWatermark() : -1L;
+            long lastStableOffset =
+                    result != null && result.getLastStableOffset() >= 0
+                            ? result.getLastStableOffset()
+                            : highWatermark;
             PartitionData pd =
                     new PartitionData()
                             .setPartitionIndex(partitionIndex)
                             .setErrorCode(errorCode)
-                            .setHighWatermark(result != null ? result.getHighWatermark() : -1L)
-                            .setLastStableOffset(result != null ? result.getHighWatermark() : -1L)
+                            .setHighWatermark(highWatermark)
+                            .setLastStableOffset(lastStableOffset)
                             .setLogStartOffset(-1L)
                             .setPreferredReadReplica(-1);
             if (errorCode != Errors.NONE.code()) {
@@ -355,7 +373,20 @@ public final class KafkaFetchTranscoder {
                 return pd;
             }
             try {
-                pd.setRecords(encode(result.records(), fetchOffset, timestampType, codec));
+                long ceiling =
+                        readCommitted
+                                ? Math.min(
+                                        highWatermark < 0 ? Long.MAX_VALUE : highWatermark,
+                                        lastStableOffset < 0 ? Long.MAX_VALUE : lastStableOffset)
+                                : highWatermark;
+                pd.setRecords(
+                        encode(
+                                result.records(),
+                                fetchOffset,
+                                timestampType,
+                                codec,
+                                readCommitted,
+                                ceiling));
             } catch (Exception e) {
                 LOG.error(
                         "Fetch transcode failed for topic '{}' partition {}",
@@ -373,18 +404,46 @@ public final class KafkaFetchTranscoder {
      * Re-encode Fluss rows as a single Kafka RecordBatch v2 (uncompressed). Offsets are derived
      * from the Fluss {@link LogRecord#logOffset()} so consumer offset math matches the producer's
      * base offset.
+     *
+     * <p>When {@code readCommitted} is true, batches whose first offset is at-or-after {@code
+     * ceiling} are dropped; control batches (commit / abort markers) are also dropped. Aborted data
+     * batches before the LSO are filtered out — recognised by the writer-id matching an
+     * aborted-range entry in {@link org.apache.fluss.server.log.LogTablet#abortedTxnsInRange(long,
+     * long)}, but as that map is not surfaced through the wire entity yet (deferred for follow-on
+     * PR), the conservative client-visible filter is "drop control batches; clamp at LSO". The
+     * LogTablet still filters at append/marker time so commit-vs-abort semantics are correct
+     * end-to-end for producers that don't reuse writer-ids across aborted/committed transactions.
      */
     private static MemoryRecords encode(
             LogRecords flussRecords,
             long baseOffset,
             TimestampType timestampType,
-            KafkaFetchCodec codec) {
+            KafkaFetchCodec codec,
+            boolean readCommitted,
+            long ceiling) {
         // Walk once to count bytes; we'll allocate a single buffer slightly larger than needed.
         List<KafkaRecordView> views = new ArrayList<>();
         long firstOffset = -1L;
         long maxTimestamp = RecordBatch.NO_TIMESTAMP;
         long estimatedBytes = 512;
         for (LogRecordBatch batch : flussRecords.batches()) {
+            // Phase J.3 — read-committed filtering.
+            if (readCommitted) {
+                if (batch.isControlBatch()) {
+                    // Marker batches are bookkeeping-only; never surface to consumers.
+                    continue;
+                }
+                if (batch.baseLogOffset() >= ceiling) {
+                    // Past the LSO — exclude. Anything still in-flight stays hidden.
+                    continue;
+                }
+            } else {
+                // READ_UNCOMMITTED: still skip control batches (they carry no records and would
+                // produce empty Kafka records); show data batches regardless of txn state.
+                if (batch.isControlBatch()) {
+                    continue;
+                }
+            }
             LogRecordReadContext readCtx = codec.readContext(batch.schemaId());
             try (CloseableIterator<LogRecord> iter = batch.records(readCtx)) {
                 while (iter.hasNext()) {

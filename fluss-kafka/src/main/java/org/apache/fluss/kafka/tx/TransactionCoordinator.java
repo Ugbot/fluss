@@ -20,6 +20,7 @@ package org.apache.fluss.kafka.tx;
 import org.apache.fluss.annotation.Internal;
 import org.apache.fluss.catalog.CatalogService;
 import org.apache.fluss.catalog.entities.KafkaProducerIdEntity;
+import org.apache.fluss.catalog.entities.KafkaTxnOffsetBufferEntity;
 import org.apache.fluss.catalog.entities.KafkaTxnStateEntity;
 
 import org.slf4j.Logger;
@@ -121,8 +122,34 @@ public final class TransactionCoordinator {
     @SuppressWarnings("unused")
     private final AtomicLong idempotentLocalCounter = new AtomicLong(0L);
 
+    /**
+     * Phase J.3 — marker-fanout sink. The coordinator invokes {@link #append} once per "{@code
+     * topic:partition}" entry registered against the closing transaction; the sink resolves the
+     * bucket and writes a control batch via {@link
+     * org.apache.fluss.server.replica.ReplicaManager#appendTxnMarker}. {@code null} sinks (e.g.
+     * during the J.1 / J.2 unit-test wiring) cause the fanout to be a no-op — the state-machine
+     * still walks every transition so the coordinator-side correctness is preserved.
+     */
+    @FunctionalInterface
+    public interface MarkerSink {
+        void append(String topic, int partition, long producerId, short epoch, boolean commit)
+                throws Exception;
+    }
+
+    /** Optional fan-out target; lazily registered by the Kafka request-handler bootstrap. */
+    @Nullable private volatile MarkerSink markerSink;
+
     private TransactionCoordinator(CatalogService catalog) {
         this.catalog = catalog;
+    }
+
+    /**
+     * Phase J.3 — register the {@link MarkerSink} the coordinator should use to fan out {@code
+     * WRITE_TXN_MARKERS}. Idempotent; later registrations replace earlier ones (single
+     * coordinator-leader, single sink at a time).
+     */
+    public void setMarkerSink(@Nullable MarkerSink sink) {
+        this.markerSink = sink;
     }
 
     /**
@@ -445,10 +472,14 @@ public final class TransactionCoordinator {
                     KafkaTxnStateEntity.STATE_EMPTY.equals(existing.state())
                             ? now
                             : existing.txnStartTimestampMillis();
-            writeState(
+            // Phase J.3: durable group binding via the state row's group_ids column.
+            Set<String> mergedGroups = new TreeSet<>(existing.groupIds());
+            mergedGroups.add(groupId);
+            writeStateWithGroups(
                     existing,
                     KafkaTxnStateEntity.STATE_ONGOING,
                     existing.topicPartitions(),
+                    mergedGroups,
                     startTs,
                     now);
             groupBindings
@@ -529,7 +560,38 @@ public final class TransactionCoordinator {
             if (check != EpochCheck.OK) {
                 return check;
             }
+            // Phase J.3 — write through to the durable buffer in addition to the in-memory map.
+            // The durable buffer is the source of truth for crash-recovery; the in-memory map is
+            // a fast-path read used by the same-leader END_TXN flush. On a coord-leader failover
+            // the new leader will re-read the durable rows on demand (listKafkaTxnOffsets).
             offsetBuffer.add(transactionalId, groupId, offsets);
+            if (offsets != null) {
+                long now = System.currentTimeMillis();
+                for (BufferedOffset o : offsets) {
+                    try {
+                        catalog.upsertKafkaTxnOffset(
+                                new KafkaTxnOffsetBufferEntity(
+                                        transactionalId,
+                                        groupId,
+                                        o.topic(),
+                                        o.partition(),
+                                        o.offset(),
+                                        o.leaderEpoch(),
+                                        o.metadata(),
+                                        now));
+                    } catch (Exception e) {
+                        LOG.warn(
+                                "Failed to durably buffer TXN_OFFSET_COMMIT for txn='{}' group='{}'"
+                                        + " topic='{}' partition={} offset={}",
+                                transactionalId,
+                                groupId,
+                                o.topic(),
+                                o.partition(),
+                                o.offset(),
+                                e);
+                    }
+                }
+            }
             // Implicitly bind the group: TXN_OFFSET_COMMIT without a prior ADD_OFFSETS_TO_TXN is
             // protocol-illegal but harmless in practice — record the binding so observability
             // reports it correctly.
@@ -599,13 +661,55 @@ public final class TransactionCoordinator {
                     existing.topicPartitions(),
                     existing.txnStartTimestampMillis(),
                     now);
-            List<BufferedOffset> toFlush =
-                    commit ? offsetBuffer.drainAllFor(transactionalId) : Collections.emptyList();
-            if (!commit) {
+            List<BufferedOffset> toFlush;
+            if (commit) {
+                // Read the durable buffer first (catalog is the source of truth across leader
+                // failovers); fall back to the in-memory map for the same-leader fast-path.
+                List<BufferedOffset> durable = readDurableBuffer(transactionalId);
+                List<BufferedOffset> inMem = offsetBuffer.drainAllFor(transactionalId);
+                toFlush = durable.isEmpty() ? inMem : durable;
+            } else {
+                toFlush = Collections.emptyList();
                 offsetBuffer.dropAllFor(transactionalId);
+            }
+            // Drop the durable buffer rows on either commit (after collection) or abort.
+            try {
+                catalog.deleteKafkaTxnOffsets(transactionalId);
+            } catch (Exception e) {
+                LOG.warn(
+                        "Failed to clean up __kafka_txn_offset_buffer__ for txn='{}': {}",
+                        transactionalId,
+                        e.toString());
             }
             applyMarkersAndComplete(transactionalId, commit);
             return new EndTxnResult(EpochCheck.OK, commit, toFlush);
+        }
+    }
+
+    private List<BufferedOffset> readDurableBuffer(String transactionalId) {
+        try {
+            List<KafkaTxnOffsetBufferEntity> rows = catalog.listKafkaTxnOffsets(transactionalId);
+            if (rows.isEmpty()) {
+                return Collections.emptyList();
+            }
+            List<BufferedOffset> out = new ArrayList<>(rows.size());
+            for (KafkaTxnOffsetBufferEntity e : rows) {
+                out.add(
+                        new BufferedOffset(
+                                e.groupId(),
+                                e.topic(),
+                                e.partition(),
+                                e.offset(),
+                                e.leaderEpoch(),
+                                e.metadata()));
+            }
+            return out;
+        } catch (Exception e) {
+            LOG.warn(
+                    "Failed to read durable txn-offset buffer for txn='{}': {}",
+                    transactionalId,
+                    e.toString());
+            return Collections.emptyList();
         }
     }
 
@@ -618,11 +722,40 @@ public final class TransactionCoordinator {
     private void applyMarkersAndComplete(String transactionalId, boolean commit) throws Exception {
         KafkaTxnStateEntity existing = states.get(transactionalId);
         long now = System.currentTimeMillis();
-        // TODO J.3 — for each "topic:partition" in existing.topicPartitions(), append a control
-        // batch to the LogTablet via WRITE_TXN_MARKERS. The marker batch carries (commit/abort,
-        // coordinatorEpoch, producerId, producerEpoch). Until LogTablet has the producer-state
-        // tracker (J.3) we cannot append it without breaking fetch — design 0016 §7. For J.2 the
-        // marker is recorded only in __kafka_txn_state__.
+        // Phase J.3 — fan markers out across every participating partition. Failures are logged
+        // and skipped; the marker is idempotent on the LogTablet side (open-txn entry removed on
+        // first matching control batch) so a retry from a future leader is harmless.
+        MarkerSink sink = markerSink;
+        if (sink != null) {
+            for (String tp : existing.topicPartitions()) {
+                int sep = tp.lastIndexOf(':');
+                if (sep <= 0) {
+                    continue;
+                }
+                String topic = tp.substring(0, sep);
+                int partition;
+                try {
+                    partition = Integer.parseInt(tp.substring(sep + 1));
+                } catch (NumberFormatException nfe) {
+                    continue;
+                }
+                try {
+                    sink.append(
+                            topic,
+                            partition,
+                            existing.producerId(),
+                            existing.producerEpoch(),
+                            commit);
+                } catch (Exception e) {
+                    LOG.warn(
+                            "Marker fan-out for txn='{}' topic='{}' partition={} failed: {}",
+                            transactionalId,
+                            topic,
+                            partition,
+                            e.toString());
+                }
+            }
+        }
         String completeState =
                 commit
                         ? KafkaTxnStateEntity.STATE_COMPLETE_COMMIT
@@ -689,6 +822,24 @@ public final class TransactionCoordinator {
             @Nullable Long startTimestampMillis,
             long lastUpdatedMillis)
             throws Exception {
+        writeStateWithGroups(
+                previous,
+                newState,
+                partitions,
+                previous.groupIds(),
+                startTimestampMillis,
+                lastUpdatedMillis);
+    }
+
+    /** Phase J.3 — write a state row and update its durable {@code group_ids} column. */
+    private void writeStateWithGroups(
+            KafkaTxnStateEntity previous,
+            String newState,
+            Set<String> partitions,
+            Set<String> groupIds,
+            @Nullable Long startTimestampMillis,
+            long lastUpdatedMillis)
+            throws Exception {
         KafkaTxnStateEntity replacement =
                 new KafkaTxnStateEntity(
                         previous.transactionalId(),
@@ -696,6 +847,7 @@ public final class TransactionCoordinator {
                         previous.producerEpoch(),
                         newState,
                         partitions,
+                        groupIds,
                         previous.timeoutMs(),
                         startTimestampMillis,
                         lastUpdatedMillis);

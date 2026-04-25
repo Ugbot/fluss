@@ -31,6 +31,31 @@ import java.util.Objects;
 @PublicEvolving
 public final class CatalogTableEntity {
 
+    /**
+     * Format string for Kafka topics whose backing data table holds raw {@code [record_key,
+     * payload, event_time, headers]} rows (no Schema Registry registration). The default for every
+     * Kafka topic at create time. See {@code KafkaTopicRoute#FORMAT_PASSTHROUGH}.
+     */
+    public static final String FORMAT_KAFKA_PASSTHROUGH = "KAFKA_PASSTHROUGH";
+
+    /**
+     * Format string for Kafka topics whose first Avro schema registration has reshaped the backing
+     * data table into typed columns. Phase T.3.
+     */
+    public static final String FORMAT_KAFKA_TYPED_AVRO = "KAFKA_TYPED_AVRO";
+
+    /**
+     * Format string for Kafka topics whose first JSON Schema registration has reshaped the backing
+     * data table into typed columns. Phase T.3.
+     */
+    public static final String FORMAT_KAFKA_TYPED_JSON = "KAFKA_TYPED_JSON";
+
+    /**
+     * Format string for Kafka topics whose first Protobuf schema registration has reshaped the
+     * backing data table into typed columns. Phase T.3.
+     */
+    public static final String FORMAT_KAFKA_TYPED_PROTOBUF = "KAFKA_TYPED_PROTOBUF";
+
     private final String tableId;
     private final String namespaceId;
     private final String name;

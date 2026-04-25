@@ -599,6 +599,28 @@ public class ReplicaManager implements ServerReconfigurable {
     }
 
     /**
+     * Phase J.3 — append a Kafka-style transaction marker to {@code bucket} (design 0016 §7). Used
+     * by {@code WRITE_TXN_MARKERS}. The marker is a control batch with no records that advances the
+     * {@link org.apache.fluss.server.log.LogTablet#lastStableOffset()} past the matching open
+     * transaction (commit) or records the aborted range (abort).
+     *
+     * <p>Synchronous append on the leader replica; throws when the bucket isn't hosted here or the
+     * leader role isn't held. The fan-out to follower replicas is the same as for any append — the
+     * marker becomes durable through the standard ISR path.
+     *
+     * @param bucket the participating partition
+     * @param producerId the producer id whose transaction this marker terminates
+     * @param producerEpoch the producer epoch (matches the open txn's epoch)
+     * @param commit {@code true} for a commit marker; {@code false} for an abort marker
+     */
+    public void appendTxnMarker(
+            TableBucket bucket, long producerId, short producerEpoch, boolean commit)
+            throws Exception {
+        Replica replica = getReplicaOrException(bucket);
+        replica.getLogTablet().appendTxnMarker(producerId, producerEpoch, commit);
+    }
+
+    /**
      * Fetch records from a replica. Currently, we will return the fetched records immediately.
      *
      * <p>The callback function will be triggered when required fetch info is satisfied. Both client
@@ -1442,17 +1464,23 @@ public class ReplicaManager implements ServerReconfigurable {
                 }
                 limitBytes = Math.max(0, limitBytes - recordBatchSize);
                 FetchLogResultForBucket fetchLogResult;
+                long lastStableOffset = replica.getLogLastStableOffset();
                 if (fetchedData.hasFilteredEndOffset()) {
                     fetchLogResult =
                             new FetchLogResultForBucket(
                                     tb,
                                     fetchedData.getRecords(),
                                     readInfo.getHighWatermark(),
+                                    lastStableOffset,
                                     fetchedData.getFilteredEndOffset());
                 } else {
                     fetchLogResult =
                             new FetchLogResultForBucket(
-                                    tb, fetchedData.getRecords(), readInfo.getHighWatermark());
+                                    tb,
+                                    fetchedData.getRecords(),
+                                    readInfo.getHighWatermark(),
+                                    lastStableOffset,
+                                    -1L);
                 }
                 logReadResult.put(
                         tb,

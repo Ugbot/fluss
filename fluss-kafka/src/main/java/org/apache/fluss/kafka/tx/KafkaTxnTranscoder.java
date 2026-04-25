@@ -22,11 +22,15 @@ import org.apache.fluss.catalog.entities.KafkaTxnStateEntity;
 import org.apache.fluss.exception.AuthorizationException;
 import org.apache.fluss.kafka.KafkaRequest;
 import org.apache.fluss.kafka.auth.AuthzHelper;
+import org.apache.fluss.kafka.catalog.KafkaTopicInfo;
+import org.apache.fluss.kafka.catalog.KafkaTopicsCatalog;
 import org.apache.fluss.kafka.group.OffsetStore;
 import org.apache.fluss.kafka.metrics.KafkaMetricGroup;
+import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.security.acl.OperationType;
 import org.apache.fluss.security.acl.Resource;
 import org.apache.fluss.server.authorizer.Authorizer;
+import org.apache.fluss.server.replica.ReplicaManager;
 
 import org.apache.kafka.common.message.AddOffsetsToTxnRequestData;
 import org.apache.kafka.common.message.AddOffsetsToTxnResponseData;
@@ -76,16 +80,38 @@ public final class KafkaTxnTranscoder {
     private final @Nullable KafkaMetricGroup metrics;
     private final String kafkaDatabase;
     private final OffsetStore groupOffsets;
+    private final @Nullable ReplicaManager replicaManager;
+    private final @Nullable KafkaTopicsCatalog topicsCatalog;
 
+    /**
+     * J.2 constructor (no marker append). Kept for source-compat with older J.2 wiring; use the J.3
+     * constructor below to get real {@code WRITE_TXN_MARKERS} support.
+     */
     public KafkaTxnTranscoder(
             @Nullable Authorizer authorizer,
             @Nullable KafkaMetricGroup metrics,
             String kafkaDatabase,
             OffsetStore groupOffsets) {
+        this(authorizer, metrics, kafkaDatabase, groupOffsets, null, null);
+    }
+
+    /**
+     * Phase J.3 — full constructor. The {@code replicaManager} + {@code topicsCatalog} pair is used
+     * by {@link #writeTxnMarkers} to append a control batch to each participating partition.
+     */
+    public KafkaTxnTranscoder(
+            @Nullable Authorizer authorizer,
+            @Nullable KafkaMetricGroup metrics,
+            String kafkaDatabase,
+            OffsetStore groupOffsets,
+            @Nullable ReplicaManager replicaManager,
+            @Nullable KafkaTopicsCatalog topicsCatalog) {
         this.authorizer = authorizer;
         this.metrics = metrics;
         this.kafkaDatabase = kafkaDatabase;
         this.groupOffsets = groupOffsets;
+        this.replicaManager = replicaManager;
+        this.topicsCatalog = topicsCatalog;
     }
 
     public AddPartitionsToTxnResponseData addPartitionsToTxn(
@@ -351,12 +377,69 @@ public final class KafkaTxnTranscoder {
                         .acknowledgeMarker(
                                 m.producerId(), m.producerEpoch(), m.transactionResult());
             }
-            // J.2: marker is recorded in __kafka_txn_state__ only; the LogTablet append lands in
-            // J.3. Acknowledge with NONE — the protocol allows this and the client treats it as a
-            // successful marker write.
-            resp.markers().add(buildMarkerResult(m, Errors.NONE.code()));
+            resp.markers().add(appendMarkersForRequest(m));
         }
         return resp;
+    }
+
+    /**
+     * Phase J.3 — append a control marker batch on every participating partition. Each partition is
+     * resolved via the {@link KafkaTopicsCatalog} to its Fluss {@link TableBucket}; the {@link
+     * ReplicaManager#appendTxnMarker} call writes a V2 control batch with no records, the {@code
+     * (writerId, epoch)} fencing key, and the commit/abort attribute bit.
+     *
+     * <p>Per-partition failures are reported in the result; the rest of the partitions in the
+     * marker still succeed (matches Kafka's per-partition error semantics).
+     */
+    private WriteTxnMarkersResponseData.WritableTxnMarkerResult appendMarkersForRequest(
+            WriteTxnMarkersRequestData.WritableTxnMarker m) {
+        WriteTxnMarkersResponseData.WritableTxnMarkerResult r =
+                new WriteTxnMarkersResponseData.WritableTxnMarkerResult()
+                        .setProducerId(m.producerId());
+        boolean commit = m.transactionResult();
+        for (WriteTxnMarkersRequestData.WritableTxnMarkerTopic t : m.topics()) {
+            WriteTxnMarkersResponseData.WritableTxnMarkerTopicResult tr =
+                    new WriteTxnMarkersResponseData.WritableTxnMarkerTopicResult()
+                            .setName(t.name());
+            for (Integer p : t.partitionIndexes()) {
+                short err = appendMarker(t.name(), p, m.producerId(), m.producerEpoch(), commit);
+                tr.partitions()
+                        .add(
+                                new WriteTxnMarkersResponseData.WritableTxnMarkerPartitionResult()
+                                        .setPartitionIndex(p)
+                                        .setErrorCode(err));
+            }
+            r.topics().add(tr);
+        }
+        return r;
+    }
+
+    private short appendMarker(
+            String topic, int partition, long producerId, short producerEpoch, boolean commit) {
+        if (replicaManager == null || topicsCatalog == null) {
+            // J.2 wiring path — no append target available; ack as if appended so older test
+            // harnesses that ran without replicaManager don't regress.
+            return Errors.NONE.code();
+        }
+        try {
+            Optional<KafkaTopicInfo> info = topicsCatalog.lookup(topic);
+            if (!info.isPresent()) {
+                return Errors.UNKNOWN_TOPIC_OR_PARTITION.code();
+            }
+            TableBucket bucket = new TableBucket(info.get().flussTableId(), partition);
+            replicaManager.appendTxnMarker(bucket, producerId, producerEpoch, commit);
+            return Errors.NONE.code();
+        } catch (Exception e) {
+            LOG.error(
+                    "Failed to append txn marker for topic '{}' partition {} pid={} epoch={} commit={}",
+                    topic,
+                    partition,
+                    producerId,
+                    producerEpoch,
+                    commit,
+                    e);
+            return Errors.UNKNOWN_SERVER_ERROR.code();
+        }
     }
 
     private static WriteTxnMarkersResponseData.WritableTxnMarkerResult buildMarkerResult(

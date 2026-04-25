@@ -60,16 +60,45 @@ public final class KafkaTxnStateEntity {
     private final short producerEpoch;
     private final String state;
     private final Set<String> topicPartitions;
+    private final Set<String> groupIds;
     private final int timeoutMs;
     private final @Nullable Long txnStartTimestampMillis;
     private final long lastUpdatedAtMillis;
 
+    /** Phase J.2 (in-memory) constructor; kept for source-compat with J.2 callers. */
     public KafkaTxnStateEntity(
             String transactionalId,
             long producerId,
             short producerEpoch,
             String state,
             @Nullable Set<String> topicPartitions,
+            int timeoutMs,
+            @Nullable Long txnStartTimestampMillis,
+            long lastUpdatedAtMillis) {
+        this(
+                transactionalId,
+                producerId,
+                producerEpoch,
+                state,
+                topicPartitions,
+                Collections.emptySet(),
+                timeoutMs,
+                txnStartTimestampMillis,
+                lastUpdatedAtMillis);
+    }
+
+    /**
+     * Phase J.3 — full constructor including durable {@code group_ids}. The set carries every
+     * consumer group attached to the transaction via {@code ADD_OFFSETS_TO_TXN}; it is empty for
+     * transactions that didn't commit consumer offsets.
+     */
+    public KafkaTxnStateEntity(
+            String transactionalId,
+            long producerId,
+            short producerEpoch,
+            String state,
+            @Nullable Set<String> topicPartitions,
+            @Nullable Set<String> groupIds,
             int timeoutMs,
             @Nullable Long txnStartTimestampMillis,
             long lastUpdatedAtMillis) {
@@ -81,6 +110,10 @@ public final class KafkaTxnStateEntity {
                 topicPartitions == null
                         ? Collections.emptySet()
                         : Collections.unmodifiableSet(new TreeSet<>(topicPartitions));
+        this.groupIds =
+                groupIds == null
+                        ? Collections.emptySet()
+                        : Collections.unmodifiableSet(new TreeSet<>(groupIds));
         this.timeoutMs = timeoutMs;
         this.txnStartTimestampMillis = txnStartTimestampMillis;
         this.lastUpdatedAtMillis = lastUpdatedAtMillis;
@@ -105,6 +138,14 @@ public final class KafkaTxnStateEntity {
     /** Immutable, deterministic-iteration set of {@code "topic:partition"} entries. */
     public Set<String> topicPartitions() {
         return topicPartitions;
+    }
+
+    /**
+     * Phase J.3 — durable consumer group bindings registered via {@code ADD_OFFSETS_TO_TXN}. The
+     * set is empty for transactions that don't carry {@code TXN_OFFSET_COMMIT} payloads.
+     */
+    public Set<String> groupIds() {
+        return groupIds;
     }
 
     public int timeoutMs() {
@@ -156,6 +197,16 @@ public final class KafkaTxnStateEntity {
         return out;
     }
 
+    /** Encode the group-id set the same way as {@link #encodePartitions(Set)}. */
+    public static String encodeGroups(@Nullable Set<String> groups) {
+        return encodePartitions(groups);
+    }
+
+    /** Inverse of {@link #encodeGroups(Set)}. */
+    public static Set<String> decodeGroups(@Nullable String encoded) {
+        return decodePartitions(encoded);
+    }
+
     @Override
     public boolean equals(Object o) {
         if (this == o) {
@@ -172,6 +223,7 @@ public final class KafkaTxnStateEntity {
                 && transactionalId.equals(that.transactionalId)
                 && state.equals(that.state)
                 && topicPartitions.equals(that.topicPartitions)
+                && groupIds.equals(that.groupIds)
                 && Objects.equals(txnStartTimestampMillis, that.txnStartTimestampMillis);
     }
 
@@ -183,6 +235,7 @@ public final class KafkaTxnStateEntity {
                 producerEpoch,
                 state,
                 topicPartitions,
+                groupIds,
                 timeoutMs,
                 txnStartTimestampMillis,
                 lastUpdatedAtMillis);
@@ -203,6 +256,8 @@ public final class KafkaTxnStateEntity {
                 + '\''
                 + ", topicPartitions="
                 + topicPartitions
+                + ", groupIds="
+                + groupIds
                 + ", timeoutMs="
                 + timeoutMs
                 + ", txnStartTimestampMillis="

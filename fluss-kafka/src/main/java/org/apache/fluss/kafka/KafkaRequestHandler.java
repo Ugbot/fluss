@@ -2521,7 +2521,12 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
 
     private org.apache.fluss.kafka.tx.KafkaTxnTranscoder newTxnTranscoder() {
         return new org.apache.fluss.kafka.tx.KafkaTxnTranscoder(
-                context.authorizer(), context.metrics(), context.kafkaDatabase(), groupOffsets);
+                context.authorizer(),
+                context.metrics(),
+                context.kafkaDatabase(),
+                groupOffsets,
+                context.replicaManager(),
+                newCatalog());
     }
 
     /** Build the catalog for this request. Cheap - just a view over metadataManager. */

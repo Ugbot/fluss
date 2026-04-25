@@ -328,9 +328,15 @@ public class DefaultAuthorizerTest {
 
     @Test
     void testAclInheritanceOnResourceType() throws Exception {
+        // Phase J.3 — TRANSACTIONAL_ID is a direct child of CLUSTER (design 0016 §11), so
+        // cluster-wide grants roll up to it just like DATABASE / TABLE / GROUP do.
         testResourceTypeImplicationsOfAllow(
                 ResourceType.CLUSTER,
-                Arrays.asList(DATABASE, ResourceType.TABLE, ResourceType.GROUP));
+                Arrays.asList(
+                        DATABASE,
+                        ResourceType.TABLE,
+                        ResourceType.GROUP,
+                        ResourceType.TRANSACTIONAL_ID));
         testResourceTypeImplicationsOfAllow(DATABASE, Collections.singleton(ResourceType.TABLE));
     }
 
@@ -369,6 +375,8 @@ public class DefaultAuthorizerTest {
                 return Resource.table("database1", "table1");
             case GROUP:
                 return Resource.group("group1");
+            case TRANSACTIONAL_ID:
+                return Resource.transactionalId("txn1");
             default:
                 return null;
         }

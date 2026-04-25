@@ -336,6 +336,11 @@ class KafkaClientQuotasTranscoderTest {
         public void dropTable(String ns, String n) {}
 
         @Override
+        public CatalogTableEntity updateTableFormat(String ns, String n, String f) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
         public SchemaVersionEntity registerSchema(
                 String ns, String tn, String f, String st, String reg) {
             throw new UnsupportedOperationException();
@@ -491,5 +496,20 @@ class KafkaClientQuotasTranscoderTest {
                 listKafkaProducerIds() {
             return Collections.emptyList();
         }
+
+        @Override
+        public org.apache.fluss.catalog.entities.KafkaTxnOffsetBufferEntity upsertKafkaTxnOffset(
+                org.apache.fluss.catalog.entities.KafkaTxnOffsetBufferEntity entity) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public List<org.apache.fluss.catalog.entities.KafkaTxnOffsetBufferEntity>
+                listKafkaTxnOffsets(String transactionalId) {
+            return Collections.emptyList();
+        }
+
+        @Override
+        public void deleteKafkaTxnOffsets(String transactionalId) {}
     }
 }

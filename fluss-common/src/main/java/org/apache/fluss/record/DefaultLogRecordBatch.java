@@ -88,6 +88,25 @@ public class DefaultLogRecordBatch implements LogRecordBatch {
 
     public static final byte APPEND_ONLY_FLAG_MASK = 0x01;
 
+    /**
+     * Bit 1 of the {@code attributes} byte: marks a control batch (Kafka-style transaction marker).
+     * A control batch carries no records — its sole purpose is to advance the LSO past an open
+     * transaction (commit) or to record an aborted range (abort).
+     *
+     * <p>Phase J.3 (design 0016 §7) introduces this flag to support {@code WRITE_TXN_MARKERS} on
+     * the Fluss log layer. The marker batch is otherwise structurally identical to a data batch (V2
+     * magic, valid CRC, valid writer-id + epoch); it sets {@code recordCount=0} and {@code
+     * lastOffsetDelta=0}. Decoders that don't know about the bit fall back to treating it as an
+     * empty batch — fetch transcoders honour the flag to filter aborted ranges.
+     */
+    public static final byte CONTROL_BATCH_FLAG_MASK = 0x02;
+
+    /**
+     * Bit 2 of the {@code attributes} byte: when {@link #CONTROL_BATCH_FLAG_MASK} is set, this bit
+     * distinguishes commit ({@code 0}) from abort ({@code 1}).
+     */
+    public static final byte CONTROL_BATCH_ABORT_MASK = 0x04;
+
     private MemorySegment segment;
     private int position;
     private byte magic;
@@ -183,8 +202,33 @@ public class DefaultLogRecordBatch implements LogRecordBatch {
     }
 
     private byte attributes() {
-        // note we're not using the byte of attributes now.
+        // bit 0: APPEND_ONLY (legacy); bits 1-2: control-batch marker (Phase J.3).
         return segment.get(attributeOffset(magic) + position);
+    }
+
+    /**
+     * Set the {@code attributes} byte directly. Used by writer-side builders that emit control
+     * marker batches (Phase J.3); the byte is otherwise stamped to {@code APPEND_ONLY_FLAG_MASK} by
+     * {@code MemoryLogRecordsArrowBuilder} / {@code MemoryLogRecordsIndexedBuilder} which don't
+     * touch the attributes field after construction.
+     */
+    public void setAttributes(byte attributes) {
+        segment.put(attributeOffset(magic) + position, attributes);
+    }
+
+    /** True when this batch is a transaction marker (commit or abort) — see §7 of design 0016. */
+    @Override
+    public boolean isControlBatch() {
+        return (attributes() & CONTROL_BATCH_FLAG_MASK) != 0;
+    }
+
+    /**
+     * For a control batch, true when this is a commit marker; false when it is an abort marker.
+     * Undefined when {@link #isControlBatch()} is false.
+     */
+    @Override
+    public boolean isTransactionAbort() {
+        return (attributes() & CONTROL_BATCH_ABORT_MASK) != 0;
     }
 
     @Override

@@ -24,6 +24,7 @@ import org.apache.fluss.catalog.entities.ClientQuotaFilter;
 import org.apache.fluss.catalog.entities.GrantEntity;
 import org.apache.fluss.catalog.entities.KafkaProducerIdEntity;
 import org.apache.fluss.catalog.entities.KafkaSubjectBinding;
+import org.apache.fluss.catalog.entities.KafkaTxnOffsetBufferEntity;
 import org.apache.fluss.catalog.entities.KafkaTxnStateEntity;
 import org.apache.fluss.catalog.entities.NamespaceEntity;
 import org.apache.fluss.catalog.entities.PrincipalEntity;
@@ -113,7 +114,8 @@ public final class FlussCatalogService implements CatalogService, AutoCloseable 
         SR_CONFIG,
         SCHEMA_REFERENCES,
         KAFKA_TXN_STATE,
-        KAFKA_PRODUCER_IDS
+        KAFKA_PRODUCER_IDS,
+        KAFKA_TXN_OFFSET_BUFFER
     }
 
     /**
@@ -318,6 +320,36 @@ public final class FlussCatalogService implements CatalogService, AutoCloseable 
                     CatalogException.Kind.NOT_FOUND, "table not found: " + namespace + "." + name);
         }
         dropTableById(table.get());
+    }
+
+    @Override
+    public CatalogTableEntity updateTableFormat(String namespace, String name, String newFormat)
+            throws Exception {
+        requireNonEmpty("namespace", namespace);
+        requireNonEmpty("name", name);
+        requireNonEmpty("newFormat", newFormat);
+        CatalogTableEntity prior =
+                getTable(namespace, name)
+                        .orElseThrow(
+                                () ->
+                                        new CatalogException(
+                                                CatalogException.Kind.NOT_FOUND,
+                                                "table not found: " + namespace + "." + name));
+        if (newFormat.equals(prior.format())) {
+            return prior;
+        }
+        CatalogTableEntity updated =
+                new CatalogTableEntity(
+                        prior.tableId(),
+                        prior.namespaceId(),
+                        prior.name(),
+                        newFormat,
+                        prior.backingRef(),
+                        prior.currentSchemaId(),
+                        prior.createdBy(),
+                        prior.createdAtMillis());
+        upsertTableRow(updated);
+        return updated;
     }
 
     // =================================================================
@@ -957,20 +989,23 @@ public final class FlussCatalogService implements CatalogService, AutoCloseable 
         }
         requireNonEmpty("transactionalId", entity.transactionalId());
         requireNonEmpty("state", entity.state());
-        GenericRow row = new GenericRow(8);
+        // Phase J.3 — 9-column row including the durable group_ids column.
+        GenericRow row = new GenericRow(9);
         row.setField(0, BinaryString.fromString(entity.transactionalId()));
         row.setField(1, entity.producerId());
         row.setField(2, entity.producerEpoch());
         row.setField(3, BinaryString.fromString(entity.state()));
         String encoded = KafkaTxnStateEntity.encodePartitions(entity.topicPartitions());
         row.setField(4, encoded == null ? null : BinaryString.fromString(encoded));
-        row.setField(5, entity.timeoutMs());
+        String groupsEncoded = KafkaTxnStateEntity.encodeGroups(entity.groupIds());
+        row.setField(5, groupsEncoded == null ? null : BinaryString.fromString(groupsEncoded));
+        row.setField(6, entity.timeoutMs());
         row.setField(
-                6,
+                7,
                 entity.txnStartTimestampMillis() == null
                         ? null
                         : TimestampLtz.fromEpochMillis(entity.txnStartTimestampMillis()));
-        row.setField(7, TimestampLtz.fromEpochMillis(entity.lastUpdatedAtMillis()));
+        row.setField(8, TimestampLtz.fromEpochMillis(entity.lastUpdatedAtMillis()));
         upsert(Handle.KAFKA_TXN_STATE, row);
         return entity;
     }
@@ -1032,6 +1067,80 @@ public final class FlussCatalogService implements CatalogService, AutoCloseable 
         return out;
     }
 
+    @Override
+    public KafkaTxnOffsetBufferEntity upsertKafkaTxnOffset(KafkaTxnOffsetBufferEntity entity)
+            throws Exception {
+        if (entity == null) {
+            throw new CatalogException(CatalogException.Kind.INVALID_INPUT, "entity is required");
+        }
+        requireNonEmpty("transactionalId", entity.transactionalId());
+        requireNonEmpty("groupId", entity.groupId());
+        requireNonEmpty("topic", entity.topic());
+        GenericRow row = new GenericRow(8);
+        row.setField(0, BinaryString.fromString(entity.transactionalId()));
+        row.setField(1, BinaryString.fromString(entity.groupId()));
+        row.setField(2, BinaryString.fromString(entity.topic()));
+        row.setField(3, entity.partition());
+        row.setField(4, entity.offset());
+        row.setField(5, entity.leaderEpoch());
+        row.setField(
+                6, entity.metadata() == null ? null : BinaryString.fromString(entity.metadata()));
+        row.setField(7, TimestampLtz.fromEpochMillis(entity.committedAtMillis()));
+        upsert(Handle.KAFKA_TXN_OFFSET_BUFFER, row);
+        return entity;
+    }
+
+    @Override
+    public List<KafkaTxnOffsetBufferEntity> listKafkaTxnOffsets(String transactionalId)
+            throws Exception {
+        requireNonEmpty("transactionalId", transactionalId);
+        List<KafkaTxnOffsetBufferEntity> out = new ArrayList<>();
+        scan(
+                Handle.KAFKA_TXN_OFFSET_BUFFER,
+                row -> {
+                    String rowTxnId = row.getString(0).toString();
+                    if (!transactionalId.equals(rowTxnId)) {
+                        return;
+                    }
+                    out.add(decodeKafkaTxnOffsetBuffer(row));
+                });
+        return out;
+    }
+
+    @Override
+    public void deleteKafkaTxnOffsets(String transactionalId) throws Exception {
+        requireNonEmpty("transactionalId", transactionalId);
+        // Two-pass: scan to enumerate composite PKs that match, then issue per-row deletes. The
+        // table is small (one row per (txn.id, group, topic, partition) of an in-flight txn) so
+        // this is cheap.
+        List<KafkaTxnOffsetBufferEntity> rows = listKafkaTxnOffsets(transactionalId);
+        for (KafkaTxnOffsetBufferEntity e : rows) {
+            GenericRow row = new GenericRow(8);
+            row.setField(0, BinaryString.fromString(e.transactionalId()));
+            row.setField(1, BinaryString.fromString(e.groupId()));
+            row.setField(2, BinaryString.fromString(e.topic()));
+            row.setField(3, e.partition());
+            row.setField(4, 0L);
+            row.setField(5, 0);
+            row.setField(6, null);
+            row.setField(7, TimestampLtz.fromEpochMillis(0));
+            delete(Handle.KAFKA_TXN_OFFSET_BUFFER, row);
+        }
+    }
+
+    private static KafkaTxnOffsetBufferEntity decodeKafkaTxnOffsetBuffer(InternalRow row) {
+        String txnId = row.getString(0).toString();
+        String groupId = row.getString(1).toString();
+        String topic = row.getString(2).toString();
+        int partition = row.getInt(3);
+        long offset = row.getLong(4);
+        int leaderEpoch = row.getInt(5);
+        String metadata = row.isNullAt(6) ? null : row.getString(6).toString();
+        long committedAt = row.getTimestampLtz(7, 3).toEpochMicros() / 1000;
+        return new KafkaTxnOffsetBufferEntity(
+                txnId, groupId, topic, partition, offset, leaderEpoch, metadata, committedAt);
+    }
+
     private void seedProducerIdCounterIfNeeded() throws Exception {
         if (producerIdSeeded) {
             return;
@@ -1065,11 +1174,15 @@ public final class FlussCatalogService implements CatalogService, AutoCloseable 
                 row.isNullAt(4)
                         ? java.util.Collections.emptySet()
                         : KafkaTxnStateEntity.decodePartitions(row.getString(4).toString());
-        int timeoutMs = row.getInt(5);
-        Long startTs = row.isNullAt(6) ? null : row.getTimestampLtz(6, 3).toEpochMicros() / 1000;
-        long updatedAt = row.getTimestampLtz(7, 3).toEpochMicros() / 1000;
+        java.util.Set<String> groups =
+                row.isNullAt(5)
+                        ? java.util.Collections.emptySet()
+                        : KafkaTxnStateEntity.decodeGroups(row.getString(5).toString());
+        int timeoutMs = row.getInt(6);
+        Long startTs = row.isNullAt(7) ? null : row.getTimestampLtz(7, 3).toEpochMicros() / 1000;
+        long updatedAt = row.getTimestampLtz(8, 3).toEpochMicros() / 1000;
         return new KafkaTxnStateEntity(
-                txnId, producerId, epoch, state, partitions, timeoutMs, startTs, updatedAt);
+                txnId, producerId, epoch, state, partitions, groups, timeoutMs, startTs, updatedAt);
     }
 
     private static KafkaProducerIdEntity decodeKafkaProducerId(InternalRow row) {
@@ -1199,6 +1312,15 @@ public final class FlussCatalogService implements CatalogService, AutoCloseable 
                     r.setField(0, 0L);
                     return r;
                 }
+            case KAFKA_TXN_OFFSET_BUFFER:
+                {
+                    GenericRow r = new GenericRow(4);
+                    r.setField(0, BinaryString.fromString("__readiness__"));
+                    r.setField(1, BinaryString.fromString(""));
+                    r.setField(2, BinaryString.fromString(""));
+                    r.setField(3, 0);
+                    return r;
+                }
             default:
                 {
                     GenericRow r = new GenericRow(1);
@@ -1252,6 +1374,8 @@ public final class FlussCatalogService implements CatalogService, AutoCloseable 
                 return SystemTables.KAFKA_TXN_STATE;
             case KAFKA_PRODUCER_IDS:
                 return SystemTables.KAFKA_PRODUCER_IDS;
+            case KAFKA_TXN_OFFSET_BUFFER:
+                return SystemTables.KAFKA_TXN_OFFSET_BUFFER;
             default:
                 throw new IllegalStateException("Unknown handle: " + handle);
         }
@@ -1358,20 +1482,25 @@ public final class FlussCatalogService implements CatalogService, AutoCloseable 
                         "CLIENT_QUOTAS delete uses a composite PK; use deleteClientQuotaRow()");
             case KAFKA_TXN_STATE:
                 {
-                    GenericRow row = new GenericRow(8);
+                    GenericRow row = new GenericRow(9);
                     row.setField(0, BinaryString.fromString(pkString));
                     row.setField(1, 0L);
                     row.setField(2, (short) 0);
                     row.setField(3, BinaryString.fromString(""));
                     row.setField(4, null);
-                    row.setField(5, 0);
-                    row.setField(6, null);
-                    row.setField(7, TimestampLtz.fromEpochMillis(0));
+                    row.setField(5, null);
+                    row.setField(6, 0);
+                    row.setField(7, null);
+                    row.setField(8, TimestampLtz.fromEpochMillis(0));
                     return row;
                 }
             case KAFKA_PRODUCER_IDS:
                 throw new IllegalArgumentException(
                         "KAFKA_PRODUCER_IDS delete uses a numeric PK; use deletePlaceholderLong()");
+            case KAFKA_TXN_OFFSET_BUFFER:
+                throw new IllegalArgumentException(
+                        "KAFKA_TXN_OFFSET_BUFFER delete uses a composite PK; "
+                                + "use deleteKafkaTxnOffsets() which builds rows directly");
             default:
                 throw new IllegalStateException("Unknown handle: " + handle);
         }

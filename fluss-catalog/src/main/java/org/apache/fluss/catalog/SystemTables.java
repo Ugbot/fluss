@@ -187,6 +187,8 @@ public final class SystemTables {
                             .column("producer_epoch", DataTypes.SMALLINT().copy(false))
                             .column("state", DataTypes.STRING().copy(false))
                             .column("topic_partitions", DataTypes.STRING())
+                            // Phase J.3 — durable group bindings for ADD_OFFSETS_TO_TXN.
+                            .column("group_ids", DataTypes.STRING())
                             .column("timeout_ms", DataTypes.INT().copy(false))
                             .column("txn_start_timestamp", DataTypes.TIMESTAMP_LTZ(3))
                             .column("last_updated_at", DataTypes.TIMESTAMP_LTZ(3).copy(false))
@@ -208,6 +210,28 @@ public final class SystemTables {
                             .column("epoch", DataTypes.SMALLINT().copy(false))
                             .column("allocated_at", DataTypes.TIMESTAMP_LTZ(3).copy(false))
                             .primaryKey("producer_id")
+                            .build(),
+                    KAFKA_TXN_BUCKETS);
+
+    /**
+     * Kafka transactional-offset durable buffer (Phase J.3 §10). On {@code TXN_OFFSET_COMMIT} a row
+     * is upserted; on {@code END_TXN(commit)} the rows for the {@code transactional_id} are
+     * read+flushed to {@code __consumer_offsets__} and deleted. On {@code END_TXN(abort)} they are
+     * simply deleted.
+     */
+    public static final Table KAFKA_TXN_OFFSET_BUFFER =
+            new Table(
+                    "_kafka_txn_offset_buffer",
+                    Schema.newBuilder()
+                            .column("transactional_id", DataTypes.STRING().copy(false))
+                            .column("group_id", DataTypes.STRING().copy(false))
+                            .column("topic", DataTypes.STRING().copy(false))
+                            .column("partition", DataTypes.INT().copy(false))
+                            .column("offset", DataTypes.BIGINT().copy(false))
+                            .column("leader_epoch", DataTypes.INT().copy(false))
+                            .column("metadata", DataTypes.STRING())
+                            .column("committed_at", DataTypes.TIMESTAMP_LTZ(3).copy(false))
+                            .primaryKey("transactional_id", "group_id", "topic", "partition")
                             .build(),
                     KAFKA_TXN_BUCKETS);
 
@@ -240,7 +264,8 @@ public final class SystemTables {
             SR_CONFIG,
             SCHEMA_REFERENCES,
             KAFKA_TXN_STATE,
-            KAFKA_PRODUCER_IDS
+            KAFKA_PRODUCER_IDS,
+            KAFKA_TXN_OFFSET_BUFFER
         };
     }
 

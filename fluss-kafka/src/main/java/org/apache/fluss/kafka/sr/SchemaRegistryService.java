@@ -33,6 +33,7 @@ import org.apache.fluss.kafka.sr.compat.CompatibilityResult;
 import org.apache.fluss.kafka.sr.references.CatalogReferenceResolver;
 import org.apache.fluss.kafka.sr.references.ReferenceResolver;
 import org.apache.fluss.kafka.sr.typed.FormatRegistry;
+import org.apache.fluss.kafka.sr.typed.TypedTableEvolver;
 import org.apache.fluss.metadata.TablePath;
 import org.apache.fluss.security.acl.FlussPrincipal;
 import org.apache.fluss.server.coordinator.MetadataManager;
@@ -78,6 +79,7 @@ public final class SchemaRegistryService {
     private final CatalogService catalog;
     private final String kafkaDatabase;
     private final boolean rbacEnforced;
+    private final TypedTableEvolver typedTableEvolver;
 
     public SchemaRegistryService(
             MetadataManager metadataManager, CatalogService catalog, String kafkaDatabase) {
@@ -89,10 +91,30 @@ public final class SchemaRegistryService {
             CatalogService catalog,
             String kafkaDatabase,
             boolean rbacEnforced) {
+        this(
+                metadataManager,
+                catalog,
+                kafkaDatabase,
+                rbacEnforced,
+                new TypedTableEvolver(metadataManager, catalog, kafkaDatabase, null, false));
+    }
+
+    /**
+     * Phase T.3 constructor: wires in the {@link TypedTableEvolver} so registrations reshape the
+     * underlying Fluss data table when the {@code kafka.typed-tables.enabled} flag is on. The
+     * evolver is a no-op when that flag is off.
+     */
+    public SchemaRegistryService(
+            MetadataManager metadataManager,
+            CatalogService catalog,
+            String kafkaDatabase,
+            boolean rbacEnforced,
+            TypedTableEvolver typedTableEvolver) {
         this.metadataManager = metadataManager;
         this.catalog = catalog;
         this.kafkaDatabase = kafkaDatabase;
         this.rbacEnforced = rbacEnforced;
+        this.typedTableEvolver = typedTableEvolver;
     }
 
     /** Fallback compatibility when no global config row is stored. */
@@ -405,6 +427,14 @@ public final class SchemaRegistryService {
             enforceCompatibilityOrThrow(subject, topic, schemaText, resolver);
 
             ensureCatalogEntities(topic);
+            // Phase T.3 — reshape the underlying Fluss table from KAFKA_PASSTHROUGH to
+            // KAFKA_TYPED_<FORMAT> on first registration, or apply additive evolution on
+            // subsequent ones. No-op when kafka.typed-tables.enabled = false. Runs AFTER
+            // ensureCatalogEntities (so the catalog row exists) and BEFORE catalog.registerSchema
+            // (so the Confluent id is minted only when the reshape / alter has succeeded).
+            // Confluent ids live in __schemas__ keyed by schema_id UUID and are not touched by
+            // the reshape; T.2's decoder cache key (tableId, schemaId) is reshape-stable.
+            typedTableEvolver.onRegister(topic, canonicalFormat, schemaText);
             SchemaVersionEntity version =
                     catalog.registerSchema(
                             kafkaDatabase,

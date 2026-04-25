@@ -36,6 +36,7 @@ public class FetchLogResultForBucket extends ResultForBucket {
     private final @Nullable LogRecords records;
     private final long highWatermark;
     private final long filteredEndOffset;
+    private final long lastStableOffset;
 
     public FetchLogResultForBucket(
             TableBucket tableBucket, LogRecords records, long highWatermark) {
@@ -43,6 +44,7 @@ public class FetchLogResultForBucket extends ResultForBucket {
                 tableBucket,
                 null,
                 checkNotNull(records, "records can not be null"),
+                highWatermark,
                 highWatermark,
                 -1L,
                 ApiError.NONE);
@@ -58,12 +60,13 @@ public class FetchLogResultForBucket extends ResultForBucket {
                 null,
                 checkNotNull(records, "records can not be null"),
                 highWatermark,
+                highWatermark,
                 filteredEndOffset,
                 ApiError.NONE);
     }
 
     public FetchLogResultForBucket(TableBucket tableBucket, ApiError error) {
-        this(tableBucket, null, null, -1L, -1L, error);
+        this(tableBucket, null, null, -1L, -1L, -1L, error);
     }
 
     public FetchLogResultForBucket(
@@ -72,6 +75,7 @@ public class FetchLogResultForBucket extends ResultForBucket {
                 tableBucket,
                 checkNotNull(remoteLogFetchInfo, "remote log fetch info can not be null"),
                 null,
+                highWatermark,
                 highWatermark,
                 -1L,
                 ApiError.NONE);
@@ -84,7 +88,36 @@ public class FetchLogResultForBucket extends ResultForBucket {
      */
     public FetchLogResultForBucket(
             TableBucket tableBucket, long highWatermark, long filteredEndOffset) {
-        this(tableBucket, null, null, highWatermark, filteredEndOffset, ApiError.NONE);
+        this(
+                tableBucket,
+                null,
+                null,
+                highWatermark,
+                highWatermark,
+                filteredEndOffset,
+                ApiError.NONE);
+    }
+
+    /**
+     * Phase J.3 — full constructor that lets the read path stamp a distinct {@code
+     * lastStableOffset} alongside the high-watermark. Callers that don't use transactions pass
+     * {@code highWatermark} for both; the Kafka fetch transcoder reads {@link
+     * #getLastStableOffset()} only when {@code isolation_level=READ_COMMITTED}.
+     */
+    public FetchLogResultForBucket(
+            TableBucket tableBucket,
+            LogRecords records,
+            long highWatermark,
+            long lastStableOffset,
+            long filteredEndOffset) {
+        this(
+                tableBucket,
+                null,
+                checkNotNull(records, "records can not be null"),
+                highWatermark,
+                lastStableOffset,
+                filteredEndOffset,
+                ApiError.NONE);
     }
 
     private FetchLogResultForBucket(
@@ -92,12 +125,14 @@ public class FetchLogResultForBucket extends ResultForBucket {
             @Nullable RemoteLogFetchInfo remoteLogFetchInfo,
             @Nullable LogRecords records,
             long highWatermark,
+            long lastStableOffset,
             long filteredEndOffset,
             ApiError error) {
         super(tableBucket, error);
         this.remoteLogFetchInfo = remoteLogFetchInfo;
         this.records = records;
         this.highWatermark = highWatermark;
+        this.lastStableOffset = lastStableOffset;
         this.filteredEndOffset = filteredEndOffset;
     }
 
@@ -130,6 +165,19 @@ public class FetchLogResultForBucket extends ResultForBucket {
 
     public long getHighWatermark() {
         return highWatermark;
+    }
+
+    /**
+     * Phase J.3 last-stable-offset. For non-transactional logs this equals {@link
+     * #getHighWatermark()} (no open transactions, so nothing to gate). For partitions that
+     * participate in transactions, this is {@code min(highWatermark, firstOffsetOfOldestOpenTxn)} —
+     * the cursor a {@code READ_COMMITTED} consumer must clamp at.
+     *
+     * <p>Returned as {@code -1} when the result is an error or unset (the legacy 4-arg constructors
+     * mirror it from {@code highWatermark} so existing callers see no behaviour change).
+     */
+    public long getLastStableOffset() {
+        return lastStableOffset;
     }
 
     /**

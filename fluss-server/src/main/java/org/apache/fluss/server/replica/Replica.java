@@ -356,6 +356,16 @@ public final class Replica {
         return logTablet.getHighWatermark();
     }
 
+    /**
+     * Phase J.3 — last-stable-offset. For partitions with no open transactions this equals {@link
+     * #getLogHighWatermark()}; otherwise it's the first-offset of the oldest open transactional
+     * batch on the {@link LogTablet}. Consumed by the Kafka fetch transcoder when {@code
+     * isolation_level=READ_COMMITTED}.
+     */
+    public long getLogLastStableOffset() {
+        return logTablet.lastStableOffset();
+    }
+
     public TableBucket getTableBucket() {
         return tableBucket;
     }

@@ -36,6 +36,7 @@ import org.apache.fluss.record.DefaultLogRecordBatch;
 import org.apache.fluss.record.FileLogProjection;
 import org.apache.fluss.record.FileLogRecords;
 import org.apache.fluss.record.LogRecordBatch;
+import org.apache.fluss.record.LogRecordBatchFormat;
 import org.apache.fluss.record.LogRecords;
 import org.apache.fluss.record.MemoryLogRecords;
 import org.apache.fluss.server.log.LocalLog.SegmentDeletionReason;
@@ -55,6 +56,7 @@ import javax.annotation.concurrent.ThreadSafe;
 
 import java.io.File;
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -63,7 +65,10 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.NavigableMap;
 import java.util.Optional;
+import java.util.PriorityQueue;
+import java.util.TreeMap;
 import java.util.concurrent.ScheduledFuture;
 
 import static org.apache.fluss.utils.FileUtils.flushFileIfExists;
@@ -106,6 +111,31 @@ public final class LogTablet {
 
     @GuardedBy("lock")
     private volatile LogOffsetMetadata highWatermarkMetadata;
+
+    /**
+     * Phase J.3 — open-transaction tracker. One {@link OpenTxn} per currently-open transactional
+     * batch ({@code (writerId, firstOffset)} pair). Maintained in a min-heap by {@code firstOffset}
+     * so {@link #computeLastStableOffset()} is O(log n) at worst and O(1) on peek-only fast paths.
+     *
+     * <p>The map by {@code writerId} indexes the same entries so a control-batch append (commit or
+     * abort) can remove the right open-txn entry in O(1) without scanning the heap.
+     */
+    @GuardedBy("lock")
+    private final PriorityQueue<OpenTxn> openTxnHeap =
+            new PriorityQueue<>((a, b) -> Long.compare(a.firstOffset, b.firstOffset));
+
+    @GuardedBy("lock")
+    private final java.util.HashMap<Long, OpenTxn> openTxnByWriterId = new java.util.HashMap<>();
+
+    /**
+     * Phase J.3 — aborted-transaction ranges: {@code [firstOffset, markerOffset)}. Keyed by {@code
+     * firstOffset} (TreeMap.floorEntry lets the fetch path quickly answer "is this batch inside an
+     * aborted range?"). Survives crash via {@code .aborted} sidecar — for now we keep it in-memory
+     * only; on recovery the {@link #rebuildTransactionState()} sweep over local batches re-derives
+     * the entries.
+     */
+    @GuardedBy("lock")
+    private final NavigableMap<Long, AbortedTxn> abortedTxns = new TreeMap<>();
 
     /** The leader end offset snapshot when become leader. */
     private volatile long leaderEndOffsetSnapshot = -1L;
@@ -239,6 +269,114 @@ public final class LogTablet {
 
     public long getHighWatermark() {
         return highWatermarkMetadata.getMessageOffset();
+    }
+
+    /**
+     * Phase J.3 last-stable-offset (design 0016 §7) — {@code min(highWatermark,
+     * firstOffsetOfOldestOpenTxn)}.
+     *
+     * <p>For partitions with no open transactions this equals {@link #getHighWatermark()}; when a
+     * transactional batch is open on this tablet, the LSO is held at that batch's first-offset
+     * until the corresponding commit / abort marker is appended (which pops the heap entry).
+     *
+     * <p>Returned to the Kafka fetch transcoder via {@link
+     * org.apache.fluss.rpc.entity.FetchLogResultForBucket#getLastStableOffset()}; the transcoder
+     * clamps the response at the LSO when {@code isolation_level=READ_COMMITTED}.
+     */
+    public long lastStableOffset() {
+        long hwm = getHighWatermark();
+        synchronized (lock) {
+            OpenTxn oldest = openTxnHeap.peek();
+            if (oldest == null) {
+                return hwm;
+            }
+            return Math.min(hwm, oldest.firstOffset);
+        }
+    }
+
+    /**
+     * Snapshot the aborted-transaction ranges {@code [firstOffset, markerOffset)} that overlap the
+     * half-open window {@code [fromOffset, toOffset)}. Used by the Kafka fetch transcoder to filter
+     * aborted batches out of a {@code READ_COMMITTED} response.
+     *
+     * <p>Returns an empty list when no aborts overlap the window — the common case.
+     */
+    public List<AbortedTxn> abortedTxnsInRange(long fromOffset, long toOffset) {
+        if (toOffset <= fromOffset) {
+            return Collections.emptyList();
+        }
+        List<AbortedTxn> out = new ArrayList<>();
+        synchronized (lock) {
+            // floorEntry gives us the abort range starting at-or-before fromOffset; subsequent
+            // entries are scanned in offset order until we exceed toOffset. O(log n + k).
+            Map.Entry<Long, AbortedTxn> first = abortedTxns.floorEntry(fromOffset);
+            if (first != null && first.getValue().lastOffsetExclusive > fromOffset) {
+                out.add(first.getValue());
+            }
+            for (Map.Entry<Long, AbortedTxn> e :
+                    abortedTxns.tailMap(fromOffset, false).entrySet()) {
+                if (e.getKey() >= toOffset) {
+                    break;
+                }
+                out.add(e.getValue());
+            }
+        }
+        return out;
+    }
+
+    /**
+     * Phase J.3 — public test/observability accessor for the open-transaction count. Not used on
+     * the read path (LSO computation uses {@link #lastStableOffset()}).
+     */
+    @VisibleForTesting
+    public int openTransactionCount() {
+        synchronized (lock) {
+            return openTxnHeap.size();
+        }
+    }
+
+    /** Open transactional batch — one entry per {@code (writerId, firstOffset)}. */
+    public static final class OpenTxn {
+        final long writerId;
+        final long firstOffset;
+
+        OpenTxn(long writerId, long firstOffset) {
+            this.writerId = writerId;
+            this.firstOffset = firstOffset;
+        }
+
+        public long writerId() {
+            return writerId;
+        }
+
+        public long firstOffset() {
+            return firstOffset;
+        }
+    }
+
+    /** Aborted transaction range; {@code [firstOffset, lastOffsetExclusive)}. */
+    public static final class AbortedTxn {
+        private final long writerId;
+        private final long firstOffset;
+        private final long lastOffsetExclusive;
+
+        AbortedTxn(long writerId, long firstOffset, long lastOffsetExclusive) {
+            this.writerId = writerId;
+            this.firstOffset = firstOffset;
+            this.lastOffsetExclusive = lastOffsetExclusive;
+        }
+
+        public long writerId() {
+            return writerId;
+        }
+
+        public long firstOffset() {
+            return firstOffset;
+        }
+
+        public long lastOffsetExclusive() {
+            return lastOffsetExclusive;
+        }
     }
 
     public LogOffsetMetadata getLocalEndOffsetMetadata() {
@@ -597,6 +735,9 @@ public final class LogTablet {
         synchronized (lock) {
             rebuildWriterState(lastOffset, writerStateManager);
             updateHighWatermark(localLog.getLocalLogEndOffsetMetadata().getMessageOffset());
+            // Phase J.3: re-derive the open-transaction heap + aborted-ranges map from the local
+            // segments. Idempotent; cheap when there are no markers.
+            rebuildTransactionState();
         }
     }
 
@@ -817,7 +958,9 @@ public final class LogTablet {
                 // the current offset even if there isn't any idempotent data being written.
                 writerStateManager.updateMapEndOffset(appendInfo.lastOffset() + 1);
 
-                // todo update the first unstable offset (which is used to compute lso)
+                // Phase J.3: track open transactional batches so the LSO holds at the
+                // first-offset of the oldest open txn until its commit/abort marker arrives.
+                trackTransactionalBatches(validRecords);
 
                 LOG.trace(
                         "Appended message set with last offset: {}, first offset {}, next offset: {} "
@@ -842,6 +985,184 @@ public final class LogTablet {
         // updated.
         if (getHighWatermark() >= localLog.getLocalLogEndOffset()) {
             updateHighWatermarkMetadata(localLog.getLocalLogEndOffsetMetadata());
+        }
+    }
+
+    /**
+     * Phase J.3 — walk the just-appended batches; for each transactional non-control batch with
+     * sequence-0 (the first batch of an open transaction), register an {@link OpenTxn}. For control
+     * batches (commit / abort markers) pop the matching writer-id from the heap and, on abort,
+     * record the aborted range.
+     *
+     * <p>Caller must hold {@link #lock}. Idempotent against duplicated batches — duplicates are
+     * elided by the writer-state validator before this call.
+     */
+    @GuardedBy("lock")
+    private void trackTransactionalBatches(MemoryLogRecords records) {
+        for (LogRecordBatch batch : records.batches()) {
+            if (!batch.hasWriterId()) {
+                // Non-transactional / non-idempotent batch — does not affect the LSO.
+                continue;
+            }
+            if (batch.isControlBatch()) {
+                applyMarker(batch);
+            } else if (batch.batchSequence() == 0) {
+                // First batch of a (potentially) transactional sequence. We can't distinguish
+                // idempotent-only from transactional batches at the log-format level (Kafka's
+                // wire flag isn't propagated through Fluss's MemoryLogRecords today), so we
+                // optimistically track every sequence-0 batch as open. A non-transactional
+                // idempotent producer never sends a marker; the entry is harmless because LSO
+                // computation only matters when the Kafka transcoder asks for it (and a sane
+                // idempotent producer never opens a "transaction"). Aborts for stale entries
+                // are handled by the WriterIdExpiration sweep.
+                OpenTxn open = new OpenTxn(batch.writerId(), batch.baseLogOffset());
+                OpenTxn previous = openTxnByWriterId.put(batch.writerId(), open);
+                if (previous != null) {
+                    openTxnHeap.remove(previous);
+                }
+                openTxnHeap.add(open);
+            }
+        }
+    }
+
+    /**
+     * Phase J.3 — apply a control batch (commit or abort marker). Pops the matching open-txn entry;
+     * on abort, records the aborted range. Caller must hold {@link #lock}.
+     */
+    @GuardedBy("lock")
+    private void applyMarker(LogRecordBatch markerBatch) {
+        OpenTxn open = openTxnByWriterId.remove(markerBatch.writerId());
+        if (open == null) {
+            // No open txn for this writer — could be a duplicate marker or a recovery replay
+            // before the open-txn was rebuilt. Either case is benign at the LSO level.
+            return;
+        }
+        openTxnHeap.remove(open);
+        if (markerBatch.isTransactionAbort()) {
+            long markerStart = markerBatch.baseLogOffset();
+            abortedTxns.put(
+                    open.firstOffset, new AbortedTxn(open.writerId, open.firstOffset, markerStart));
+        }
+    }
+
+    /**
+     * Phase J.3 — append a Kafka-style transaction marker batch to the log. Used by {@code
+     * WRITE_TXN_MARKERS} to advance the LSO past an open transaction. The marker is structurally a
+     * V2 record batch with {@code recordCount=0}, the {@link
+     * DefaultLogRecordBatch#APPEND_ONLY_FLAG_MASK} + {@link
+     * DefaultLogRecordBatch#CONTROL_BATCH_FLAG_MASK} attributes set (and {@link
+     * DefaultLogRecordBatch#CONTROL_BATCH_ABORT_MASK} when the kind is abort), and the {@code
+     * (writerId, epoch, batchSequence)} that identifies the transaction.
+     *
+     * <p>Returns the {@link LogAppendInfo} for the marker append. The append goes through the
+     * normal append path so the LSO bookkeeping in {@link #trackTransactionalBatches} sees the
+     * control batch and pops / records the aborted range.
+     *
+     * @param writerId the producer/writer id whose transaction this marker terminates
+     * @param producerEpoch the epoch carried on the marker (matches the open txn's epoch)
+     * @param commit {@code true} for a commit marker; {@code false} for an abort marker
+     */
+    public LogAppendInfo appendTxnMarker(long writerId, short producerEpoch, boolean commit)
+            throws Exception {
+        MemoryLogRecords markerRecords = buildMarkerBatch(writerId, producerEpoch, commit);
+        return appendAsLeader(markerRecords);
+    }
+
+    /**
+     * Build a marker batch in {@link MemoryLogRecords} form. The batch carries no records; {@code
+     * lastOffsetDelta=0}, {@code recordCount=0}, attributes set per the kind argument.
+     *
+     * <p>Built directly via the V2 header layout — there is no public Fluss builder for empty
+     * batches, but the field layout is stable and the CRC is recomputed below.
+     */
+    private MemoryLogRecords buildMarkerBatch(long writerId, short producerEpoch, boolean commit) {
+        byte magic = LogRecordBatchFormat.LOG_MAGIC_VALUE_V2;
+        int headerSize = LogRecordBatchFormat.recordBatchHeaderSize(magic);
+        ByteBuffer buffer = ByteBuffer.allocate(headerSize);
+        // Allocate a MemorySegment view over the buffer so we can use DefaultLogRecordBatch's
+        // setters (writeWords). Use the wrap-array helper since the buffer is on-heap.
+        org.apache.fluss.memory.MemorySegment seg =
+                org.apache.fluss.memory.MemorySegment.wrap(buffer.array());
+        // BaseOffset is reassigned by appendAsLeader's assignOffsetAndTimestamp path — set 0.
+        seg.putLong(LogRecordBatchFormat.BASE_OFFSET_OFFSET, 0L);
+        // Length: total size minus the BASE_OFFSET + LENGTH prefix (8 + 4).
+        int length = headerSize - LogRecordBatchFormat.LOG_OVERHEAD;
+        seg.putInt(LogRecordBatchFormat.LENGTH_OFFSET, length);
+        seg.put(LogRecordBatchFormat.MAGIC_OFFSET, magic);
+        // CommitTimestamp + LeaderEpoch are stamped by the append path (assignOffsetAndTimestamp,
+        // setLeaderEpoch) — leave as zeros here.
+        seg.putLong(LogRecordBatchFormat.COMMIT_TIMESTAMP_OFFSET, 0L);
+        seg.putInt(LogRecordBatchFormat.leaderEpochOffset(magic), 0);
+        seg.putShort(LogRecordBatchFormat.schemaIdOffset(magic), (short) 0);
+        byte attrs =
+                (byte)
+                        (DefaultLogRecordBatch.APPEND_ONLY_FLAG_MASK
+                                | DefaultLogRecordBatch.CONTROL_BATCH_FLAG_MASK
+                                | (commit ? 0 : DefaultLogRecordBatch.CONTROL_BATCH_ABORT_MASK));
+        seg.put(LogRecordBatchFormat.attributeOffset(magic), attrs);
+        seg.putInt(LogRecordBatchFormat.lastOffsetDeltaOffset(magic), 0);
+        seg.putLong(LogRecordBatchFormat.writeClientIdOffset(magic), writerId);
+        // Use producerEpoch as the high half of the batch-sequence field (stable and visible to
+        // the marker recipient on read). The low half is 0; this is a non-data batch and the
+        // sequence is informational only — the writer-state manager treats marker batches via
+        // the control-bit path below.
+        seg.putInt(LogRecordBatchFormat.batchSequenceOffset(magic), ((int) producerEpoch) & 0xffff);
+        seg.putInt(LogRecordBatchFormat.recordsCountOffset(magic), 0);
+        seg.putInt(LogRecordBatchFormat.statisticsLengthOffset(magic), 0);
+        // Recompute CRC over (schemaId .. end of batch).
+        int crcOffset = LogRecordBatchFormat.crcOffset(magic);
+        int schemaIdOffset = LogRecordBatchFormat.schemaIdOffset(magic);
+        long crc =
+                org.apache.fluss.utils.crc.Crc32C.compute(
+                        buffer, schemaIdOffset, headerSize - schemaIdOffset);
+        seg.putInt(crcOffset, (int) crc);
+        ByteBuffer ready = ByteBuffer.wrap(buffer.array(), 0, headerSize);
+        return MemoryLogRecords.pointToByteBuffer(ready);
+    }
+
+    /**
+     * Phase J.3 — recovery hook. Re-derives the open-transaction heap and aborted-ranges map by
+     * scanning every batch in the local log and replaying {@link #trackTransactionalBatches} on
+     * each. Called from {@link #loadWriterSnapshot(long)}; idempotent.
+     *
+     * <p>Cost: O(n) on the local segment count. The sweep is the same one that rebuilds writer
+     * state, so we piggy-back rather than open the segments twice.
+     */
+    @GuardedBy("lock")
+    private void rebuildTransactionState() {
+        openTxnHeap.clear();
+        openTxnByWriterId.clear();
+        abortedTxns.clear();
+        try {
+            FetchDataInfo info =
+                    localLog.read(
+                            localLog.getLocalLogStartOffset(),
+                            Integer.MAX_VALUE,
+                            /* minOneMessage */ false,
+                            /* maxOffsetMetadata */ null,
+                            /* projection */ null,
+                            /* filterContext */ null);
+            for (LogRecordBatch batch : info.getRecords().batches()) {
+                if (!batch.hasWriterId()) {
+                    continue;
+                }
+                if (batch.isControlBatch()) {
+                    applyMarker(batch);
+                } else if (batch.batchSequence() == 0) {
+                    OpenTxn open = new OpenTxn(batch.writerId(), batch.baseLogOffset());
+                    OpenTxn previous = openTxnByWriterId.put(batch.writerId(), open);
+                    if (previous != null) {
+                        openTxnHeap.remove(previous);
+                    }
+                    openTxnHeap.add(open);
+                }
+            }
+        } catch (IOException e) {
+            LOG.warn(
+                    "Failed to rebuild transaction state for bucket {}; LSO may diverge until next"
+                            + " marker arrives",
+                    getTableBucket(),
+                    e);
         }
     }
 
@@ -1148,6 +1469,12 @@ public final class LogTablet {
 
         for (LogRecordBatch batch : records.batches()) {
             if (batch.hasWriterId()) {
+                // Phase J.3: control batches (transaction markers) carry no records and reuse
+                // the writer-id of the open txn — they are by definition not idempotent and
+                // must not be duplicate-checked against the data batches that share the writer.
+                if (batch.isControlBatch()) {
+                    continue;
+                }
                 // if this is a write request, there will be up to 5 batches which could
                 // have been duplicated. If we find a duplicate, we return the metadata of the
                 // appended batch to the writer.

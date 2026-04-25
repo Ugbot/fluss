@@ -24,6 +24,7 @@ import org.apache.fluss.catalog.entities.ClientQuotaFilter;
 import org.apache.fluss.catalog.entities.GrantEntity;
 import org.apache.fluss.catalog.entities.KafkaProducerIdEntity;
 import org.apache.fluss.catalog.entities.KafkaSubjectBinding;
+import org.apache.fluss.catalog.entities.KafkaTxnOffsetBufferEntity;
 import org.apache.fluss.catalog.entities.KafkaTxnStateEntity;
 import org.apache.fluss.catalog.entities.NamespaceEntity;
 import org.apache.fluss.catalog.entities.PrincipalEntity;
@@ -80,6 +81,19 @@ public interface CatalogService {
     List<CatalogTableEntity> listTables(String namespace) throws Exception;
 
     void dropTable(String namespace, String name) throws Exception;
+
+    /**
+     * Flip the {@code format} string on an existing catalog table row. Used by the Kafka Schema
+     * Registry's typed-table reshape (Phase T.3) to transition a Kafka topic's catalog row from
+     * {@code KAFKA_PASSTHROUGH} to {@code KAFKA_TYPED_<FORMAT>} after the underlying data table has
+     * been reshaped. Idempotent on (namespace, name, newFormat). Throws {@link CatalogException} of
+     * kind {@link CatalogException.Kind#NOT_FOUND} if the row does not exist.
+     *
+     * <p>Other {@link CatalogTableEntity} fields ({@code namespaceId}, {@code backingRef}, {@code
+     * currentSchemaId}, {@code createdBy}, {@code createdAtMillis}) are preserved.
+     */
+    CatalogTableEntity updateTableFormat(String namespace, String name, String newFormat)
+            throws Exception;
 
     // --------------------------- Schema history ----------------------- //
 
@@ -296,4 +310,19 @@ public interface CatalogService {
      * acquisition to seed the monotonic id counter from {@code MAX(producer_id)}.
      */
     List<KafkaProducerIdEntity> listKafkaProducerIds() throws Exception;
+
+    // ---------- Phase J.3 — durable TXN_OFFSET_COMMIT buffer ---------- //
+
+    /** Upsert a single buffered txn-offset row. Idempotent on the composite PK. */
+    KafkaTxnOffsetBufferEntity upsertKafkaTxnOffset(KafkaTxnOffsetBufferEntity entity)
+            throws Exception;
+
+    /**
+     * Read every buffered offset row for {@code transactionalId}. The coordinator calls this on
+     * {@code END_TXN(commit)} to flush; the returned list is unordered.
+     */
+    List<KafkaTxnOffsetBufferEntity> listKafkaTxnOffsets(String transactionalId) throws Exception;
+
+    /** Delete every buffered offset row for {@code transactionalId}. No-op when none exist. */
+    void deleteKafkaTxnOffsets(String transactionalId) throws Exception;
 }
