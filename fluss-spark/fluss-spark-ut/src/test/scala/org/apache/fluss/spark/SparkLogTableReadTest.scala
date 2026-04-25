@@ -17,7 +17,12 @@
 
 package org.apache.fluss.spark
 
-import org.apache.spark.sql.Row
+import org.apache.fluss.spark.read.FlussAppendScan
+
+import org.apache.spark.sql.{DataFrame, Row}
+import org.apache.spark.sql.connector.expressions.filter.Predicate
+import org.apache.spark.sql.execution.datasources.v2.{BatchScanExec, DataSourceV2ScanRelation}
+import org.assertj.core.api.Assertions.assertThat
 
 class SparkLogTableReadTest extends FlussSparkTestBase {
 
@@ -278,5 +283,207 @@ class SparkLogTableReadTest extends FlussSparkTestBase {
         ) :: Nil
       )
     }
+  }
+
+  test("Spark Read: filter pushdown — equality on integer column") {
+    withSampleTable {
+      val query =
+        sql(s"SELECT * FROM $DEFAULT_DATABASE.t WHERE amount = 603 ORDER BY orderId")
+      checkAnswer(query, Row(800L, 23L, 603, "addr3") :: Nil)
+      assertPushedNames(query, Set("="))
+    }
+  }
+
+  test("Spark Read: filter pushdown — range predicate on bigint column") {
+    withSampleTable {
+      val query =
+        sql(s"SELECT * FROM $DEFAULT_DATABASE.t WHERE orderId >= 900 ORDER BY orderId")
+      checkAnswer(
+        query,
+        Row(900L, 24L, 604, "addr4") ::
+          Row(1000L, 25L, 605, "addr5") :: Nil)
+      assertPushedNames(query, Set(">="))
+    }
+  }
+
+  test("Spark Read: filter pushdown — AND of two pushable predicates") {
+    withSampleTable {
+      val query = sql(s"""
+                         |SELECT * FROM $DEFAULT_DATABASE.t
+                         |WHERE orderId >= 700 AND amount < 605
+                         |ORDER BY orderId""".stripMargin)
+      checkAnswer(
+        query,
+        Row(700L, 22L, 602, "addr2") ::
+          Row(800L, 23L, 603, "addr3") ::
+          Row(900L, 24L, 604, "addr4") :: Nil)
+      val pushed = pushedPredicates(query).map(_.name())
+      assert(pushed.contains(">=") && pushed.contains("<"))
+    }
+  }
+
+  test("Spark Read: filter pushdown — IS NULL / IS NOT NULL on string column") {
+    withSampleTable {
+      val query =
+        sql(s"SELECT COUNT(*) FROM $DEFAULT_DATABASE.t WHERE address IS NOT NULL")
+      checkAnswer(query, Row(5L) :: Nil)
+      assertPushedNames(query, Set("IS_NOT_NULL"))
+    }
+  }
+
+  test("Spark Read: filter pushdown — LIKE 'prefix%' is pushed as STARTS_WITH") {
+    withSampleTable {
+      val query =
+        sql(s"SELECT orderId FROM $DEFAULT_DATABASE.t WHERE address LIKE 'addr%' ORDER BY orderId")
+      checkAnswer(query, Row(600L) :: Row(700L) :: Row(800L) :: Row(900L) :: Row(1000L) :: Nil)
+      assertPushedNames(query, Set("STARTS_WITH"))
+    }
+  }
+
+  test("Spark Read: filter pushdown — IN on string column") {
+    withSampleTable {
+      val query = sql(s"""
+                         |SELECT orderId FROM $DEFAULT_DATABASE.t
+                         |WHERE address IN ('addr1', 'addr3')
+                         |ORDER BY orderId""".stripMargin)
+      checkAnswer(query, Row(600L) :: Row(800L) :: Nil)
+      val pushed = pushedPredicates(query).map(_.name())
+      // Spark may rewrite small INs as =/OR.
+      assertThat(pushed.exists(name => name == "IN" || name == "=" || name == "OR")).isTrue
+    }
+  }
+
+  test("Spark Read: filter pushdown — non-pushable predicate falls back to Spark") {
+    withSampleTable {
+      val query =
+        sql(s"SELECT * FROM $DEFAULT_DATABASE.t WHERE amount % 2 = 0 ORDER BY orderId")
+      checkAnswer(
+        query,
+        Row(700L, 22L, 602, "addr2") ::
+          Row(900L, 24L, 604, "addr4") :: Nil)
+      val pushed = pushedPredicates(query).map(_.name())
+      assertThat(pushed.exists(_ == "=")).isFalse
+    }
+  }
+
+  test("Spark Read: filter pushdown — mixed pushable + non-pushable") {
+    withSampleTable {
+      val query = sql(s"""
+                         |SELECT * FROM $DEFAULT_DATABASE.t
+                         |WHERE orderId >= 700 AND amount % 2 = 0
+                         |ORDER BY orderId""".stripMargin)
+      checkAnswer(
+        query,
+        Row(700L, 22L, 602, "addr2") ::
+          Row(900L, 24L, 604, "addr4") :: Nil)
+      val pushed = pushedPredicates(query).map(_.name())
+      assert(pushed.contains(">="))
+    }
+  }
+
+  test("Spark Read: filter pushdown is skipped for non-ARROW log format") {
+    withTable("indexed") {
+      sql(s"""
+             |CREATE TABLE $DEFAULT_DATABASE.indexed (
+             |  orderId BIGINT,
+             |  amount  INT
+             |) TBLPROPERTIES('table.log.format' = 'indexed')""".stripMargin)
+      sql(s"""
+             |INSERT INTO $DEFAULT_DATABASE.indexed VALUES
+             |(600L, 601), (700L, 602), (800L, 603)""".stripMargin)
+
+      val query =
+        sql(s"SELECT * FROM $DEFAULT_DATABASE.indexed WHERE amount = 602 ORDER BY orderId")
+      checkAnswer(query, Row(700L, 602) :: Nil)
+      assert(pushedPredicates(query).isEmpty)
+    }
+  }
+
+  test("Spark Read: filter pushdown — DATE and TIMESTAMP_NTZ literals") {
+    withTable("typed") {
+      sql(s"""
+             |CREATE TABLE $DEFAULT_DATABASE.typed (
+             |  id INT,
+             |  dt DATE,
+             |  ts TIMESTAMP_NTZ
+             |)""".stripMargin)
+
+      sql(s"""
+             |INSERT INTO $DEFAULT_DATABASE.typed VALUES
+             |(1, DATE '2026-01-01', TIMESTAMP_NTZ '2026-01-01 12:00:00'),
+             |(2, DATE '2026-01-02', TIMESTAMP_NTZ '2026-01-02 12:00:00'),
+             |(3, DATE '2026-01-03', TIMESTAMP_NTZ '2026-01-03 12:00:00')
+             |""".stripMargin)
+
+      val byDate =
+        sql(s"SELECT id FROM $DEFAULT_DATABASE.typed WHERE dt = DATE '2026-01-02'")
+      checkAnswer(byDate, Row(2) :: Nil)
+      assertPushedNames(byDate, Set("="))
+
+      val byTs = sql(s"""SELECT id FROM $DEFAULT_DATABASE.typed
+                        |WHERE ts >= TIMESTAMP_NTZ '2026-01-02 00:00:00'""".stripMargin)
+      checkAnswer(byTs, Row(2) :: Row(3) :: Nil)
+      assertPushedNames(byTs, Set(">="))
+    }
+  }
+
+  test("Spark Read: filter pushdown on partitioned log table — data column") {
+    withTable("t") {
+      sql(s"""
+             |CREATE TABLE $DEFAULT_DATABASE.t (
+             |  orderId BIGINT, itemId BIGINT, amount INT, address STRING, dt STRING
+             |)
+             |PARTITIONED BY (dt)""".stripMargin)
+
+      sql(s"""
+             |INSERT INTO $DEFAULT_DATABASE.t VALUES
+             |(600L, 21L, 601, "addr1", "2026-01-01"), (700L, 22L, 602, "addr2", "2026-01-01"),
+             |(800L, 23L, 603, "addr3", "2026-01-02"), (900L, 24L, 604, "addr4", "2026-01-02"),
+             |(1000L, 25L, 605, "addr5", "2026-01-03")
+             |""".stripMargin)
+
+      val query =
+        sql(s"SELECT orderId, amount, dt FROM $DEFAULT_DATABASE.t WHERE amount = 603")
+      checkAnswer(query, Row(800L, 603, "2026-01-02") :: Nil)
+      assertPushedNames(query, Set("="))
+    }
+  }
+
+  private def withSampleTable(body: => Unit): Unit = withTable("t") {
+    sql(s"""
+           |CREATE TABLE $DEFAULT_DATABASE.t (
+           |  orderId BIGINT,
+           |  itemId  BIGINT,
+           |  amount  INT,
+           |  address STRING
+           |)""".stripMargin)
+    sql(s"""
+           |INSERT INTO $DEFAULT_DATABASE.t VALUES
+           |(600L, 21L, 601, 'addr1'), (700L, 22L, 602, 'addr2'),
+           |(800L, 23L, 603, 'addr3'), (900L, 24L, 604, 'addr4'),
+           |(1000L, 25L, 605, 'addr5')
+           |""".stripMargin)
+    body
+  }
+
+  private def pushedPredicates(df: DataFrame): Array[Predicate] = {
+    // AQE hides the scan under an adaptive wrapper in executedPlan, so check optimizedPlan too.
+    val scans =
+      df.queryExecution.executedPlan.collect {
+        case b: BatchScanExec => b.scan
+      } ++ df.queryExecution.optimizedPlan.collect {
+        case DataSourceV2ScanRelation(_, scan, _, _, _) => scan
+      }
+    scans
+      .collect { case f: FlussAppendScan => f.pushedSparkPredicates }
+      .flatten
+      .toArray
+  }
+
+  private def assertPushedNames(df: DataFrame, expected: Set[String]): Unit = {
+    val pushed = pushedPredicates(df).map(_.name()).toSet
+    assert(
+      expected.exists(pushed.contains),
+      s"Expected any of $expected in pushed predicates, got $pushed")
   }
 }
