@@ -91,6 +91,16 @@ public final class FlussCatalogService implements CatalogService, AutoCloseable 
 
     private final Object bootstrapLock = new Object();
 
+    /**
+     * Tables for which {@link #waitUntilReady(Table, Handle)} has already returned successfully. On
+     * subsequent {@link #table(Handle)} calls we can skip the readiness probe — bucket leadership
+     * only goes away on a coordinator-leader failover, at which point the singleton itself is
+     * rebuilt. This is the hot-path cache for the high-frequency upserts the txn coordinator drives
+     * during state-machine transitions.
+     */
+    private final java.util.Set<Handle> readyHandles =
+            java.util.Collections.newSetFromMap(new java.util.concurrent.ConcurrentHashMap<>());
+
     private enum Handle {
         NAMESPACES,
         TABLES,
@@ -1101,9 +1111,15 @@ public final class FlussCatalogService implements CatalogService, AutoCloseable 
             Admin admin = connection().getAdmin();
             boolean freshlyCreated = false;
             try {
-                admin.createTable(def.tablePath(), def.descriptor(), true)
+                // ignoreIfExists=false so the catch block tells us whether we just created the
+                // table or it was already there. Important for the readiness cache below: we
+                // only want to skip waitUntilReady when we know the bucket-leadership window
+                // has been paid in the current process lifetime — and we want to *re*-pay it
+                // whenever an external actor (tests, administrative drops) recreates the table.
+                admin.createTable(def.tablePath(), def.descriptor(), false)
                         .get(TIMEOUT_SECONDS, TimeUnit.SECONDS);
                 freshlyCreated = true;
+                readyHandles.remove(handle);
             } catch (ExecutionException ee) {
                 Throwable cause = ee.getCause();
                 if (!(cause instanceof TableAlreadyExistException)) {
@@ -1111,8 +1127,9 @@ public final class FlussCatalogService implements CatalogService, AutoCloseable 
                 }
             }
             Table t = connection().getTable(def.tablePath());
-            if (freshlyCreated) {
+            if (freshlyCreated || readyHandles.add(handle)) {
                 waitUntilReady(t, handle);
+                readyHandles.add(handle);
             }
             return t;
         }

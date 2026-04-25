@@ -39,6 +39,14 @@ public final class SystemTables {
 
     public static final int DEFAULT_BUCKETS = 16;
 
+    /**
+     * Bucket count for the low-volume Kafka transaction-coordinator tables ({@code
+     * __kafka_txn_state__}, {@code __kafka_producer_ids__}). These tables hold one row per {@code
+     * transactional.id} (a few thousand at most) and one row per allocated producer id; 4 buckets
+     * is plenty and keeps bucket-leadership-propagation cheap on cluster bootstrap.
+     */
+    public static final int KAFKA_TXN_BUCKETS = 4;
+
     public static final Table NAMESPACES =
             new Table(
                     "_namespaces",
@@ -183,7 +191,8 @@ public final class SystemTables {
                             .column("txn_start_timestamp", DataTypes.TIMESTAMP_LTZ(3))
                             .column("last_updated_at", DataTypes.TIMESTAMP_LTZ(3).copy(false))
                             .primaryKey("transactional_id")
-                            .build());
+                            .build(),
+                    KAFKA_TXN_BUCKETS);
 
     /**
      * Kafka producer-id allocations (design 0016 §6). One row per allocated producer id;
@@ -199,7 +208,8 @@ public final class SystemTables {
                             .column("epoch", DataTypes.SMALLINT().copy(false))
                             .column("allocated_at", DataTypes.TIMESTAMP_LTZ(3).copy(false))
                             .primaryKey("producer_id")
-                            .build());
+                            .build(),
+                    KAFKA_TXN_BUCKETS);
 
     public static final Table SCHEMA_REFERENCES =
             new Table(
@@ -238,10 +248,16 @@ public final class SystemTables {
     public static final class Table {
         private final String name;
         private final Schema schema;
+        private final int buckets;
 
         Table(String name, Schema schema) {
+            this(name, schema, DEFAULT_BUCKETS);
+        }
+
+        Table(String name, Schema schema, int buckets) {
             this.name = name;
             this.schema = schema;
+            this.buckets = buckets;
         }
 
         public String name() {
@@ -257,7 +273,7 @@ public final class SystemTables {
         }
 
         public TableDescriptor descriptor() {
-            return TableDescriptor.builder().schema(schema).distributedBy(DEFAULT_BUCKETS).build();
+            return TableDescriptor.builder().schema(schema).distributedBy(buckets).build();
         }
     }
 }

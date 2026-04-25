@@ -434,5 +434,62 @@ class KafkaClientQuotasTranscoderTest {
 
         @Override
         public void deleteSrConfig(String key) {}
+
+        @Override
+        public void deleteReferences(String referrerSchemaId) {}
+
+        @Override
+        public void bindReferences(
+                String referrerSchemaId,
+                java.util.List<org.apache.fluss.catalog.entities.SchemaReference> refs) {}
+
+        @Override
+        public java.util.List<org.apache.fluss.catalog.entities.SchemaReference> listReferences(
+                String referrerSchemaId) {
+            return Collections.emptyList();
+        }
+
+        @Override
+        public java.util.List<String> listReferencedBy(String referencedSchemaId) {
+            return Collections.emptyList();
+        }
+
+        @Override
+        public org.apache.fluss.catalog.entities.KafkaTxnStateEntity upsertKafkaTxnState(
+                org.apache.fluss.catalog.entities.KafkaTxnStateEntity entity) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public Optional<org.apache.fluss.catalog.entities.KafkaTxnStateEntity> getKafkaTxnState(
+                String transactionalId) {
+            return Optional.empty();
+        }
+
+        @Override
+        public List<org.apache.fluss.catalog.entities.KafkaTxnStateEntity> listKafkaTxnStates() {
+            return Collections.emptyList();
+        }
+
+        @Override
+        public void deleteKafkaTxnState(String transactionalId) {}
+
+        @Override
+        public org.apache.fluss.catalog.entities.KafkaProducerIdEntity allocateProducerId(
+                String transactionalId) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public Optional<org.apache.fluss.catalog.entities.KafkaProducerIdEntity> getKafkaProducerId(
+                long producerId) {
+            return Optional.empty();
+        }
+
+        @Override
+        public List<org.apache.fluss.catalog.entities.KafkaProducerIdEntity>
+                listKafkaProducerIds() {
+            return Collections.emptyList();
+        }
     }
 }

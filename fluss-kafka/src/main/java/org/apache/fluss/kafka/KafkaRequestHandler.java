@@ -100,6 +100,10 @@ import org.apache.kafka.common.protocol.Errors;
 import org.apache.kafka.common.record.RecordBatch;
 import org.apache.kafka.common.requests.AbstractRequest;
 import org.apache.kafka.common.requests.AbstractResponse;
+import org.apache.kafka.common.requests.AddOffsetsToTxnRequest;
+import org.apache.kafka.common.requests.AddOffsetsToTxnResponse;
+import org.apache.kafka.common.requests.AddPartitionsToTxnRequest;
+import org.apache.kafka.common.requests.AddPartitionsToTxnResponse;
 import org.apache.kafka.common.requests.AlterClientQuotasRequest;
 import org.apache.kafka.common.requests.AlterClientQuotasResponse;
 import org.apache.kafka.common.requests.AlterConfigsRequest;
@@ -130,8 +134,12 @@ import org.apache.kafka.common.requests.DescribeGroupsRequest;
 import org.apache.kafka.common.requests.DescribeGroupsResponse;
 import org.apache.kafka.common.requests.DescribeProducersRequest;
 import org.apache.kafka.common.requests.DescribeProducersResponse;
+import org.apache.kafka.common.requests.DescribeTransactionsRequest;
+import org.apache.kafka.common.requests.DescribeTransactionsResponse;
 import org.apache.kafka.common.requests.ElectLeadersRequest;
 import org.apache.kafka.common.requests.ElectLeadersResponse;
+import org.apache.kafka.common.requests.EndTxnRequest;
+import org.apache.kafka.common.requests.EndTxnResponse;
 import org.apache.kafka.common.requests.FetchRequest;
 import org.apache.kafka.common.requests.FetchResponse;
 import org.apache.kafka.common.requests.FindCoordinatorRequest;
@@ -149,6 +157,8 @@ import org.apache.kafka.common.requests.ListGroupsRequest;
 import org.apache.kafka.common.requests.ListGroupsResponse;
 import org.apache.kafka.common.requests.ListOffsetsRequest;
 import org.apache.kafka.common.requests.ListOffsetsResponse;
+import org.apache.kafka.common.requests.ListTransactionsRequest;
+import org.apache.kafka.common.requests.ListTransactionsResponse;
 import org.apache.kafka.common.requests.MetadataRequest;
 import org.apache.kafka.common.requests.MetadataResponse;
 import org.apache.kafka.common.requests.OffsetCommitRequest;
@@ -163,6 +173,10 @@ import org.apache.kafka.common.requests.ProduceRequest;
 import org.apache.kafka.common.requests.ProduceResponse;
 import org.apache.kafka.common.requests.SyncGroupRequest;
 import org.apache.kafka.common.requests.SyncGroupResponse;
+import org.apache.kafka.common.requests.TxnOffsetCommitRequest;
+import org.apache.kafka.common.requests.TxnOffsetCommitResponse;
+import org.apache.kafka.common.requests.WriteTxnMarkersRequest;
+import org.apache.kafka.common.requests.WriteTxnMarkersResponse;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -225,6 +239,14 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
                     ApiKeys.DELETE_ACLS,
                     ApiKeys.DESCRIBE_USER_SCRAM_CREDENTIALS,
                     ApiKeys.ALTER_USER_SCRAM_CREDENTIALS,
+                    // Phase J.2 — transactional producer wire APIs + observability pair.
+                    ApiKeys.ADD_PARTITIONS_TO_TXN,
+                    ApiKeys.ADD_OFFSETS_TO_TXN,
+                    ApiKeys.END_TXN,
+                    ApiKeys.WRITE_TXN_MARKERS,
+                    ApiKeys.TXN_OFFSET_COMMIT,
+                    ApiKeys.DESCRIBE_TRANSACTIONS,
+                    ApiKeys.LIST_TRANSACTIONS,
                     // SASL APIs are intercepted in KafkaCommandDecoder and never reach the handler,
                     // but we list them here so ApiVersions advertises their true implementation
                     // status to clients that consult IMPLEMENTED_APIS.
@@ -323,6 +345,8 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
                     ApiKeys.END_TXN,
                     ApiKeys.WRITE_TXN_MARKERS,
                     ApiKeys.TXN_OFFSET_COMMIT,
+                    ApiKeys.DESCRIBE_TRANSACTIONS,
+                    ApiKeys.LIST_TRANSACTIONS,
                     ApiKeys.DESCRIBE_CONFIGS,
                     ApiKeys.ALTER_CONFIGS,
                     ApiKeys.INCREMENTAL_ALTER_CONFIGS,
@@ -635,6 +659,27 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
                 break;
             case ALTER_USER_SCRAM_CREDENTIALS:
                 handleAlterUserScramCredentialsRequest(request);
+                break;
+            case ADD_PARTITIONS_TO_TXN:
+                handleAddPartitionsToTxnRequest(request);
+                break;
+            case ADD_OFFSETS_TO_TXN:
+                handleAddOffsetsToTxnRequest(request);
+                break;
+            case END_TXN:
+                handleEndTxnRequest(request);
+                break;
+            case WRITE_TXN_MARKERS:
+                handleWriteTxnMarkersRequest(request);
+                break;
+            case TXN_OFFSET_COMMIT:
+                handleTxnOffsetCommitRequest(request);
+                break;
+            case DESCRIBE_TRANSACTIONS:
+                handleDescribeTransactionsRequest(request);
+                break;
+            case LIST_TRANSACTIONS:
+                handleListTransactionsRequest(request);
                 break;
             default:
                 handleUnsupportedRequest(request);
@@ -2415,6 +2460,68 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
                     .setThrottleTimeMs(0);
             request.complete(new InitProducerIdResponse(data));
         }
+    }
+
+    // =================================================================
+    // Phase J.2 — transactional producer wire APIs.
+    //
+    // Each handler validates the (transactional.id, producerId, epoch) fencing key against the
+    // process-local TransactionCoordinator. When the coordinator isn't on this JVM we reply with
+    // NOT_COORDINATOR so the client refreshes routing via FindCoordinator. The body of every
+    // handler lives in {@link org.apache.fluss.kafka.tx.KafkaTxnTranscoder} so {@link
+    // KafkaRequestHandler} stays under the 3000-line Checkstyle file-size limit.
+    // =================================================================
+
+    void handleAddPartitionsToTxnRequest(KafkaRequest request) {
+        AddPartitionsToTxnRequest req = request.request();
+        request.complete(
+                new AddPartitionsToTxnResponse(
+                        newTxnTranscoder().addPartitionsToTxn(request, req.data())));
+    }
+
+    void handleAddOffsetsToTxnRequest(KafkaRequest request) {
+        AddOffsetsToTxnRequest req = request.request();
+        request.complete(
+                new AddOffsetsToTxnResponse(
+                        newTxnTranscoder().addOffsetsToTxn(request, req.data())));
+    }
+
+    void handleEndTxnRequest(KafkaRequest request) {
+        EndTxnRequest req = request.request();
+        request.complete(new EndTxnResponse(newTxnTranscoder().endTxn(request, req.data())));
+    }
+
+    void handleWriteTxnMarkersRequest(KafkaRequest request) {
+        WriteTxnMarkersRequest req = request.request();
+        request.complete(
+                new WriteTxnMarkersResponse(
+                        newTxnTranscoder().writeTxnMarkers(request, req.data())));
+    }
+
+    void handleTxnOffsetCommitRequest(KafkaRequest request) {
+        TxnOffsetCommitRequest req = request.request();
+        request.complete(
+                new TxnOffsetCommitResponse(
+                        newTxnTranscoder().txnOffsetCommit(request, req.data())));
+    }
+
+    void handleDescribeTransactionsRequest(KafkaRequest request) {
+        DescribeTransactionsRequest req = request.request();
+        request.complete(
+                new DescribeTransactionsResponse(
+                        newTxnTranscoder().describeTransactions(request, req.data())));
+    }
+
+    void handleListTransactionsRequest(KafkaRequest request) {
+        ListTransactionsRequest req = request.request();
+        request.complete(
+                new ListTransactionsResponse(
+                        newTxnTranscoder().listTransactions(request, req.data())));
+    }
+
+    private org.apache.fluss.kafka.tx.KafkaTxnTranscoder newTxnTranscoder() {
+        return new org.apache.fluss.kafka.tx.KafkaTxnTranscoder(
+                context.authorizer(), context.metrics(), context.kafkaDatabase(), groupOffsets);
     }
 
     /** Build the catalog for this request. Cheap - just a view over metadataManager. */

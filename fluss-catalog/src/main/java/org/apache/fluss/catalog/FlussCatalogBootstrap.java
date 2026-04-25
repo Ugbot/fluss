@@ -104,7 +104,10 @@ public final class FlussCatalogBootstrap implements CoordinatorLeaderBootstrap {
                 conf.getBoolean(ConfigOptions.KAFKA_ENABLED)
                         && conf.getBoolean(ConfigOptions.KAFKA_SCHEMA_REGISTRY_ENABLED);
         boolean icebergRestEnabled = conf.getBoolean(ConfigOptions.ICEBERG_REST_ENABLED);
-        return srEnabled || icebergRestEnabled;
+        // The Kafka transaction coordinator (Phase J) needs the catalog for __kafka_txn_state__
+        // and __kafka_producer_ids__; it's hosted whenever the Kafka bolt-on is enabled.
+        boolean kafkaTxnEnabled = conf.getBoolean(ConfigOptions.KAFKA_ENABLED);
+        return srEnabled || icebergRestEnabled || kafkaTxnEnabled;
     }
 
     private static List<String> buildBootstrap(
