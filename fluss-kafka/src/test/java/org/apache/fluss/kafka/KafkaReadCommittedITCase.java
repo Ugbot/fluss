@@ -109,6 +109,9 @@ class KafkaReadCommittedITCase {
         CLUSTER.newCoordinatorClient()
                 .createDatabase(RpcMessageTestUtils.newCreateDatabaseRequest(KAFKA_DATABASE, true))
                 .get();
+        // (1) wait for in-JVM coordinator registration; (2) trigger lazy system-table creation
+        // by listing; (3) await bucket-leadership propagation. After step 3, txn traffic is
+        // deterministic. See doc 0016 §3 for the bootstrap order.
         long deadline = System.currentTimeMillis() + 30_000L;
         while (!TransactionCoordinators.current().isPresent()) {
             if (System.currentTimeMillis() >= deadline) {
@@ -117,6 +120,18 @@ class KafkaReadCommittedITCase {
             }
             Thread.sleep(50L);
         }
+        org.apache.fluss.catalog.CatalogService catalog =
+                org.apache.fluss.catalog.CatalogServices.current()
+                        .orElseThrow(
+                                () -> new IllegalStateException("CatalogService not registered"));
+        catalog.listKafkaTxnStates();
+        catalog.listKafkaProducerIds();
+        catalog.listKafkaTxnOffsets("__warmup__");
+        CLUSTER.awaitSystemTablesReady(
+                java.time.Duration.ofSeconds(60),
+                "_catalog._kafka_txn_state",
+                "_catalog._kafka_producer_ids",
+                "_catalog._kafka_txn_offset_buffer");
     }
 
     @Test

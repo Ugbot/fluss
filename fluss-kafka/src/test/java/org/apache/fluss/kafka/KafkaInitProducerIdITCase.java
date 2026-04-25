@@ -42,7 +42,6 @@ import org.apache.kafka.common.serialization.ByteArraySerializer;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
 
@@ -212,7 +211,6 @@ class KafkaInitProducerIdITCase {
      * </ol>
      */
     @Test
-    @Tag("flaky")
     void transactionalLifecycleAndFailover() throws Exception {
         TransactionCoordinator coord = TransactionCoordinators.current().orElseThrow();
         Random rng = new Random();
@@ -412,14 +410,39 @@ class KafkaInitProducerIdITCase {
     // ---------- helpers ----------
 
     private static void waitForCoordinator() throws InterruptedException {
-        long deadline = System.currentTimeMillis() + 60_000L;
+        // The txn coordinator bootstrap runs at coord-leader election but rehydrates
+        // best-effort: it swallows catalog-not-yet-reachable errors and starts empty. The
+        // system tables it backs onto are therefore created lazily on first access. Three-step
+        // warmup: (1) wait for in-JVM coordinator registration, (2) trigger lazy table creation
+        // by listing, (3) wait for bucket-leadership propagation. After (3), the first
+        // INIT_PRODUCER_ID is deterministic.
+        long deadline = System.currentTimeMillis() + 30_000L;
         while (!TransactionCoordinators.current().isPresent()) {
             if (System.currentTimeMillis() >= deadline) {
                 throw new IllegalStateException(
-                        "TransactionCoordinator did not register within 60s of test start");
+                        "TransactionCoordinator did not register within 30s of test start");
             }
             Thread.sleep(50L);
         }
+        try {
+            org.apache.fluss.catalog.CatalogService catalog =
+                    org.apache.fluss.catalog.CatalogServices.current()
+                            .orElseThrow(
+                                    () ->
+                                            new IllegalStateException(
+                                                    "CatalogService not registered"));
+            catalog.listKafkaTxnStates();
+            catalog.listKafkaProducerIds();
+            catalog.listKafkaTxnOffsets("__warmup__");
+        } catch (Exception e) {
+            throw new IllegalStateException(
+                    "Failed to trigger system-table creation for txn coordinator", e);
+        }
+        CLUSTER.awaitSystemTablesReady(
+                java.time.Duration.ofSeconds(60),
+                "_catalog._kafka_txn_state",
+                "_catalog._kafka_producer_ids",
+                "_catalog._kafka_txn_offset_buffer");
     }
 
     private static CatalogService catalog() {
@@ -469,15 +492,14 @@ class KafkaInitProducerIdITCase {
         props.put(ProducerConfig.ACKS_CONFIG, "all");
         props.put(ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG, true);
         props.put(ProducerConfig.TRANSACTIONAL_ID_CONFIG, txnId);
-        // Generous timeouts: the first INIT_PRODUCER_ID in this JVM pays the system-table
-        // bucket-leadership propagation cost (~20s with 16 buckets / 3 servers, but occasionally
-        // longer when the cluster-warm-up race overlaps with Fluss catalog / SR bootstrap); we
-        // use 180s windows so a flaky-but-not-broken environment doesn't surface as a
-        // cluster-side regression.
+        // The waitForCoordinator helper warms ZK-side bucket-leadership for the system tables,
+        // but the broker's TransactionCoordinator opens its catalog Connection lazily on first
+        // request. The first INIT_PRODUCER_ID through the broker pays that one-time connection
+        // cost (~30-60s observed); subsequent calls are fast. 120s window absorbs the cold
+        // start without masking real cluster-side regressions.
         props.put(ProducerConfig.TRANSACTION_TIMEOUT_CONFIG, 60_000);
-        props.put(ProducerConfig.REQUEST_TIMEOUT_MS_CONFIG, 60_000);
-        props.put(ProducerConfig.MAX_BLOCK_MS_CONFIG, 180_000);
-        props.put(ProducerConfig.DELIVERY_TIMEOUT_MS_CONFIG, 180_000);
+        props.put(ProducerConfig.MAX_BLOCK_MS_CONFIG, 120_000);
+        props.put(ProducerConfig.DELIVERY_TIMEOUT_MS_CONFIG, 120_000);
         return props;
     }
 

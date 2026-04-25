@@ -927,6 +927,75 @@ public final class FlussClusterExtension
                 () -> zkClient.getLeaderAndIsr(tb), Duration.ofMinutes(1), "leader is not ready");
     }
 
+    /**
+     * Wait until each named system table exists in ZK and every one of its buckets has a leader.
+     *
+     * <p>The bolt-on (Kafka, Schema Registry) creates several system PK tables on first
+     * coordinator-leader bootstrap ({@code _catalog._kafka_txn_state}, {@code
+     * _catalog._kafka_producer_ids}, {@code _catalog._kafka_txn_offset_buffer}, {@code
+     * _catalog._schemas} etc.). With the default 4-bucket-per-table-times-3-server fanout, the
+     * first request that hits the broker after startup may pay 20 s waiting for bucket-leadership
+     * to propagate. This helper makes that wait explicit at test setup so producer-side timeout
+     * bandaids stop being needed.
+     *
+     * <p>Each {@code tableSpec} is the string {@code db.tableName}; dot-splits at the first dot, so
+     * databases that themselves contain dots are unsupported (and there are none in tree).
+     *
+     * @throws AssertionError if {@code timeout} elapses before every named table reports a leader
+     *     on every bucket.
+     */
+    public void awaitSystemTablesReady(Duration timeout, String... tableSpecs) {
+        ZooKeeperClient zkClient = getZooKeeperClient();
+        Map<String, String> missing = new HashMap<>();
+        long deadlineNanos = System.nanoTime() + timeout.toNanos();
+        while (true) {
+            missing.clear();
+            try {
+                for (String spec : tableSpecs) {
+                    int dot = spec.indexOf('.');
+                    if (dot <= 0 || dot == spec.length() - 1) {
+                        throw new IllegalArgumentException(
+                                "Bad table spec '" + spec + "'; expected '<database>.<table>'");
+                    }
+                    TablePath path = TablePath.of(spec.substring(0, dot), spec.substring(dot + 1));
+                    Optional<TableRegistration> reg = zkClient.getTable(path);
+                    if (!reg.isPresent()) {
+                        missing.put(spec, "table-not-registered");
+                        continue;
+                    }
+                    Optional<TableAssignment> assignment =
+                            zkClient.getTableAssignment(reg.get().tableId);
+                    if (!assignment.isPresent()) {
+                        missing.put(spec, "no-assignment (tableId=" + reg.get().tableId + ")");
+                        continue;
+                    }
+                    for (Integer bucketId : assignment.get().getBuckets()) {
+                        TableBucket bucket = new TableBucket(reg.get().tableId, bucketId);
+                        Optional<LeaderAndIsr> leaderAndIsr = zkClient.getLeaderAndIsr(bucket);
+                        if (!leaderAndIsr.isPresent() || leaderAndIsr.get().leader() < 0) {
+                            missing.put(spec, "bucket-" + bucketId + "-no-leader");
+                            break;
+                        }
+                    }
+                }
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
+            if (missing.isEmpty()) {
+                return;
+            }
+            if (System.nanoTime() >= deadlineNanos) {
+                throw new AssertionError("system tables not ready: " + missing);
+            }
+            try {
+                Thread.sleep(100L);
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+                throw new RuntimeException(ie);
+            }
+        }
+    }
+
     private List<AdminReadOnlyGateway> collectAllRpcGateways() {
         String internalListenerName = clusterConf.get(ConfigOptions.INTERNAL_LISTENER_NAME);
         List<AdminReadOnlyGateway> rpcServiceBases = new ArrayList<>();

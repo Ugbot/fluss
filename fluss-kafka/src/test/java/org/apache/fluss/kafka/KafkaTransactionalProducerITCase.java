@@ -43,6 +43,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
 
+import java.time.Duration;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
@@ -105,8 +106,12 @@ class KafkaTransactionalProducerITCase {
         CLUSTER.newCoordinatorClient()
                 .createDatabase(RpcMessageTestUtils.newCreateDatabaseRequest(KAFKA_DATABASE, true))
                 .get();
-        // The txn coordinator bootstrap registers asynchronously after coordinator-leader
-        // election. Block until it's visible so InitProducerId doesn't race the registration.
+        // The txn coordinator's bootstrap rehydrate runs at coord-leader election but is
+        // best-effort: it swallows catalog-not-yet-reachable errors and starts empty. So the
+        // system tables it backs onto are created lazily on first access. Step 1 — wait for the
+        // coordinator to register on this JVM. Step 2 — trigger lazy table creation by listing.
+        // Step 3 — await bucket-leadership propagation. After step 3, the next INIT_PRODUCER_ID
+        // is fast and deterministic.
         long deadline = System.currentTimeMillis() + 30_000L;
         while (!TransactionCoordinators.current().isPresent()) {
             if (System.currentTimeMillis() >= deadline) {
@@ -115,6 +120,18 @@ class KafkaTransactionalProducerITCase {
             }
             Thread.sleep(50L);
         }
+        org.apache.fluss.catalog.CatalogService catalog =
+                org.apache.fluss.catalog.CatalogServices.current()
+                        .orElseThrow(
+                                () -> new IllegalStateException("CatalogService not registered"));
+        catalog.listKafkaTxnStates();
+        catalog.listKafkaProducerIds();
+        catalog.listKafkaTxnOffsets("__warmup__");
+        CLUSTER.awaitSystemTablesReady(
+                Duration.ofSeconds(60),
+                "_catalog._kafka_txn_state",
+                "_catalog._kafka_producer_ids",
+                "_catalog._kafka_txn_offset_buffer");
     }
 
     /**
@@ -266,14 +283,14 @@ class KafkaTransactionalProducerITCase {
         props.put(ProducerConfig.ACKS_CONFIG, "all");
         props.put(ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG, true);
         props.put(ProducerConfig.TRANSACTIONAL_ID_CONFIG, txnId);
-        // Generous timeouts: the first INIT_PRODUCER_ID in this JVM pays the system-table
-        // bucket-leadership propagation cost (~20s with 16 buckets / 3 servers); subsequent calls
-        // are fast. The 90s window absorbs that one-time tax without making real failures
-        // misleading.
+        // The @BeforeEach hook awaits ZK-side bucket-leadership for the system tables, but the
+        // broker's TransactionCoordinator opens its catalog Connection lazily on first request.
+        // The first INIT_PRODUCER_ID through the broker pays that one-time connection cost
+        // (~30-60s observed); subsequent calls are fast. 120s window absorbs the cold start
+        // without masking real cluster-side regressions.
         props.put(ProducerConfig.TRANSACTION_TIMEOUT_CONFIG, 60_000);
-        props.put(ProducerConfig.REQUEST_TIMEOUT_MS_CONFIG, 60_000);
-        props.put(ProducerConfig.MAX_BLOCK_MS_CONFIG, 90_000);
-        props.put(ProducerConfig.DELIVERY_TIMEOUT_MS_CONFIG, 90_000);
+        props.put(ProducerConfig.MAX_BLOCK_MS_CONFIG, 120_000);
+        props.put(ProducerConfig.DELIVERY_TIMEOUT_MS_CONFIG, 120_000);
         return props;
     }
 
