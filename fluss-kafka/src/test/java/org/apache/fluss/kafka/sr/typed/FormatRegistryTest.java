@@ -141,7 +141,10 @@ class FormatRegistryTest {
 
         @Override
         public CompatibilityResult check(
-                String proposedText, List<String> priorTexts, CompatLevel level) {
+                String proposedText,
+                List<String> priorTexts,
+                CompatLevel level,
+                org.apache.fluss.kafka.sr.references.ReferenceResolver resolver) {
             return CompatibilityResult.compatible();
         }
 

@@ -97,4 +97,14 @@ public class Resource {
     public static Resource group(String groupId) {
         return new Resource(ResourceType.GROUP, groupId);
     }
+
+    /**
+     * Kafka transactional-id resource. Kafka-compat producers use this to gate {@code
+     * INIT_PRODUCER_ID} / {@code ADD_PARTITIONS_TO_TXN} / {@code END_TXN} when the request carries
+     * a non-null {@code transactional.id}; idempotent-only producers gate on {@link #cluster()}
+     * instead. See design 0016 §10.
+     */
+    public static Resource transactionalId(String name) {
+        return new Resource(ResourceType.TRANSACTIONAL_ID, name);
+    }
 }

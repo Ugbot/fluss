@@ -22,9 +22,13 @@ import org.apache.fluss.catalog.entities.CatalogTableEntity;
 import org.apache.fluss.catalog.entities.ClientQuotaEntry;
 import org.apache.fluss.catalog.entities.ClientQuotaFilter;
 import org.apache.fluss.catalog.entities.GrantEntity;
+import org.apache.fluss.catalog.entities.KafkaProducerIdEntity;
 import org.apache.fluss.catalog.entities.KafkaSubjectBinding;
+import org.apache.fluss.catalog.entities.KafkaTxnStateEntity;
 import org.apache.fluss.catalog.entities.NamespaceEntity;
 import org.apache.fluss.catalog.entities.PrincipalEntity;
+import org.apache.fluss.catalog.entities.SchemaReference;
+import org.apache.fluss.catalog.entities.SchemaReferenceEntity;
 import org.apache.fluss.catalog.entities.SchemaVersionEntity;
 import org.apache.fluss.client.Connection;
 import org.apache.fluss.client.admin.Admin;
@@ -96,8 +100,23 @@ public final class FlussCatalogService implements CatalogService, AutoCloseable 
         KAFKA_BINDINGS,
         CLIENT_QUOTAS,
         ID_RESERVATIONS,
-        SR_CONFIG
+        SR_CONFIG,
+        SCHEMA_REFERENCES,
+        KAFKA_TXN_STATE,
+        KAFKA_PRODUCER_IDS
     }
+
+    /**
+     * In-memory monotonic counter used by {@link #allocateProducerId(String)}. Lazily seeded from
+     * {@code MAX(producer_id) + 1} on first use; bumped atomically on every allocation. The Catalog
+     * instance is hosted on the elected coordinator leader, so writes to {@code
+     * __kafka_producer_ids__} are single-writer by construction (design 0016 §6).
+     */
+    private final java.util.concurrent.atomic.AtomicLong nextProducerId =
+            new java.util.concurrent.atomic.AtomicLong(0L);
+
+    private final Object producerIdSeedLock = new Object();
+    private volatile boolean producerIdSeeded;
 
     public FlussCatalogService(Connection connection) {
         this(() -> connection);
@@ -480,6 +499,122 @@ public final class FlussCatalogService implements CatalogService, AutoCloseable 
     }
 
     // =================================================================
+    // Schema references
+    // =================================================================
+
+    @Override
+    public void bindReferences(String referrerSchemaId, List<SchemaReference> refs)
+            throws Exception {
+        requireNonEmpty("referrerSchemaId", referrerSchemaId);
+        if (refs == null) {
+            refs = Collections.emptyList();
+        }
+        // Full replacement: delete every prior edge owned by the referrer first.
+        List<SchemaReferenceEntity> existing = scanReferenceRowsByReferrer(referrerSchemaId);
+        for (SchemaReferenceEntity row : existing) {
+            deleteSchemaReferenceRow(row.referrerSchemaId(), row.referenceName());
+        }
+        long now = System.currentTimeMillis();
+        for (SchemaReference ref : refs) {
+            requireNonEmpty("reference name", ref.name());
+            requireNonEmpty("reference subject", ref.subject());
+            requireNonEmpty("referencedSchemaId", ref.referencedSchemaId());
+            GenericRow row = new GenericRow(6);
+            row.setField(0, BinaryString.fromString(referrerSchemaId));
+            row.setField(1, BinaryString.fromString(ref.name()));
+            row.setField(2, BinaryString.fromString(ref.subject()));
+            row.setField(3, ref.version());
+            row.setField(4, BinaryString.fromString(ref.referencedSchemaId()));
+            row.setField(5, TimestampLtz.fromEpochMillis(now));
+            upsert(Handle.SCHEMA_REFERENCES, row);
+        }
+    }
+
+    @Override
+    public List<SchemaReference> listReferences(String referrerSchemaId) throws Exception {
+        requireNonEmpty("referrerSchemaId", referrerSchemaId);
+        List<SchemaReferenceEntity> rows = scanReferenceRowsByReferrer(referrerSchemaId);
+        // Stable ordering: by createdAt then by name. Insertion order is approximated by
+        // createdAt; ties on createdAt (same write batch / clock granularity) sort by name.
+        rows.sort(
+                (a, b) -> {
+                    int byTime = Long.compare(a.createdAtMillis(), b.createdAtMillis());
+                    if (byTime != 0) {
+                        return byTime;
+                    }
+                    return a.referenceName().compareTo(b.referenceName());
+                });
+        List<SchemaReference> out = new ArrayList<>(rows.size());
+        for (SchemaReferenceEntity row : rows) {
+            out.add(row.toReference());
+        }
+        return out;
+    }
+
+    @Override
+    public List<String> listReferencedBy(String referencedSchemaId) throws Exception {
+        requireNonEmpty("referencedSchemaId", referencedSchemaId);
+        List<String> out = new ArrayList<>();
+        scan(
+                Handle.SCHEMA_REFERENCES,
+                row -> {
+                    String hit = row.getString(4).toString();
+                    if (referencedSchemaId.equals(hit)) {
+                        String referrer = row.getString(0).toString();
+                        if (!out.contains(referrer)) {
+                            out.add(referrer);
+                        }
+                    }
+                });
+        return out;
+    }
+
+    @Override
+    public void deleteReferences(String referrerSchemaId) throws Exception {
+        requireNonEmpty("referrerSchemaId", referrerSchemaId);
+        for (SchemaReferenceEntity row : scanReferenceRowsByReferrer(referrerSchemaId)) {
+            deleteSchemaReferenceRow(row.referrerSchemaId(), row.referenceName());
+        }
+    }
+
+    private List<SchemaReferenceEntity> scanReferenceRowsByReferrer(String referrerSchemaId)
+            throws Exception {
+        List<SchemaReferenceEntity> out = new ArrayList<>();
+        scan(
+                Handle.SCHEMA_REFERENCES,
+                row -> {
+                    String rowReferrer = row.getString(0).toString();
+                    if (!referrerSchemaId.equals(rowReferrer)) {
+                        return;
+                    }
+                    out.add(decodeSchemaReference(row));
+                });
+        return out;
+    }
+
+    private static SchemaReferenceEntity decodeSchemaReference(InternalRow row) {
+        return new SchemaReferenceEntity(
+                row.getString(0).toString(),
+                row.getString(1).toString(),
+                row.getString(2).toString(),
+                row.getInt(3),
+                row.getString(4).toString(),
+                row.getTimestampLtz(5, 3).toEpochMicros() / 1000);
+    }
+
+    private void deleteSchemaReferenceRow(String referrerSchemaId, String referenceName)
+            throws Exception {
+        GenericRow row = new GenericRow(6);
+        row.setField(0, BinaryString.fromString(referrerSchemaId));
+        row.setField(1, BinaryString.fromString(referenceName));
+        row.setField(2, BinaryString.fromString(""));
+        row.setField(3, 0);
+        row.setField(4, BinaryString.fromString(""));
+        row.setField(5, TimestampLtz.fromEpochMillis(0));
+        delete(Handle.SCHEMA_REFERENCES, row);
+    }
+
+    // =================================================================
     // Client quotas (Phase I.3, Path A: storage only)
     // =================================================================
 
@@ -802,6 +937,140 @@ public final class FlussCatalogService implements CatalogService, AutoCloseable 
     }
 
     // =================================================================
+    // Kafka transactions (Phase J.1)
+    // =================================================================
+
+    @Override
+    public KafkaTxnStateEntity upsertKafkaTxnState(KafkaTxnStateEntity entity) throws Exception {
+        if (entity == null) {
+            throw new CatalogException(CatalogException.Kind.INVALID_INPUT, "entity is required");
+        }
+        requireNonEmpty("transactionalId", entity.transactionalId());
+        requireNonEmpty("state", entity.state());
+        GenericRow row = new GenericRow(8);
+        row.setField(0, BinaryString.fromString(entity.transactionalId()));
+        row.setField(1, entity.producerId());
+        row.setField(2, entity.producerEpoch());
+        row.setField(3, BinaryString.fromString(entity.state()));
+        String encoded = KafkaTxnStateEntity.encodePartitions(entity.topicPartitions());
+        row.setField(4, encoded == null ? null : BinaryString.fromString(encoded));
+        row.setField(5, entity.timeoutMs());
+        row.setField(
+                6,
+                entity.txnStartTimestampMillis() == null
+                        ? null
+                        : TimestampLtz.fromEpochMillis(entity.txnStartTimestampMillis()));
+        row.setField(7, TimestampLtz.fromEpochMillis(entity.lastUpdatedAtMillis()));
+        upsert(Handle.KAFKA_TXN_STATE, row);
+        return entity;
+    }
+
+    @Override
+    public Optional<KafkaTxnStateEntity> getKafkaTxnState(String transactionalId) throws Exception {
+        requireNonEmpty("transactionalId", transactionalId);
+        Lookuper lookuper = table(Handle.KAFKA_TXN_STATE).newLookup().createLookuper();
+        GenericRow key = new GenericRow(1);
+        key.setField(0, BinaryString.fromString(transactionalId));
+        InternalRow row = awaitLookup(lookuper, key);
+        return Optional.ofNullable(row).map(FlussCatalogService::decodeKafkaTxnState);
+    }
+
+    @Override
+    public List<KafkaTxnStateEntity> listKafkaTxnStates() throws Exception {
+        List<KafkaTxnStateEntity> out = new ArrayList<>();
+        scan(Handle.KAFKA_TXN_STATE, row -> out.add(decodeKafkaTxnState(row)));
+        return out;
+    }
+
+    @Override
+    public void deleteKafkaTxnState(String transactionalId) throws Exception {
+        requireNonEmpty("transactionalId", transactionalId);
+        if (!getKafkaTxnState(transactionalId).isPresent()) {
+            return;
+        }
+        delete(Handle.KAFKA_TXN_STATE, deletePlaceholder(Handle.KAFKA_TXN_STATE, transactionalId));
+    }
+
+    @Override
+    public KafkaProducerIdEntity allocateProducerId(@Nullable String transactionalId)
+            throws Exception {
+        seedProducerIdCounterIfNeeded();
+        long producerId = nextProducerId.getAndIncrement();
+        long now = System.currentTimeMillis();
+        GenericRow row = new GenericRow(4);
+        row.setField(0, producerId);
+        row.setField(1, transactionalId == null ? null : BinaryString.fromString(transactionalId));
+        row.setField(2, (short) 0);
+        row.setField(3, TimestampLtz.fromEpochMillis(now));
+        upsert(Handle.KAFKA_PRODUCER_IDS, row);
+        return new KafkaProducerIdEntity(producerId, transactionalId, (short) 0, now);
+    }
+
+    @Override
+    public Optional<KafkaProducerIdEntity> getKafkaProducerId(long producerId) throws Exception {
+        Lookuper lookuper = table(Handle.KAFKA_PRODUCER_IDS).newLookup().createLookuper();
+        GenericRow key = new GenericRow(1);
+        key.setField(0, producerId);
+        InternalRow row = awaitLookup(lookuper, key);
+        return Optional.ofNullable(row).map(FlussCatalogService::decodeKafkaProducerId);
+    }
+
+    @Override
+    public List<KafkaProducerIdEntity> listKafkaProducerIds() throws Exception {
+        List<KafkaProducerIdEntity> out = new ArrayList<>();
+        scan(Handle.KAFKA_PRODUCER_IDS, row -> out.add(decodeKafkaProducerId(row)));
+        return out;
+    }
+
+    private void seedProducerIdCounterIfNeeded() throws Exception {
+        if (producerIdSeeded) {
+            return;
+        }
+        synchronized (producerIdSeedLock) {
+            if (producerIdSeeded) {
+                return;
+            }
+            long maxAllocated = -1L;
+            for (KafkaProducerIdEntity e : listKafkaProducerIds()) {
+                if (e.producerId() > maxAllocated) {
+                    maxAllocated = e.producerId();
+                }
+            }
+            // First allocation produces id == max + 1; pre-seed at the cutover so getAndIncrement
+            // hands out (maxAllocated + 1) on the next call. When the table is empty the seed is
+            // 1L (Kafka producers reject id 0 as a sentinel).
+            long seed = maxAllocated < 0 ? 1L : maxAllocated + 1L;
+            nextProducerId.set(seed);
+            producerIdSeeded = true;
+            LOG.info("Seeded Kafka producer-id counter to {} from __kafka_producer_ids__", seed);
+        }
+    }
+
+    private static KafkaTxnStateEntity decodeKafkaTxnState(InternalRow row) {
+        String txnId = row.getString(0).toString();
+        long producerId = row.getLong(1);
+        short epoch = row.getShort(2);
+        String state = row.getString(3).toString();
+        java.util.Set<String> partitions =
+                row.isNullAt(4)
+                        ? java.util.Collections.emptySet()
+                        : KafkaTxnStateEntity.decodePartitions(row.getString(4).toString());
+        int timeoutMs = row.getInt(5);
+        Long startTs = row.isNullAt(6) ? null : row.getTimestampLtz(6, 3).toEpochMicros() / 1000;
+        long updatedAt = row.getTimestampLtz(7, 3).toEpochMicros() / 1000;
+        return new KafkaTxnStateEntity(
+                txnId, producerId, epoch, state, partitions, timeoutMs, startTs, updatedAt);
+    }
+
+    private static KafkaProducerIdEntity decodeKafkaProducerId(InternalRow row) {
+        long producerId = row.getLong(0);
+        String transactionalId = row.isNullAt(1) ? null : row.getString(1).toString();
+        short epoch = row.getShort(2);
+        long allocatedAt = row.getTimestampLtz(3, 3).toEpochMicros() / 1000;
+        return new KafkaProducerIdEntity(producerId, transactionalId, epoch, allocatedAt);
+    }
+
+    // =================================================================
     // AutoCloseable
     // =================================================================
 
@@ -900,6 +1169,19 @@ public final class FlussCatalogService implements CatalogService, AutoCloseable 
                     r.setField(2, BinaryString.fromString(""));
                     return r;
                 }
+            case SCHEMA_REFERENCES:
+                {
+                    GenericRow r = new GenericRow(2);
+                    r.setField(0, BinaryString.fromString("__readiness__"));
+                    r.setField(1, BinaryString.fromString(""));
+                    return r;
+                }
+            case KAFKA_PRODUCER_IDS:
+                {
+                    GenericRow r = new GenericRow(1);
+                    r.setField(0, 0L);
+                    return r;
+                }
             default:
                 {
                     GenericRow r = new GenericRow(1);
@@ -947,6 +1229,12 @@ public final class FlussCatalogService implements CatalogService, AutoCloseable 
                 return SystemTables.ID_RESERVATIONS;
             case SR_CONFIG:
                 return SystemTables.SR_CONFIG;
+            case SCHEMA_REFERENCES:
+                return SystemTables.SCHEMA_REFERENCES;
+            case KAFKA_TXN_STATE:
+                return SystemTables.KAFKA_TXN_STATE;
+            case KAFKA_PRODUCER_IDS:
+                return SystemTables.KAFKA_PRODUCER_IDS;
             default:
                 throw new IllegalStateException("Unknown handle: " + handle);
         }
@@ -1051,6 +1339,22 @@ public final class FlussCatalogService implements CatalogService, AutoCloseable 
             case CLIENT_QUOTAS:
                 throw new IllegalArgumentException(
                         "CLIENT_QUOTAS delete uses a composite PK; use deleteClientQuotaRow()");
+            case KAFKA_TXN_STATE:
+                {
+                    GenericRow row = new GenericRow(8);
+                    row.setField(0, BinaryString.fromString(pkString));
+                    row.setField(1, 0L);
+                    row.setField(2, (short) 0);
+                    row.setField(3, BinaryString.fromString(""));
+                    row.setField(4, null);
+                    row.setField(5, 0);
+                    row.setField(6, null);
+                    row.setField(7, TimestampLtz.fromEpochMillis(0));
+                    return row;
+                }
+            case KAFKA_PRODUCER_IDS:
+                throw new IllegalArgumentException(
+                        "KAFKA_PRODUCER_IDS delete uses a numeric PK; use deletePlaceholderLong()");
             default:
                 throw new IllegalStateException("Unknown handle: " + handle);
         }

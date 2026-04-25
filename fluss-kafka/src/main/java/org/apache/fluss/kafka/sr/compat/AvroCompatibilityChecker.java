@@ -18,6 +18,7 @@
 package org.apache.fluss.kafka.sr.compat;
 
 import org.apache.fluss.annotation.Internal;
+import org.apache.fluss.kafka.sr.references.ReferenceResolver;
 
 import org.apache.avro.Schema;
 import org.apache.avro.SchemaCompatibility;
@@ -59,16 +60,25 @@ public final class AvroCompatibilityChecker implements CompatibilityChecker {
     }
 
     /**
-     * Check {@code proposedText} against {@code priorTexts} at {@code level}.
+     * Check {@code proposedText} against {@code priorTexts} at {@code level} with {@code
+     * resolver}'s referent named-types pre-loaded into every Avro {@link Schema.Parser}. The
+     * resolver supplies texts for any cross-subject named types the proposed (or any prior) schema
+     * imports — Avro accepts repeated {@code parse(String)} calls and accumulates the named-type
+     * table across them, so we feed every referent text first, then the schema under test.
      *
      * @param proposedText proposed Avro schema JSON (required)
      * @param priorTexts prior Avro schema JSONs in registration order (oldest first). May be empty
      *     — a first registration is always compatible.
      * @param level Confluent compatibility level
+     * @param resolver references bound at register time; pass {@link ReferenceResolver#empty()}
+     *     when none.
      */
     @Override
     public CompatibilityResult check(
-            String proposedText, List<String> priorTexts, CompatLevel level) {
+            String proposedText,
+            List<String> priorTexts,
+            CompatLevel level,
+            ReferenceResolver resolver) {
         if (level == CompatLevel.NONE) {
             return CompatibilityResult.compatible();
         }
@@ -78,7 +88,7 @@ public final class AvroCompatibilityChecker implements CompatibilityChecker {
         }
         Schema proposed;
         try {
-            proposed = new Schema.Parser().parse(proposedText);
+            proposed = parseWithReferences(proposedText, resolver);
         } catch (SchemaParseException spe) {
             return CompatibilityResult.incompatible(
                     Collections.singletonList(
@@ -98,7 +108,7 @@ public final class AvroCompatibilityChecker implements CompatibilityChecker {
             String priorText = targetPriors.get(i);
             Schema prior;
             try {
-                prior = new Schema.Parser().parse(priorText);
+                prior = parseWithReferences(priorText, resolver);
             } catch (SchemaParseException spe) {
                 accumulated.add(
                         "Prior schema at index " + i + " failed to parse: " + spe.getMessage());
@@ -118,6 +128,30 @@ public final class AvroCompatibilityChecker implements CompatibilityChecker {
             return CompatibilityResult.compatible();
         }
         return CompatibilityResult.incompatible(accumulated);
+    }
+
+    /**
+     * Parse {@code schemaText} with every referent named-type from {@code resolver} pre-registered.
+     * Avro's {@link Schema.Parser} accumulates named types across {@code parse(String)} calls; a
+     * referent that fails to parse is skipped (the referrer's parse will then surface a cleaner
+     * "unknown type" error rather than the referent's syntax error).
+     */
+    private static Schema parseWithReferences(String schemaText, ReferenceResolver resolver) {
+        Schema.Parser parser = new Schema.Parser();
+        if (resolver != null) {
+            for (String name : resolver.names()) {
+                resolver.resolve(name)
+                        .ifPresent(
+                                referentText -> {
+                                    try {
+                                        parser.parse(referentText);
+                                    } catch (SchemaParseException ignored) {
+                                        // Defer: referrer parse will surface the unknown name.
+                                    }
+                                });
+            }
+        }
+        return parser.parse(schemaText);
     }
 
     private static void collectIncompatibilities(

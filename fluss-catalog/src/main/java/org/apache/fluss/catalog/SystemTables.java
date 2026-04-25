@@ -160,6 +160,60 @@ public final class SystemTables {
                             .primaryKey("config_key")
                             .build());
 
+    /**
+     * Edge table for Confluent SR schema references. PK is {@code (referrer_schema_id,
+     * reference_name)}; trailing fields capture the wire-side {@code (subject, version)} plus the
+     * pinned referent UUID. See design 0013.
+     */
+    /**
+     * Kafka transaction state per {@code transactional.id} (design 0016 §5). One row per
+     * transactional id; rewritten on every state-machine transition. Owned by the {@code
+     * TransactionCoordinator} on the elected coordinator leader.
+     */
+    public static final Table KAFKA_TXN_STATE =
+            new Table(
+                    "_kafka_txn_state",
+                    Schema.newBuilder()
+                            .column("transactional_id", DataTypes.STRING().copy(false))
+                            .column("producer_id", DataTypes.BIGINT().copy(false))
+                            .column("producer_epoch", DataTypes.SMALLINT().copy(false))
+                            .column("state", DataTypes.STRING().copy(false))
+                            .column("topic_partitions", DataTypes.STRING())
+                            .column("timeout_ms", DataTypes.INT().copy(false))
+                            .column("txn_start_timestamp", DataTypes.TIMESTAMP_LTZ(3))
+                            .column("last_updated_at", DataTypes.TIMESTAMP_LTZ(3).copy(false))
+                            .primaryKey("transactional_id")
+                            .build());
+
+    /**
+     * Kafka producer-id allocations (design 0016 §6). One row per allocated producer id;
+     * accumulates over time. The coordinator-leader's allocator scans for {@code MAX(producer_id)}
+     * on bootstrap to seed its in-memory counter.
+     */
+    public static final Table KAFKA_PRODUCER_IDS =
+            new Table(
+                    "_kafka_producer_ids",
+                    Schema.newBuilder()
+                            .column("producer_id", DataTypes.BIGINT().copy(false))
+                            .column("transactional_id", DataTypes.STRING())
+                            .column("epoch", DataTypes.SMALLINT().copy(false))
+                            .column("allocated_at", DataTypes.TIMESTAMP_LTZ(3).copy(false))
+                            .primaryKey("producer_id")
+                            .build());
+
+    public static final Table SCHEMA_REFERENCES =
+            new Table(
+                    "_schema_references",
+                    Schema.newBuilder()
+                            .column("referrer_schema_id", DataTypes.STRING().copy(false))
+                            .column("reference_name", DataTypes.STRING().copy(false))
+                            .column("referenced_subject", DataTypes.STRING().copy(false))
+                            .column("referenced_version", DataTypes.INT().copy(false))
+                            .column("referenced_schema_id", DataTypes.STRING().copy(false))
+                            .column("created_at", DataTypes.TIMESTAMP_LTZ(3).copy(false))
+                            .primaryKey("referrer_schema_id", "reference_name")
+                            .build());
+
     private SystemTables() {}
 
     /** Every system table, in bootstrap order (namespaces first, grants after their targets). */
@@ -173,7 +227,10 @@ public final class SystemTables {
             KAFKA_BINDINGS,
             CLIENT_QUOTAS,
             ID_RESERVATIONS,
-            SR_CONFIG
+            SR_CONFIG,
+            SCHEMA_REFERENCES,
+            KAFKA_TXN_STATE,
+            KAFKA_PRODUCER_IDS
         };
     }
 

@@ -104,6 +104,8 @@ public class DefaultAuthorizer extends AbstractAuthorizer implements FatalErrorH
         mapping.put(ResourceType.DATABASE, res -> Sets.newHashSet(res, Resource.cluster()));
         // GROUP is a direct child of CLUSTER — no database inheritance.
         mapping.put(ResourceType.GROUP, res -> Sets.newHashSet(res, Resource.cluster()));
+        // TRANSACTIONAL_ID is a direct child of CLUSTER — no database inheritance.
+        mapping.put(ResourceType.TRANSACTIONAL_ID, res -> Sets.newHashSet(res, Resource.cluster()));
         mapping.put(ResourceType.CLUSTER, Sets::newHashSet);
         RESOURCE_MAPPING = Collections.unmodifiableMap(mapping);
 

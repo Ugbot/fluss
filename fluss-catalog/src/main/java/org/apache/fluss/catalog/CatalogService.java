@@ -22,9 +22,12 @@ import org.apache.fluss.catalog.entities.CatalogTableEntity;
 import org.apache.fluss.catalog.entities.ClientQuotaEntry;
 import org.apache.fluss.catalog.entities.ClientQuotaFilter;
 import org.apache.fluss.catalog.entities.GrantEntity;
+import org.apache.fluss.catalog.entities.KafkaProducerIdEntity;
 import org.apache.fluss.catalog.entities.KafkaSubjectBinding;
+import org.apache.fluss.catalog.entities.KafkaTxnStateEntity;
 import org.apache.fluss.catalog.entities.NamespaceEntity;
 import org.apache.fluss.catalog.entities.PrincipalEntity;
+import org.apache.fluss.catalog.entities.SchemaReference;
 import org.apache.fluss.catalog.entities.SchemaVersionEntity;
 
 import javax.annotation.Nullable;
@@ -140,6 +143,35 @@ public interface CatalogService {
      */
     void deleteSchemaVersion(String schemaId) throws Exception;
 
+    // --------------------------- Schema references -------------------- //
+
+    /**
+     * Replace the full reference set for {@code referrerSchemaId}: every existing edge for that
+     * referrer is dropped and the supplied {@code refs} are written. Empty {@code refs} clears all
+     * edges. Pinned {@code referencedSchemaId} on each entry is stored as-is — the SR projection is
+     * responsible for resolving the referent at register time. Idempotent on full replacement.
+     */
+    void bindReferences(String referrerSchemaId, List<SchemaReference> refs) throws Exception;
+
+    /**
+     * Forward edges — every reference declared by {@code referrerSchemaId} at register time, in
+     * insertion order. Empty list when the referrer has no references or doesn't exist.
+     */
+    List<SchemaReference> listReferences(String referrerSchemaId) throws Exception;
+
+    /**
+     * Reverse edges — every {@code referrerSchemaId} that points at {@code referencedSchemaId}.
+     * Used by the SR projection to enforce delete-path integrity (you can't hard-delete a referent
+     * that's still referenced).
+     */
+    List<String> listReferencedBy(String referencedSchemaId) throws Exception;
+
+    /**
+     * Cascade-delete every reference row owned by {@code referrerSchemaId}. No-op when the referrer
+     * has no rows. Called during hard-delete of the referrer schema row.
+     */
+    void deleteReferences(String referrerSchemaId) throws Exception;
+
     // --------------------------- Client quotas ------------------------ //
 
     /**
@@ -220,4 +252,48 @@ public interface CatalogService {
     boolean checkPrivilege(
             String principalName, String entityKind, String entityId, String privilege)
             throws Exception;
+
+    // --------------------------- Kafka transactions (Phase J.1) ------- //
+
+    /**
+     * Upsert the durable txn-state row for {@code transactionalId}. Idempotent on the row's primary
+     * key; the new row replaces any existing entry. Callers (the {@code TransactionCoordinator})
+     * must ensure last-writer-wins semantics are correct for their state-machine transitions — this
+     * method is a thin storage primitive and does not enforce monotonicity on epoch or state.
+     */
+    KafkaTxnStateEntity upsertKafkaTxnState(KafkaTxnStateEntity entity) throws Exception;
+
+    /** PK lookup by {@code transactionalId}. Read-after-write consistent. */
+    Optional<KafkaTxnStateEntity> getKafkaTxnState(String transactionalId) throws Exception;
+
+    /**
+     * Full-table scan over {@code __kafka_txn_state__}. Used by the coordinator on leadership
+     * acquisition to rehydrate in-memory state. Cheap because there's at most a few thousand rows
+     * per realistic deployment.
+     */
+    List<KafkaTxnStateEntity> listKafkaTxnStates() throws Exception;
+
+    /** No-op when the row is absent. */
+    void deleteKafkaTxnState(String transactionalId) throws Exception;
+
+    /**
+     * Allocate a new producer id for {@code transactionalId} (or {@code null} for an
+     * idempotent-only allocation), persist the {@code __kafka_producer_ids__} row, and return it.
+     *
+     * <p>The allocator is a coordinator-leader-owned monotonic counter; on first use the counter is
+     * seeded from {@code MAX(producer_id) + 1} via {@link #listKafkaProducerIds()}. On every call
+     * the counter is bumped, the row is upserted with {@code epoch=0}, and the {@link
+     * KafkaProducerIdEntity} is returned. Contention is trivial — transactional producers init at
+     * most every few seconds, idempotent-only producers rarely.
+     */
+    KafkaProducerIdEntity allocateProducerId(@Nullable String transactionalId) throws Exception;
+
+    /** PK lookup by {@code producerId}. Read-after-write consistent. */
+    Optional<KafkaProducerIdEntity> getKafkaProducerId(long producerId) throws Exception;
+
+    /**
+     * Full-table scan over {@code __kafka_producer_ids__}. Used by the coordinator on leadership
+     * acquisition to seed the monotonic id counter from {@code MAX(producer_id)}.
+     */
+    List<KafkaProducerIdEntity> listKafkaProducerIds() throws Exception;
 }

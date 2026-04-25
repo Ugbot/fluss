@@ -34,6 +34,7 @@ public final class SchemaRegistryException extends RuntimeException {
         UNSUPPORTED,
         NOT_FOUND,
         CONFLICT,
+        UNPROCESSABLE_ENTITY,
         FORBIDDEN,
         INTERNAL
     }

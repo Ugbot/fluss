@@ -18,6 +18,7 @@
 package org.apache.fluss.kafka.sr.compat;
 
 import org.apache.fluss.annotation.Internal;
+import org.apache.fluss.kafka.sr.references.ReferenceResolver;
 import org.apache.fluss.shaded.jackson2.com.fasterxml.jackson.databind.JsonNode;
 import org.apache.fluss.shaded.jackson2.com.fasterxml.jackson.databind.ObjectMapper;
 
@@ -75,7 +76,16 @@ public final class JsonCompatibilityChecker implements CompatibilityChecker {
 
     @Override
     public CompatibilityResult check(
-            String proposedText, List<String> priorTexts, CompatLevel level) {
+            String proposedText,
+            List<String> priorTexts,
+            CompatLevel level,
+            ReferenceResolver resolver) {
+        // Phase SR-X.5 first pass: the structural comparator below operates on the schema
+        // node directly. JSON $ref hydration via referent text would let us flatten cross-
+        // subject schemas before compare; the design defers full $ref pre-flattening to a
+        // later pass, so we accept the resolver and proceed without it. Unresolved $refs in
+        // the schema texts surface as "type missing" diagnostics in the comparator below,
+        // which is the same conservative break the previous pass produced.
         if (level == CompatLevel.NONE) {
             return CompatibilityResult.compatible();
         }

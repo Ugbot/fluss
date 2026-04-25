@@ -2314,39 +2314,107 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
     }
 
     /**
-     * Minimal INIT_PRODUCER_ID stub: mint a locally-unique producerId so the producer's idempotence
-     * state machine can advance. Proper mapping to Fluss's writerId allocator lands with the
-     * transactional producer work in a later phase; for Phase 2B idempotent producers simply get a
-     * unique id and epoch 0.
+     * Phase J.1 INIT_PRODUCER_ID handler (design 0016 §6). Three paths:
+     *
+     * <ul>
+     *   <li>{@code transactional.id} present, first call — allocate a fresh producerId via the
+     *       {@link org.apache.fluss.kafka.tx.TransactionCoordinator}, persist {@code Empty} state
+     *       with epoch 0, return {@code (producerId, 0)}.
+     *   <li>{@code transactional.id} present, re-init — bump epoch on the existing row to fence the
+     *       prior producer; return {@code (sameProducerId, bumpedEpoch)}.
+     *   <li>{@code transactional.id} null (idempotent-only) — allocate from the catalog producer-id
+     *       allocator without a durable txn-state row.
+     * </ul>
+     *
+     * <p>Routing: in J.1 the txn coordinator is hosted on the elected coordinator-leader. Tablet
+     * servers that don't have the coordinator in-process fall back to the legacy stub allocator,
+     * which keeps the test path green for non-coordinator-leader tablet servers; the production
+     * routing via {@code FindCoordinator(type=TRANSACTION)} ensures real clients hit the leader.
      */
     void handleInitProducerIdRequest(KafkaRequest request) {
+        org.apache.kafka.common.requests.InitProducerIdRequest req = request.request();
+        org.apache.kafka.common.message.InitProducerIdRequestData reqData = req.data();
+        String transactionalId = reqData.transactionalId();
+        boolean isTransactional = transactionalId != null && !transactionalId.isEmpty();
+        // Authz: WRITE on TRANSACTIONAL_ID(name) when the request carries a txn id, WRITE on
+        // CLUSTER for idempotent-only producers. Hierarchy in DefaultAuthorizer rolls cluster
+        // grants up to TRANSACTIONAL_ID so a cluster-wide WRITE grant covers both.
         try {
-            // Kafka's IdempotentWrite semantics require a cluster-level gate on InitProducerId —
-            // the producer id is a broker-minted identifier with no per-topic scope and callers
-            // only need it to talk to any table they also have WRITE on. Gating WRITE on CLUSTER
-            // matches the "cluster-wildcard => every table" rollup behaviour of Fluss's ACL model.
-            // No-op on PLAINTEXT listeners.
+            Resource resource =
+                    isTransactional
+                            ? Resource.transactionalId(transactionalId)
+                            : Resource.cluster();
             AuthzHelper.authorizeOrThrow(
                     context.authorizer(),
                     AuthzHelper.sessionOf(request),
                     OperationType.WRITE,
-                    Resource.cluster());
+                    resource);
         } catch (AuthorizationException denied) {
+            short authzErr =
+                    isTransactional
+                            ? Errors.TRANSACTIONAL_ID_AUTHORIZATION_FAILED.code()
+                            : Errors.CLUSTER_AUTHORIZATION_FAILED.code();
             InitProducerIdResponseData data = new InitProducerIdResponseData();
-            data.setErrorCode(Errors.CLUSTER_AUTHORIZATION_FAILED.code())
+            data.setErrorCode(authzErr)
                     .setProducerId(-1L)
                     .setProducerEpoch((short) -1)
                     .setThrottleTimeMs(0);
             request.complete(new InitProducerIdResponse(data));
             return;
         }
-        long producerId = STUB_PRODUCER_ID.getAndIncrement();
-        InitProducerIdResponseData data = new InitProducerIdResponseData();
-        data.setErrorCode(Errors.NONE.code())
-                .setProducerId(producerId)
-                .setProducerEpoch((short) 0)
-                .setThrottleTimeMs(0);
-        request.complete(new InitProducerIdResponse(data));
+
+        java.util.Optional<org.apache.fluss.kafka.tx.TransactionCoordinator> maybeCoord =
+                org.apache.fluss.kafka.tx.TransactionCoordinators.current();
+        try {
+            if (isTransactional) {
+                if (!maybeCoord.isPresent()) {
+                    // No coordinator on this JVM — instruct the client to refresh routing via
+                    // FindCoordinator and retry against the leader.
+                    InitProducerIdResponseData data = new InitProducerIdResponseData();
+                    data.setErrorCode(Errors.NOT_COORDINATOR.code())
+                            .setProducerId(-1L)
+                            .setProducerEpoch((short) -1)
+                            .setThrottleTimeMs(0);
+                    request.complete(new InitProducerIdResponse(data));
+                    return;
+                }
+                org.apache.fluss.kafka.tx.TransactionCoordinator.InitProducerIdResult result =
+                        maybeCoord
+                                .get()
+                                .initProducerId(transactionalId, reqData.transactionTimeoutMs());
+                InitProducerIdResponseData data = new InitProducerIdResponseData();
+                data.setErrorCode(Errors.NONE.code())
+                        .setProducerId(result.producerId())
+                        .setProducerEpoch(result.producerEpoch())
+                        .setThrottleTimeMs(0);
+                request.complete(new InitProducerIdResponse(data));
+                return;
+            }
+            // Idempotent-only: prefer the durable allocator when the coordinator is local;
+            // otherwise fall back to the in-process counter. Either path yields a producerId
+            // unique within this JVM, which is sufficient for the idempotent batch dedupe.
+            long producerId;
+            if (maybeCoord.isPresent()) {
+                producerId = maybeCoord.get().initIdempotentProducerId().producerId();
+            } else {
+                producerId = STUB_PRODUCER_ID.getAndIncrement();
+            }
+            InitProducerIdResponseData data = new InitProducerIdResponseData();
+            data.setErrorCode(Errors.NONE.code())
+                    .setProducerId(producerId)
+                    .setProducerEpoch((short) 0)
+                    .setThrottleTimeMs(0);
+            request.complete(new InitProducerIdResponse(data));
+        } catch (Throwable t) {
+            LOG.error(
+                    "INIT_PRODUCER_ID handler threw for transactionalId='{}'", transactionalId, t);
+            InitProducerIdResponseData data = new InitProducerIdResponseData();
+            data.setErrorCode(Errors.COORDINATOR_NOT_AVAILABLE.code())
+                    .setProducerId(-1L)
+                    .setProducerEpoch((short) -1)
+                    .setThrottleTimeMs(0);
+            request.complete(new InitProducerIdResponse(data));
+        }
     }
 
     /** Build the catalog for this request. Cheap - just a view over metadataManager. */

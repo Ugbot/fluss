@@ -46,6 +46,8 @@ import org.slf4j.LoggerFactory;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
 
@@ -156,6 +158,23 @@ public final class SchemaRegistryHttpHandler extends SimpleChannelInboundHandler
             }
             return jsonResponse(HttpResponseStatus.OK, arr);
         }
+        if (HttpMethod.GET.equals(method) && path.matches("/schemas/ids/[0-9]+/referencedby")) {
+            int id =
+                    parseIntOr400(
+                            path.substring(
+                                    "/schemas/ids/".length(),
+                                    path.length() - "/referencedby".length()),
+                            "schema id");
+            List<SchemaRegistryService.SubjectVersion> referrers = service.referencedBy(id);
+            ArrayNode arr = MAPPER.createArrayNode();
+            for (SchemaRegistryService.SubjectVersion sv : referrers) {
+                ObjectNode node = MAPPER.createObjectNode();
+                node.put("subject", sv.subject());
+                node.put("version", sv.version());
+                arr.add(node);
+            }
+            return jsonResponse(HttpResponseStatus.OK, arr);
+        }
         if (HttpMethod.GET.equals(method) && path.matches("/schemas/ids/[0-9]+/versions")) {
             int id =
                     parseIntOr400(
@@ -183,6 +202,7 @@ public final class SchemaRegistryHttpHandler extends SimpleChannelInboundHandler
             ObjectNode body = MAPPER.createObjectNode();
             body.put("schema", found.get().schema());
             body.put("schemaType", found.get().format());
+            putReferences(body, found.get().references());
             return jsonResponse(HttpResponseStatus.OK, body);
         }
         if (HttpMethod.GET.equals(method)
@@ -204,6 +224,7 @@ public final class SchemaRegistryHttpHandler extends SimpleChannelInboundHandler
             body.put("version", found.get().version());
             body.put("schemaType", found.get().format());
             body.put("schema", found.get().schema());
+            putReferences(body, found.get().references());
             return jsonResponse(HttpResponseStatus.OK, body);
         }
         if (HttpMethod.POST.equals(method)
@@ -219,7 +240,8 @@ public final class SchemaRegistryHttpHandler extends SimpleChannelInboundHandler
                         SchemaRegistryException.Kind.INVALID_INPUT,
                         "'schema' field is required in POST body");
             }
-            int id = service.register(subject, body.get("schema").asText(), schemaType);
+            List<SchemaRegistryService.RequestedReference> refs = parseReferences(body);
+            int id = service.register(subject, body.get("schema").asText(), schemaType, refs);
             ObjectNode response = MAPPER.createObjectNode();
             response.put("id", id);
             return jsonResponse(HttpResponseStatus.OK, response);
@@ -275,6 +297,7 @@ public final class SchemaRegistryHttpHandler extends SimpleChannelInboundHandler
             body.put("version", found.get().version());
             body.put("schemaType", found.get().format());
             body.put("schema", found.get().schema());
+            putReferences(body, found.get().references());
             return jsonResponse(HttpResponseStatus.OK, body);
         }
         // DELETE /subjects/{s}/versions/{v} — soft by default, ?permanent=true hard-deletes.
@@ -338,8 +361,10 @@ public final class SchemaRegistryHttpHandler extends SimpleChannelInboundHandler
             // already dispatches via FormatRegistry based on the subject's stored format (the
             // proposed schema must be same-format as the subject's prior versions; that's a
             // semantic choice, not a wire-contract break).
+            List<SchemaRegistryService.RequestedReference> compatRefs = parseReferences(body);
             CompatibilityResult result =
-                    service.checkCompatibility(subject, version, body.get("schema").asText());
+                    service.checkCompatibility(
+                            subject, version, body.get("schema").asText(), compatRefs);
             ObjectNode response = MAPPER.createObjectNode();
             response.put("is_compatible", result.isCompatible());
             if (!result.messages().isEmpty()) {
@@ -376,6 +401,7 @@ public final class SchemaRegistryHttpHandler extends SimpleChannelInboundHandler
             response.put("version", found.get().version());
             response.put("schemaType", found.get().format());
             response.put("schema", found.get().schema());
+            putReferences(response, found.get().references());
             return jsonResponse(HttpResponseStatus.OK, response);
         }
         // --- /config endpoints ---
@@ -492,6 +518,70 @@ public final class SchemaRegistryHttpHandler extends SimpleChannelInboundHandler
     }
 
     /**
+     * Parse the optional {@code references} array on a register / compatibility POST body. Returns
+     * an empty list when the field is missing, null, or an empty array. Tolerates the SR 7.4+
+     * {@code metadata} sub-object on each entry by ignoring it (forward-compat).
+     */
+    private static List<SchemaRegistryService.RequestedReference> parseReferences(JsonNode body) {
+        JsonNode refsNode = body.get("references");
+        if (refsNode == null || refsNode.isNull()) {
+            return Collections.emptyList();
+        }
+        if (!refsNode.isArray()) {
+            throw new SchemaRegistryException(
+                    SchemaRegistryException.Kind.INVALID_INPUT, "'references' must be an array");
+        }
+        List<SchemaRegistryService.RequestedReference> out = new ArrayList<>(refsNode.size());
+        for (JsonNode entry : refsNode) {
+            if (!entry.isObject()) {
+                throw new SchemaRegistryException(
+                        SchemaRegistryException.Kind.INVALID_INPUT,
+                        "every 'references' entry must be an object");
+            }
+            String name = entry.hasNonNull("name") ? entry.get("name").asText() : null;
+            String subject = entry.hasNonNull("subject") ? entry.get("subject").asText() : null;
+            JsonNode versionNode = entry.get("version");
+            if (name == null || name.isEmpty()) {
+                throw new SchemaRegistryException(
+                        SchemaRegistryException.Kind.INVALID_INPUT,
+                        "every 'references' entry requires 'name'");
+            }
+            if (subject == null || subject.isEmpty()) {
+                throw new SchemaRegistryException(
+                        SchemaRegistryException.Kind.INVALID_INPUT,
+                        "every 'references' entry requires 'subject'");
+            }
+            if (versionNode == null || !versionNode.canConvertToInt()) {
+                throw new SchemaRegistryException(
+                        SchemaRegistryException.Kind.INVALID_INPUT,
+                        "every 'references' entry requires an integer 'version'");
+            }
+            out.add(
+                    new SchemaRegistryService.RequestedReference(
+                            name, subject, versionNode.asInt()));
+        }
+        return out;
+    }
+
+    /**
+     * Echo the references list onto a response body in Confluent shape. Skips emission when the
+     * list is empty so we stay byte-equivalent with the pre-Phase-SR-X.5 body for refless schemas.
+     */
+    private static void putReferences(
+            ObjectNode body, List<SchemaRegistryService.SubjectReference> refs) {
+        if (refs == null || refs.isEmpty()) {
+            return;
+        }
+        ArrayNode arr = body.putArray("references");
+        for (SchemaRegistryService.SubjectReference r : refs) {
+            ObjectNode node = arr.addObject();
+            node.put("name", r.name());
+            node.put("subject", r.subject());
+            node.put("version", r.version());
+        }
+    }
+
+    /**
      * Inspect {@code ?permanent=true|false} on the decoded query string. Absent / any non-{@code
      * true} value → {@code false} (Confluent default: soft delete).
      */
@@ -558,6 +648,8 @@ public final class SchemaRegistryHttpHandler extends SimpleChannelInboundHandler
                 return HttpResponseStatus.NOT_FOUND;
             case CONFLICT:
                 return HttpResponseStatus.CONFLICT;
+            case UNPROCESSABLE_ENTITY:
+                return HttpResponseStatus.UNPROCESSABLE_ENTITY;
             case FORBIDDEN:
                 return HttpResponseStatus.FORBIDDEN;
             case INTERNAL:

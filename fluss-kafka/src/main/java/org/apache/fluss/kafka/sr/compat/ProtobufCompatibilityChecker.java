@@ -25,6 +25,7 @@
 package org.apache.fluss.kafka.sr.compat;
 
 import org.apache.fluss.annotation.Internal;
+import org.apache.fluss.kafka.sr.references.ReferenceResolver;
 import org.apache.fluss.kafka.sr.typed.ProtoParser;
 
 import java.util.ArrayList;
@@ -78,7 +79,16 @@ public final class ProtobufCompatibilityChecker implements CompatibilityChecker 
 
     @Override
     public CompatibilityResult check(
-            String proposedText, List<String> priorTexts, CompatLevel level) {
+            String proposedText,
+            List<String> priorTexts,
+            CompatLevel level,
+            ReferenceResolver resolver) {
+        // Phase SR-X.5 first pass: the comparator works against the proto's parsed message
+        // tree. Cross-file imports would let the parser see referent message definitions,
+        // but our checker compares wire shapes (tag numbers, types) of the top-level
+        // message; an unresolved import doesn't affect that. The resolver is accepted to
+        // satisfy the SPI; richer resolution lands when the typed Protobuf descriptor
+        // builder is wired in (design 0008 §6).
         if (level == CompatLevel.NONE) {
             return CompatibilityResult.compatible();
         }

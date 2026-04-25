@@ -63,7 +63,14 @@ public enum ResourceType {
      * #CLUSTER} (it doesn't live inside a database), so cluster-wide grants roll up to it but
      * database grants do not.
      */
-    GROUP((byte) 5);
+    GROUP((byte) 5),
+    /**
+     * Kafka transactional-id resource (design 0016 §10). Kafka-compat bolt-on maps Kafka's {@code
+     * TRANSACTIONAL_ID} resource onto this type; Fluss-native callers currently don't use it. Like
+     * {@link #GROUP} this is a direct child of {@link #CLUSTER}, so cluster-wide grants roll up to
+     * it but database grants do not.
+     */
+    TRANSACTIONAL_ID((byte) 6);
 
     private final byte code;
 

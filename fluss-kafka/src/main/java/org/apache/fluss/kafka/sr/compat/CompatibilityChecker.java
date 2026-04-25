@@ -18,6 +18,7 @@
 package org.apache.fluss.kafka.sr.compat;
 
 import org.apache.fluss.annotation.PublicEvolving;
+import org.apache.fluss.kafka.sr.references.ReferenceResolver;
 
 import java.util.List;
 
@@ -28,6 +29,9 @@ import java.util.List;
  *
  * <p>Plan §27.3. The {@link AvroCompatibilityChecker} was the first concrete implementation (and
  * became this SPI's reference shape); JSON Schema and Protobuf checkers follow the same contract.
+ * Phase SR-X.5 (design 0013) widens the SPI with a {@link ReferenceResolver} parameter so that
+ * format parsers can hydrate cross-subject named types (Avro fullnames, JSON {@code $ref}, {@code
+ * .proto} imports) before parsing the referrer.
  *
  * <p>Implementations MUST be thread-safe and stateless.
  *
@@ -37,7 +41,13 @@ import java.util.List;
 public interface CompatibilityChecker {
 
     /**
-     * Check {@code proposedText} against {@code priorTexts} at {@code level}.
+     * Check {@code proposedText} against {@code priorTexts} at {@code level}, with no references
+     * available. Equivalent to {@link #check(String, List, CompatLevel, ReferenceResolver)} with
+     * {@link ReferenceResolver#empty()}.
+     *
+     * <p>Default-method bridge — concrete implementations should override the 4-argument form
+     * instead. Kept for source compatibility with callers that haven't migrated to the resolver
+     * variant yet.
      *
      * @param proposedText the proposed schema text in this checker's format
      * @param priorTexts prior schema texts in registration order (oldest first). May be empty, in
@@ -45,7 +55,27 @@ public interface CompatibilityChecker {
      * @param level the Confluent SR compatibility level to apply
      * @return a {@link CompatibilityResult} with the outcome and any per-incompatibility messages
      */
-    CompatibilityResult check(String proposedText, List<String> priorTexts, CompatLevel level);
+    default CompatibilityResult check(
+            String proposedText, List<String> priorTexts, CompatLevel level) {
+        return check(proposedText, priorTexts, level, ReferenceResolver.empty());
+    }
+
+    /**
+     * Check {@code proposedText} against {@code priorTexts} at {@code level}, allowing the parser
+     * to consult {@code resolver} for any cross-schema references the proposed text declares (Avro
+     * named-type imports, JSON {@code $ref}, Protobuf imports).
+     *
+     * @param proposedText the proposed schema text in this checker's format
+     * @param priorTexts prior schema texts in registration order (oldest first)
+     * @param level the Confluent SR compatibility level to apply
+     * @param resolver reference resolver; never {@code null} — pass {@link
+     *     ReferenceResolver#empty()} when there are no references
+     */
+    CompatibilityResult check(
+            String proposedText,
+            List<String> priorTexts,
+            CompatLevel level,
+            ReferenceResolver resolver);
 
     /**
      * Stable format id this checker handles (for example {@code "AVRO"}, {@code "JSON"}, {@code

@@ -23,12 +23,15 @@ import org.apache.fluss.catalog.CatalogService;
 import org.apache.fluss.catalog.entities.GrantEntity;
 import org.apache.fluss.catalog.entities.KafkaSubjectBinding;
 import org.apache.fluss.catalog.entities.PrincipalEntity;
+import org.apache.fluss.catalog.entities.SchemaReference;
 import org.apache.fluss.catalog.entities.SchemaVersionEntity;
 import org.apache.fluss.exception.TableNotExistException;
 import org.apache.fluss.kafka.sr.compat.AvroCompatibilityChecker;
 import org.apache.fluss.kafka.sr.compat.CompatLevel;
 import org.apache.fluss.kafka.sr.compat.CompatibilityChecker;
 import org.apache.fluss.kafka.sr.compat.CompatibilityResult;
+import org.apache.fluss.kafka.sr.references.CatalogReferenceResolver;
+import org.apache.fluss.kafka.sr.references.ReferenceResolver;
 import org.apache.fluss.kafka.sr.typed.FormatRegistry;
 import org.apache.fluss.metadata.TablePath;
 import org.apache.fluss.security.acl.FlussPrincipal;
@@ -325,10 +328,24 @@ public final class SchemaRegistryService {
      * a clean 422. Phase T-MF.5.
      */
     public int register(String subject, String schemaText, String formatId) {
+        return register(subject, schemaText, formatId, Collections.emptyList());
+    }
+
+    /**
+     * Register under an explicit {@code formatId} with a {@code references} list. Each entry's
+     * {@code (subject, version)} is resolved against the catalog and pinned to the referent's
+     * {@code schema_id} before the compat gate runs and the row is written. A missing referent
+     * yields HTTP 422. Phase SR-X.5.
+     */
+    public int register(
+            String subject, String schemaText, String formatId, List<RequestedReference> refs) {
         authorize(GrantEntity.PRIVILEGE_WRITE);
         if (schemaText == null || schemaText.isEmpty()) {
             throw new SchemaRegistryException(
                     SchemaRegistryException.Kind.INVALID_INPUT, "schema body is required");
+        }
+        if (refs == null) {
+            refs = Collections.emptyList();
         }
         String canonicalFormat = canonicaliseFormat(formatId);
         String topic = SubjectResolver.topicFromValueSubject(subject);
@@ -340,38 +357,52 @@ public final class SchemaRegistryService {
             // resurrects it).
             clearSubjectTombstone(subject);
 
+            // Resolve every reference up-front: pin (subject, version) to schema_id, fetch text.
+            List<ResolvedReference> resolved = resolveReferences(refs);
+            ReferenceResolver resolver = referenceResolver(resolved);
+
             // Idempotent fast path: if the subject is already bound and the latest <live> schema
-            // text matches, return the existing Confluent id without appending a new version.
-            // latestForSubject already filters out tombstoned versions, so a soft-deleted match
-            // will not short-circuit here; instead we'll clear its tombstone and re-register.
-            Optional<RegisteredSchema> latest = latestForSubject(subject);
+            // text matches AND the prior reference set matches, return the existing Confluent id
+            // without appending a new version. Same text but different references must mint a new
+            // version (Confluent semantics).
+            Optional<RegisteredSchemaWithRefs> latest = latestForSubjectWithRefs(subject);
             if (LOG.isDebugEnabled()) {
                 LOG.debug(
-                        "register subject={} format={} latestPresent={} latestMatches={}",
+                        "register subject={} format={} latestPresent={} latestMatches={} refs={}",
                         subject,
                         canonicalFormat,
                         latest.isPresent(),
-                        latest.isPresent() && schemaText.equals(latest.get().schema()));
+                        latest.isPresent() && schemaText.equals(latest.get().schema().schema()),
+                        resolved.size());
             }
-            if (latest.isPresent() && schemaText.equals(latest.get().schema())) {
-                return latest.get().id();
+            if (latest.isPresent()
+                    && schemaText.equals(latest.get().schema().schema())
+                    && referenceListsEqual(latest.get().references(), resolved)) {
+                return latest.get().schema().id();
             }
 
-            // Resurrect soft-deleted version if the text matches an existing (tombstoned) row —
-            // clears the tombstone and returns that row's Confluent id rather than minting a new
-            // version.
+            // Resurrect soft-deleted version if the text + refs match an existing (tombstoned)
+            // row — clears the tombstone and returns that row's Confluent id rather than minting
+            // a new version.
             Optional<RegisteredSchema> resurrected =
-                    resurrectTombstonedSchemaIfMatches(subject, topic, schemaText);
+                    resurrectTombstonedSchemaIfMatches(subject, topic, schemaText, resolved);
             if (resurrected.isPresent()) {
-                // The binding may also be soft-deleted / absent — re-bind to be safe.
+                // The binding may also be soft-deleted / absent — re-bind to be safe. Re-apply
+                // the references on the resurrected schema_id so a soft-deleted row that lost
+                // its references regains them.
                 ensureCatalogEntities(topic);
                 catalog.bindKafkaSubject(
                         subject, kafkaDatabase, topic, KEY_OR_VALUE_VALUE, NAMING_STRATEGY);
+                Optional<SchemaVersionEntity> existingRow =
+                        catalog.getSchemaById(resurrected.get().id());
+                if (existingRow.isPresent()) {
+                    catalog.bindReferences(existingRow.get().schemaId(), toCatalogRefs(resolved));
+                }
                 return resurrected.get().id();
             }
 
             // Compatibility gate — runs before registration when there's a live prior history.
-            enforceCompatibilityOrThrow(subject, topic, schemaText);
+            enforceCompatibilityOrThrow(subject, topic, schemaText, resolver);
 
             ensureCatalogEntities(topic);
             SchemaVersionEntity version =
@@ -381,6 +412,7 @@ public final class SchemaRegistryService {
                             canonicalFormat,
                             schemaText,
                             /* registeredBy */ null);
+            catalog.bindReferences(version.schemaId(), toCatalogRefs(resolved));
             catalog.bindKafkaSubject(
                     subject, kafkaDatabase, topic, KEY_OR_VALUE_VALUE, NAMING_STRATEGY);
             return version.confluentId();
@@ -433,6 +465,10 @@ public final class SchemaRegistryService {
             String schemaId = schema.get().schemaId();
             boolean alreadyTombstoned = isSchemaTombstoned(schemaId);
             if (permanent) {
+                refuseIfReferenced(schemaId, subject, version);
+                // Cascade-delete reference rows owned by this referrer first; orphan reference
+                // rows that point AT this schema id are left for `listReferencedBy` to ignore.
+                catalog.deleteReferences(schemaId);
                 catalog.deleteSchemaVersion(schemaId);
                 // Always clear the tombstone on permanent delete so stale rows don't linger.
                 catalog.deleteSrConfig(KEY_TOMBSTONE_SCHEMA_PREFIX + schemaId);
@@ -476,7 +512,13 @@ public final class SchemaRegistryService {
 
             List<Integer> out = new ArrayList<>();
             if (permanent) {
+                // Pre-flight: refuse the subject delete if any of its versions is still
+                // referenced — fail fast so we don't half-delete and leave dangling rows.
                 for (SchemaVersionEntity v : versions) {
+                    refuseIfReferenced(v.schemaId(), subject, v.version());
+                }
+                for (SchemaVersionEntity v : versions) {
+                    catalog.deleteReferences(v.schemaId());
                     catalog.deleteSchemaVersion(v.schemaId());
                     catalog.deleteSrConfig(KEY_TOMBSTONE_SCHEMA_PREFIX + v.schemaId());
                     out.add(v.version());
@@ -512,6 +554,16 @@ public final class SchemaRegistryService {
      * "latest".
      */
     public CompatibilityResult checkCompatibility(String subject, int version, String schemaText) {
+        return checkCompatibility(subject, version, schemaText, Collections.emptyList());
+    }
+
+    /**
+     * Compatibility probe with references. Resolves {@code refs} the same way the register path
+     * does (422 on missing referent) and feeds the resulting resolver to the per-format checker.
+     * Phase SR-X.5.
+     */
+    public CompatibilityResult checkCompatibility(
+            String subject, int version, String schemaText, List<RequestedReference> refs) {
         authorize(GrantEntity.PRIVILEGE_READ);
         if (schemaText == null || schemaText.isEmpty()) {
             throw new SchemaRegistryException(
@@ -553,7 +605,9 @@ public final class SchemaRegistryService {
             }
             CompatLevel level = effectiveLevel(subject);
             String subjectFormat = liveVersions.get(0).format();
-            return checkerFor(subjectFormat).check(schemaText, priorTexts, level);
+            List<ResolvedReference> resolved = resolveReferences(refs);
+            ReferenceResolver resolver = referenceResolver(resolved);
+            return checkerFor(subjectFormat).check(schemaText, priorTexts, level, resolver);
         } catch (Exception e) {
             throw translate(e);
         }
@@ -572,7 +626,225 @@ public final class SchemaRegistryService {
         return CompatLevel.fromString(DEFAULT_COMPATIBILITY);
     }
 
-    private void enforceCompatibilityOrThrow(String subject, String topic, String proposed)
+    /**
+     * Resolve every requested reference against the catalog. A missing {@code (subject, version)}
+     * pair, or a tombstoned referent, raises {@link SchemaRegistryException.Kind#INVALID_INPUT} →
+     * HTTP 422 with the Confluent-style "referenced subject X version Y does not exist" message.
+     * Empty input returns an empty list.
+     */
+    private List<ResolvedReference> resolveReferences(List<RequestedReference> refs)
+            throws Exception {
+        if (refs == null || refs.isEmpty()) {
+            return Collections.emptyList();
+        }
+        List<ResolvedReference> out = new ArrayList<>(refs.size());
+        for (RequestedReference req : refs) {
+            if (req.subject() == null || req.subject().isEmpty()) {
+                throw new SchemaRegistryException(
+                        SchemaRegistryException.Kind.INVALID_INPUT,
+                        "reference subject is required (anonymous references are not supported)");
+            }
+            if (req.name() == null || req.name().isEmpty()) {
+                throw new SchemaRegistryException(
+                        SchemaRegistryException.Kind.INVALID_INPUT, "reference name is required");
+            }
+            String referentTopic = SubjectResolver.topicFromValueSubject(req.subject());
+            Optional<KafkaSubjectBinding> binding = catalog.resolveKafkaSubject(req.subject());
+            if (!binding.isPresent() || isSubjectTombstoned(req.subject())) {
+                throw new SchemaRegistryException(
+                        SchemaRegistryException.Kind.UNPROCESSABLE_ENTITY,
+                        "referenced subject "
+                                + req.subject()
+                                + " version "
+                                + req.version()
+                                + " does not exist");
+            }
+            Optional<SchemaVersionEntity> referent =
+                    catalog.getSchemaVersion(kafkaDatabase, referentTopic, req.version());
+            if (!referent.isPresent() || isSchemaTombstoned(referent.get().schemaId())) {
+                throw new SchemaRegistryException(
+                        SchemaRegistryException.Kind.UNPROCESSABLE_ENTITY,
+                        "referenced subject "
+                                + req.subject()
+                                + " version "
+                                + req.version()
+                                + " does not exist");
+            }
+            out.add(
+                    new ResolvedReference(
+                            req.name(),
+                            req.subject(),
+                            req.version(),
+                            referent.get().schemaId(),
+                            referent.get().schemaText()));
+        }
+        return out;
+    }
+
+    private static ReferenceResolver referenceResolver(List<ResolvedReference> resolved) {
+        if (resolved == null || resolved.isEmpty()) {
+            return ReferenceResolver.empty();
+        }
+        List<String> names = new ArrayList<>(resolved.size());
+        List<String> texts = new ArrayList<>(resolved.size());
+        for (ResolvedReference r : resolved) {
+            names.add(r.name);
+            texts.add(r.referencedText);
+        }
+        return CatalogReferenceResolver.of(names, texts);
+    }
+
+    private static List<SchemaReference> toCatalogRefs(List<ResolvedReference> resolved) {
+        List<SchemaReference> out = new ArrayList<>(resolved.size());
+        for (ResolvedReference r : resolved) {
+            out.add(new SchemaReference(r.name, r.subject, r.version, r.referencedSchemaId));
+        }
+        return out;
+    }
+
+    private static List<SubjectReference> refs(List<SchemaReference> catalogRefs) {
+        List<SubjectReference> out = new ArrayList<>(catalogRefs.size());
+        for (SchemaReference r : catalogRefs) {
+            out.add(new SubjectReference(r.name(), r.subject(), r.version()));
+        }
+        return out;
+    }
+
+    private static boolean referenceListsEqual(
+            List<SchemaReference> stored, List<ResolvedReference> proposed) {
+        if (stored.size() != proposed.size()) {
+            return false;
+        }
+        for (int i = 0; i < stored.size(); i++) {
+            SchemaReference s = stored.get(i);
+            ResolvedReference p = proposed.get(i);
+            if (!s.name().equals(p.name)
+                    || !s.subject().equals(p.subject)
+                    || s.version() != p.version
+                    || !s.referencedSchemaId().equals(p.referencedSchemaId)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static boolean referenceListsEqualToCatalog(
+            List<SchemaReference> stored, List<ResolvedReference> proposed) {
+        return referenceListsEqual(stored, proposed);
+    }
+
+    /**
+     * Like {@link #latestForSubject(String)} but also fetches the referenced-by edges for the
+     * latest live row. Used by the register fast path so that a same-text + same-refs re-submission
+     * is recognised as idempotent.
+     */
+    private Optional<RegisteredSchemaWithRefs> latestForSubjectWithRefs(String subject)
+            throws Exception {
+        Optional<RegisteredSchema> latest = latestForSubject(subject);
+        if (!latest.isPresent()) {
+            return Optional.empty();
+        }
+        // We need the catalog UUID for the latest version to fetch its references.
+        Optional<KafkaSubjectBinding> binding = catalog.resolveKafkaSubject(subject);
+        if (!binding.isPresent()) {
+            return Optional.of(new RegisteredSchemaWithRefs(latest.get(), Collections.emptyList()));
+        }
+        String topic = SubjectResolver.topicFromValueSubject(subject);
+        Optional<SchemaVersionEntity> ent =
+                catalog.getSchemaVersion(kafkaDatabase, topic, latest.get().version());
+        if (!ent.isPresent()) {
+            return Optional.of(new RegisteredSchemaWithRefs(latest.get(), Collections.emptyList()));
+        }
+        List<SchemaReference> bound = catalog.listReferences(ent.get().schemaId());
+        return Optional.of(new RegisteredSchemaWithRefs(latest.get(), bound));
+    }
+
+    /**
+     * Look up the references bound to {@code schemaId} as wire-side {@link SubjectReference}
+     * tuples. Empty when none. Used to populate the {@code references} array on read responses.
+     */
+    public List<SubjectReference> referencesForSchemaId(String schemaId) {
+        try {
+            return refs(catalog.listReferences(schemaId));
+        } catch (Exception e) {
+            throw translate(e);
+        }
+    }
+
+    /**
+     * Reverse-index lookup: every {@code (subject, version)} tuple that references the schema with
+     * the given Confluent {@code id}. Backs {@code GET /schemas/ids/{id}/referencedby}.
+     */
+    public List<SubjectVersion> referencedBy(int id) {
+        authorize(GrantEntity.PRIVILEGE_READ);
+        try {
+            Optional<SchemaVersionEntity> referent = catalog.getSchemaById(id);
+            if (!referent.isPresent()) {
+                return Collections.emptyList();
+            }
+            List<String> referrerIds = catalog.listReferencedBy(referent.get().schemaId());
+            List<SubjectVersion> out = new ArrayList<>();
+            for (String referrerId : referrerIds) {
+                Optional<SchemaVersionEntity> ref = catalog.getSchemaBySchemaId(referrerId);
+                if (!ref.isPresent() || isSchemaTombstoned(ref.get().schemaId())) {
+                    continue;
+                }
+                String tableId = ref.get().tableId();
+                int version = ref.get().version();
+                for (KafkaSubjectBinding b : catalog.listKafkaSubjects()) {
+                    if (tableId.equals(b.tableId()) && !isSubjectTombstoned(b.subject())) {
+                        out.add(new SubjectVersion(b.subject(), version));
+                    }
+                }
+            }
+            // Stable, deterministic ordering: by subject, then version.
+            out.sort(
+                    (a, b) -> {
+                        int s = a.subject().compareTo(b.subject());
+                        if (s != 0) {
+                            return s;
+                        }
+                        return Integer.compare(a.version(), b.version());
+                    });
+            return out;
+        } catch (Exception e) {
+            throw translate(e);
+        }
+    }
+
+    /**
+     * Look up the catalog UUID of {@code (subject, version)}. Returns empty when the binding,
+     * version, or schema row is missing or tombstoned. Used by the SR HTTP layer to populate {@code
+     * references} echoes by fetching forward edges off the catalog.
+     */
+    public Optional<String> schemaIdFor(String subject, int version) {
+        try {
+            Optional<KafkaSubjectBinding> binding = catalog.resolveKafkaSubject(subject);
+            if (!binding.isPresent() || isSubjectTombstoned(subject)) {
+                return Optional.empty();
+            }
+            String topic = SubjectResolver.topicFromValueSubject(subject);
+            int target = version;
+            if (target == -1) {
+                Optional<RegisteredSchema> latest = latestForSubject(subject);
+                if (!latest.isPresent()) {
+                    return Optional.empty();
+                }
+                target = latest.get().version();
+            }
+            Optional<SchemaVersionEntity> ent =
+                    catalog.getSchemaVersion(kafkaDatabase, topic, target);
+            if (!ent.isPresent() || isSchemaTombstoned(ent.get().schemaId())) {
+                return Optional.empty();
+            }
+            return Optional.of(ent.get().schemaId());
+        } catch (Exception e) {
+            throw translate(e);
+        }
+    }
+
+    private void enforceCompatibilityOrThrow(
+            String subject, String topic, String proposed, ReferenceResolver resolver)
             throws Exception {
         CompatLevel level = effectiveLevel(subject);
         if (level == CompatLevel.NONE) {
@@ -587,7 +859,8 @@ public final class SchemaRegistryService {
             priorTexts.add(v.schemaText());
         }
         String subjectFormat = liveVersions.get(0).format();
-        CompatibilityResult result = checkerFor(subjectFormat).check(proposed, priorTexts, level);
+        CompatibilityResult result =
+                checkerFor(subjectFormat).check(proposed, priorTexts, level, resolver);
         if (!result.isCompatible()) {
             StringBuilder sb = new StringBuilder();
             sb.append("Schema is incompatible with ")
@@ -615,14 +888,24 @@ public final class SchemaRegistryService {
     }
 
     private Optional<RegisteredSchema> resurrectTombstonedSchemaIfMatches(
-            String subject, String topic, String schemaText) throws Exception {
+            String subject, String topic, String schemaText, List<ResolvedReference> refs)
+            throws Exception {
         List<SchemaVersionEntity> all = catalog.listSchemaVersions(kafkaDatabase, topic);
         for (SchemaVersionEntity v : all) {
             if (schemaText.equals(v.schemaText()) && isSchemaTombstoned(v.schemaId())) {
+                List<SchemaReference> priorRefs = catalog.listReferences(v.schemaId());
+                if (!referenceListsEqualToCatalog(priorRefs, refs)) {
+                    continue;
+                }
                 catalog.deleteSrConfig(KEY_TOMBSTONE_SCHEMA_PREFIX + v.schemaId());
                 return Optional.of(
                         new RegisteredSchema(
-                                v.confluentId(), subject, v.version(), v.format(), v.schemaText()));
+                                v.confluentId(),
+                                subject,
+                                v.version(),
+                                v.format(),
+                                v.schemaText(),
+                                refs(priorRefs)));
             }
         }
         return Optional.empty();
@@ -636,6 +919,46 @@ public final class SchemaRegistryService {
 
     private boolean isSubjectTombstoned(String subject) throws Exception {
         return catalog.getSrConfig(KEY_TOMBSTONE_SUBJECT_PREFIX + subject).isPresent();
+    }
+
+    /**
+     * Refuse to hard-delete {@code schemaId} when at least one live referrer points at it. The 422
+     * message enumerates every blocking referrer as a Confluent-shape {@code (subject, version)}
+     * tuple — multi-binding referrers expand to one tuple per binding.
+     */
+    private void refuseIfReferenced(String schemaId, String subject, int version) throws Exception {
+        List<String> referrerIds = catalog.listReferencedBy(schemaId);
+        if (referrerIds.isEmpty()) {
+            return;
+        }
+        List<String> blockers = new ArrayList<>();
+        for (String referrerId : referrerIds) {
+            Optional<SchemaVersionEntity> referrer = catalog.getSchemaBySchemaId(referrerId);
+            if (!referrer.isPresent() || isSchemaTombstoned(referrer.get().schemaId())) {
+                continue;
+            }
+            String tableId = referrer.get().tableId();
+            int v = referrer.get().version();
+            for (KafkaSubjectBinding b : catalog.listKafkaSubjects()) {
+                if (tableId.equals(b.tableId()) && !isSubjectTombstoned(b.subject())) {
+                    blockers.add(b.subject() + "/v" + v);
+                }
+            }
+        }
+        if (blockers.isEmpty()) {
+            return;
+        }
+        Collections.sort(blockers);
+        throw new SchemaRegistryException(
+                SchemaRegistryException.Kind.UNPROCESSABLE_ENTITY,
+                "Subject '"
+                        + subject
+                        + "' version "
+                        + version
+                        + " is still referenced by "
+                        + blockers.size()
+                        + " schemas: "
+                        + blockers);
     }
 
     private boolean isSchemaTombstoned(String schemaId) throws Exception {
@@ -656,7 +979,8 @@ public final class SchemaRegistryService {
                             /* subject unused by GET /schemas/ids */ "",
                             s.version(),
                             s.format(),
-                            s.schemaText()));
+                            s.schemaText(),
+                            refs(catalog.listReferences(s.schemaId()))));
         } catch (Exception e) {
             throw translate(e);
         }
@@ -806,7 +1130,12 @@ public final class SchemaRegistryService {
             SchemaVersionEntity s = schema.get();
             return Optional.of(
                     new RegisteredSchema(
-                            s.confluentId(), subject, s.version(), s.format(), s.schemaText()));
+                            s.confluentId(),
+                            subject,
+                            s.version(),
+                            s.format(),
+                            s.schemaText(),
+                            refs(catalog.listReferences(s.schemaId()))));
         } catch (Exception e) {
             throw translate(e);
         }
@@ -837,7 +1166,8 @@ public final class SchemaRegistryService {
                                     subject,
                                     v.version(),
                                     v.format(),
-                                    v.schemaText()));
+                                    v.schemaText(),
+                                    refs(catalog.listReferences(v.schemaId()))));
                 }
             }
             return Optional.empty();
@@ -868,7 +1198,12 @@ public final class SchemaRegistryService {
                 SchemaVersionEntity s = schema.get();
                 return Optional.of(
                         new RegisteredSchema(
-                                s.confluentId(), subject, s.version(), s.format(), s.schemaText()));
+                                s.confluentId(),
+                                subject,
+                                s.version(),
+                                s.format(),
+                                s.schemaText(),
+                                refs(catalog.listReferences(s.schemaId()))));
             }
             // Fall back to the live history tail.
             String topic = SubjectResolver.topicFromValueSubject(subject);
@@ -879,7 +1214,12 @@ public final class SchemaRegistryService {
             SchemaVersionEntity s = live.get(live.size() - 1);
             return Optional.of(
                     new RegisteredSchema(
-                            s.confluentId(), subject, s.version(), s.format(), s.schemaText()));
+                            s.confluentId(),
+                            subject,
+                            s.version(),
+                            s.format(),
+                            s.schemaText(),
+                            refs(catalog.listReferences(s.schemaId()))));
         } catch (Exception e) {
             throw translate(e);
         }
@@ -963,20 +1303,35 @@ public final class SchemaRegistryService {
                 SchemaRegistryException.Kind.INTERNAL, e.getMessage(), e);
     }
 
-    /** Immutable snapshot of one registered schema. */
+    /** Immutable snapshot of one registered schema (plus its references, when known). */
     public static final class RegisteredSchema {
         private final int id;
         private final String subject;
         private final int version;
         private final String format;
         private final String schema;
+        private final List<SubjectReference> references;
 
         public RegisteredSchema(int id, String subject, int version, String format, String schema) {
+            this(id, subject, version, format, schema, Collections.emptyList());
+        }
+
+        public RegisteredSchema(
+                int id,
+                String subject,
+                int version,
+                String format,
+                String schema,
+                List<SubjectReference> references) {
             this.id = id;
             this.subject = subject;
             this.version = version;
             this.format = format;
             this.schema = schema;
+            this.references =
+                    references == null
+                            ? Collections.emptyList()
+                            : Collections.unmodifiableList(new ArrayList<>(references));
         }
 
         public int id() {
@@ -997,6 +1352,108 @@ public final class SchemaRegistryService {
 
         public String schema() {
             return schema;
+        }
+
+        public List<SubjectReference> references() {
+            return references;
+        }
+    }
+
+    /**
+     * Caller-supplied reference shape on the register / compatibility wire path: just {@code (name,
+     * subject, version)}. Resolved against the catalog before any compat or write step runs.
+     */
+    public static final class RequestedReference {
+        private final String name;
+        private final String subject;
+        private final int version;
+
+        public RequestedReference(String name, String subject, int version) {
+            this.name = name;
+            this.subject = subject;
+            this.version = version;
+        }
+
+        public String name() {
+            return name;
+        }
+
+        public String subject() {
+            return subject;
+        }
+
+        public int version() {
+            return version;
+        }
+    }
+
+    /** Confluent-shape echo of one reference on a read response. */
+    public static final class SubjectReference {
+        private final String name;
+        private final String subject;
+        private final int version;
+
+        public SubjectReference(String name, String subject, int version) {
+            this.name = name;
+            this.subject = subject;
+            this.version = version;
+        }
+
+        public String name() {
+            return name;
+        }
+
+        public String subject() {
+            return subject;
+        }
+
+        public int version() {
+            return version;
+        }
+    }
+
+    /** Internal resolved reference: pinned schema id + the referent's text. */
+    private static final class ResolvedReference {
+        final String name;
+        final String subject;
+        final int version;
+        final String referencedSchemaId;
+        final String referencedText;
+
+        ResolvedReference(
+                String name,
+                String subject,
+                int version,
+                String referencedSchemaId,
+                String referencedText) {
+            this.name = name;
+            this.subject = subject;
+            this.version = version;
+            this.referencedSchemaId = referencedSchemaId;
+            this.referencedText = referencedText;
+        }
+
+        SubjectReference toSubjectReference() {
+            return new SubjectReference(name, subject, version);
+        }
+    }
+
+    /** Latest-version snapshot bundled with its bound references for fast-path comparison. */
+    private static final class RegisteredSchemaWithRefs {
+        private final RegisteredSchema schema;
+        private final List<SchemaReference> references;
+
+        RegisteredSchemaWithRefs(RegisteredSchema schema, List<SchemaReference> references) {
+            this.schema = schema;
+            this.references = references;
+        }
+
+        RegisteredSchema schema() {
+            return schema;
+        }
+
+        List<SchemaReference> references() {
+            return references;
         }
     }
 }
