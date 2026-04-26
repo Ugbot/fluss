@@ -27,10 +27,12 @@ import org.apache.kafka.clients.admin.Admin;
 import org.apache.kafka.clients.admin.AdminClientConfig;
 import org.apache.kafka.clients.admin.KafkaAdminClient;
 import org.apache.kafka.clients.admin.NewTopic;
+import org.apache.kafka.clients.admin.TopicDescription;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
+import org.apache.kafka.common.TopicPartitionInfo;
 import org.apache.kafka.common.serialization.ByteArrayDeserializer;
 import org.apache.kafka.connect.runtime.rest.entities.ConnectorInfo;
 import org.apache.kafka.connect.runtime.rest.entities.ConnectorStateInfo;
@@ -50,6 +52,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.Properties;
 import java.util.Random;
 import java.util.UUID;
@@ -118,6 +121,10 @@ class KafkaConnectHarnessSmokeITCase {
         admin.createTopics(Collections.singletonList(new NewTopic(topic, 1, (short) 1)))
                 .all()
                 .get();
+
+        // Wait for the partition leader to be elected before starting the connector so
+        // the Connect producer doesn't spin on LEADER_NOT_AVAILABLE retries.
+        awaitTopicReady(topic);
 
         // 1. Write 10 randomised lines to a source file. FileStreamSourceConnector tails this.
         Path sourceFile = workDir.resolve("source.txt");
@@ -199,6 +206,43 @@ class KafkaConnectHarnessSmokeITCase {
     // ------------------------------------------------------------------
     //  Helpers
     // ------------------------------------------------------------------
+
+    /**
+     * Polls DescribeTopics until every partition of the topic has an elected leader. Without this
+     * barrier the Connect producer can spin on LEADER_NOT_AVAILABLE retries for the first few
+     * hundred milliseconds after CreateTopics returns, racing with the 30-second drain window.
+     */
+    private void awaitTopicReady(String topic) {
+        long deadline = System.currentTimeMillis() + 30_000L;
+        while (System.currentTimeMillis() < deadline) {
+            try {
+                Map<String, TopicDescription> desc =
+                        admin.describeTopics(Collections.singletonList(topic)).all().get();
+                TopicDescription td = desc.get(topic);
+                if (td != null) {
+                    boolean allLeadersElected = true;
+                    for (TopicPartitionInfo pi : td.partitions()) {
+                        if (pi.leader() == null || pi.leader().id() < 0) {
+                            allLeadersElected = false;
+                            break;
+                        }
+                    }
+                    if (allLeadersElected) {
+                        return;
+                    }
+                }
+            } catch (Exception ignored) {
+                // DescribeTopics may transiently fail while metadata propagates.
+            }
+            try {
+                Thread.sleep(100L);
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+                throw new RuntimeException("Interrupted while waiting for topic leader", ie);
+            }
+        }
+        throw new AssertionError("Topic " + topic + " did not get a leader within 30s");
+    }
 
     private void awaitRunning(String connectorName) {
         long deadline = System.currentTimeMillis() + 30_000L;
