@@ -203,20 +203,21 @@ class KafkaElectLeadersITCase {
                             .get()
                             .getTableId();
             TableBucket tb = new TableBucket(tableId, 0);
-            int initialLeader = CLUSTER.waitAndGetLeader(tb);
-            // Fluss placement: replica 0 is preferred and becomes the initial leader.
-            assertThat(initialLeader).isZero();
+            // Fluss guarantees replicas[0] wins the initial election, so the initial leader IS
+            // the preferred replica. Round-robin placement means the preferred server is not
+            // always tablet server 0 — use whoever won the initial election.
+            int preferredServerId = CLUSTER.waitAndGetLeader(tb);
 
-            // Force a non-preferred leader via controlled shutdown of tablet server 0. The
-            // coordinator's ControlledShutdownLeaderElection migrates leadership to replica 1 or
-            // 2; after the server restarts it rejoins ISR as a follower.
-            CLUSTER.stopTabletServer(0);
+            // Force a non-preferred leader via controlled shutdown of the preferred server.
+            // The coordinator's ControlledShutdownLeaderElection migrates leadership to another
+            // server; after restart it rejoins the ISR as a follower.
+            CLUSTER.stopTabletServer(preferredServerId);
             long deadlineMs = System.currentTimeMillis() + 30_000L;
             int migratedLeader = -1;
             while (System.currentTimeMillis() < deadlineMs) {
                 try {
                     int cur = CLUSTER.waitAndGetLeader(tb);
-                    if (cur != 0) {
+                    if (cur != preferredServerId) {
                         migratedLeader = cur;
                         break;
                     }
@@ -226,10 +227,11 @@ class KafkaElectLeadersITCase {
                 Thread.sleep(50);
             }
             assertThat(migratedLeader)
-                    .as("leader migrated away from preferred replica 0")
-                    .isIn(1, 2);
-            CLUSTER.startTabletServer(0);
-            CLUSTER.waitUntilReplicaExpandToIsr(tb, 0);
+                    .as("leader should migrate away from preferred server %d", preferredServerId)
+                    .isNotNegative()
+                    .isNotEqualTo(preferredServerId);
+            CLUSTER.startTabletServer(preferredServerId);
+            CLUSTER.waitUntilReplicaExpandToIsr(tb, preferredServerId);
 
             // Now fire electLeaders — transcoder must classify this as
             // PREFERRED_LEADER_NOT_AVAILABLE with the explicit stub-error message.
