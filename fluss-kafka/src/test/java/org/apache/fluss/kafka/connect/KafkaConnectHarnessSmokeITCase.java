@@ -51,6 +51,7 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
@@ -137,7 +138,13 @@ class KafkaConnectHarnessSmokeITCase {
         }
 
         // 2. Start an embedded Connect standalone worker against our KAFKA listener.
-        connect = new EmbeddedConnectCluster(bootstrap());
+        // Disable idempotent producer: Kafka 3.9+ defaults to enable.idempotence=true (KIP-939),
+        // which requires our broker to handle idempotent sequence tracking. Use acks=1 + no
+        // idempotence until that feature is fully validated.
+        Map<String, String> workerOverrides = new HashMap<>();
+        workerOverrides.put("producer.enable.idempotence", "false");
+        workerOverrides.put("producer.acks", "1");
+        connect = new EmbeddedConnectCluster(bootstrap(), workerOverrides);
         connect.start();
         assertThat(connect.workerUri())
                 .as("standalone worker should expose a REST listener once started")
