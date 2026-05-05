@@ -161,7 +161,7 @@ forbidden" rather than "everyone is admin". That is the intended failure
 mode.
 
 **Trust path 1: `X-Forwarded-User`.** A reverse proxy (NGINX, Envoy, the
-Confluent REST sidecar) terminates Basic/OIDC auth and forwards the
+Kafka SR REST sidecar) terminates Basic/OIDC auth and forwards the
 resolved username in the header. The SR honours it only when the remote
 socket address matches one of the CIDR blocks in
 `kafka.schema-registry.trusted-proxy-cidrs`. Empty list → header is never

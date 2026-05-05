@@ -22,10 +22,10 @@ import org.apache.fluss.annotation.PublicEvolving;
 import java.util.Objects;
 
 /**
- * One row in {@code _catalog.__sr_config__}. Stores free-form string key/value pairs for the
- * Confluent SR projection: global and per-subject compatibility levels, registry modes, etc. Keys
- * follow the convention {@code global_compatibility}, {@code subject_compatibility:<subject>},
- * {@code global_mode}, {@code subject_mode:<subject>}.
+ * One row in {@code _catalog.__sr_config__}. Stores free-form string key/value pairs for the Kafka
+ * SR projection: global and per-subject compatibility levels, registry modes, etc. Keys follow the
+ * convention {@code global_compatibility}, {@code subject_compatibility:<subject>}, {@code
+ * global_mode}, {@code subject_mode:<subject>}.
  */
 @PublicEvolving
 public final class SrConfigEntry {

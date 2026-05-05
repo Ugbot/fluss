@@ -52,7 +52,7 @@ public interface CompatibilityChecker {
      * @param proposedText the proposed schema text in this checker's format
      * @param priorTexts prior schema texts in registration order (oldest first). May be empty, in
      *     which case any first registration is compatible.
-     * @param level the Confluent SR compatibility level to apply
+     * @param level the Kafka SR compatibility level to apply
      * @return a {@link CompatibilityResult} with the outcome and any per-incompatibility messages
      */
     default CompatibilityResult check(
@@ -67,7 +67,7 @@ public interface CompatibilityChecker {
      *
      * @param proposedText the proposed schema text in this checker's format
      * @param priorTexts prior schema texts in registration order (oldest first)
-     * @param level the Confluent SR compatibility level to apply
+     * @param level the Kafka SR compatibility level to apply
      * @param resolver reference resolver; never {@code null} — pass {@link
      *     ReferenceResolver#empty()} when there are no references
      */

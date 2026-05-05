@@ -20,13 +20,20 @@ package org.apache.fluss.kafka.fetch;
 import org.apache.fluss.annotation.Internal;
 import org.apache.fluss.kafka.metrics.KafkaMetricGroup;
 import org.apache.fluss.kafka.sr.typed.RecordCodec;
+import org.apache.fluss.memory.MemorySegment;
 import org.apache.fluss.metadata.Schema;
 import org.apache.fluss.metadata.SchemaGetter;
 import org.apache.fluss.metadata.TableInfo;
 import org.apache.fluss.record.ChangeType;
 import org.apache.fluss.record.LogRecordReadContext;
 import org.apache.fluss.row.BinaryRow;
+import org.apache.fluss.row.BinaryString;
+import org.apache.fluss.row.Decimal;
+import org.apache.fluss.row.InternalArray;
+import org.apache.fluss.row.InternalMap;
 import org.apache.fluss.row.InternalRow;
+import org.apache.fluss.row.TimestampLtz;
+import org.apache.fluss.row.TimestampNtz;
 import org.apache.fluss.shaded.netty4.io.netty.buffer.ByteBuf;
 import org.apache.fluss.shaded.netty4.io.netty.buffer.Unpooled;
 
@@ -38,8 +45,8 @@ import javax.annotation.Nullable;
 
 /**
  * Typed Fetch codec — design 0014 §5. Calls {@link RecordCodec#encodeInto} on the typed value
- * columns of a Fluss row, prepends the 5-byte Confluent wire frame ({@code [0x00][int32
- * confluentSchemaId]}), and emits the resulting bytes as the Kafka record value.
+ * columns of a Fluss row, prepends the 5-byte Kafka SR wire frame ({@code [0x00][int32
+ * srSchemaId]}), and emits the resulting bytes as the Kafka record value.
  *
  * <p>The typed codec only owns the value bytes. {@code record_key}, {@code event_time}, and {@code
  * headers} columns continue to live on the Fluss row at fixed indices outside the typed area; the
@@ -54,26 +61,22 @@ public final class TypedKafkaFetchCodec implements KafkaFetchCodec {
 
     private static final Logger LOG = LoggerFactory.getLogger(TypedKafkaFetchCodec.class);
 
-    /**
-     * Trailing-column indices when the table is in the canonical Kafka shape ({@code record_key,
-     * payload, event_time, headers}). For typed tables the {@code payload} column is replaced by
-     * one or more typed value columns; the trailing three (key, event_time, headers) remain at the
-     * END of the row — but until T.3 actually flips the column layout for typed topics, the IT
-     * pre-configures the topic with the same passthrough column layout, encodes the row's {@code
-     * payload} BYTES column, and prepends the frame. That keeps T.2 self-contained: the typed
-     * encode produces the byte stream the consumer expects, even before T.3 introduces proper typed
-     * value columns.
-     */
+    // record_key is always the leading column; COL_PAYLOAD is only used on the 4-column
+    // passthrough-shape path in encodeValue().
     private static final int COL_RECORD_KEY = 0;
-
     private static final int COL_PAYLOAD = 1;
-    private static final int COL_EVENT_TIME = 2;
-    private static final int COL_HEADERS = 3;
 
     private final TableInfo tableInfo;
     private final RecordCodec codec;
-    private final int confluentSchemaId;
+    private final int srSchemaId;
     private final @Nullable KafkaMetricGroup metrics;
+    private final SchemaGetter schemaGetter;
+
+    // event_time and headers are always the last two columns of a Kafka-shaped table regardless of
+    // whether it is in passthrough (4 cols) or typed (N+3 cols) form. Compute their indices from
+    // the actual schema so they remain correct after T.3 shape evolution adds user columns.
+    private final int colEventTime;
+    private final int colHeaders;
 
     /** Pre-allocated scratch buffer for {@link RecordCodec#encodeInto}. */
     private final ByteBuf scratch = Unpooled.buffer(1024);
@@ -81,20 +84,40 @@ public final class TypedKafkaFetchCodec implements KafkaFetchCodec {
     public TypedKafkaFetchCodec(
             TableInfo tableInfo,
             RecordCodec codec,
-            int confluentSchemaId,
+            int srSchemaId,
             @Nullable KafkaMetricGroup metrics) {
+        this(tableInfo, codec, srSchemaId, metrics, null);
+    }
+
+    public TypedKafkaFetchCodec(
+            TableInfo tableInfo,
+            RecordCodec codec,
+            int srSchemaId,
+            @Nullable KafkaMetricGroup metrics,
+            @Nullable SchemaGetter schemaGetter) {
         this.tableInfo = tableInfo;
         this.codec = codec;
-        this.confluentSchemaId = confluentSchemaId;
+        this.srSchemaId = srSchemaId;
         this.metrics = metrics;
+        this.schemaGetter =
+                schemaGetter != null
+                        ? schemaGetter
+                        : PassthroughKafkaFetchCodec.constantSchemaGetter(
+                                tableInfo.getSchema(), tableInfo.getSchemaId());
+        int fieldCount = tableInfo.getRowType().getFieldCount();
+        this.colEventTime = fieldCount - 2;
+        this.colHeaders = fieldCount - 1;
     }
 
     @Override
     public LogRecordReadContext readContext(int schemaId) {
-        Schema schema = tableInfo.getSchema();
-        SchemaGetter getter = PassthroughKafkaFetchCodec.constantSchemaGetter(schema, schemaId);
+        // Use the shared schemaGetter so old batches (written with an earlier Fluss schema ID)
+        // are deserialized with their original schema and then projected to the current target
+        // schema by DefaultLogRecordBatch via getOutputProjectedRow(). Without this, every batch
+        // regardless of its schemaId is read as the current schema, which corrupts v1 rows after
+        // a T.3 additive evolution (e.g. reading a 5-col v1 IndexedRow as 6-col v2).
         return LogRecordReadContext.createReadContext(
-                tableInfo, /* readFromRemote */ false, null, getter);
+                tableInfo, /* readFromRemote */ false, null, schemaGetter);
     }
 
     @Override
@@ -102,9 +125,11 @@ public final class TypedKafkaFetchCodec implements KafkaFetchCodec {
     public KafkaRecordView rowToKafkaRecord(InternalRow row, ChangeType type, long logOffset) {
         boolean tombstone = type == ChangeType.DELETE;
         byte[] key = row.isNullAt(COL_RECORD_KEY) ? null : row.getBytes(COL_RECORD_KEY);
-        long ts = row.getTimestampLtz(COL_EVENT_TIME, 3).toEpochMicros() / 1000L;
+        long ts = row.getTimestampLtz(colEventTime, 3).toEpochMicros() / 1000L;
         Header[] headers =
-                row.isNullAt(COL_HEADERS) ? KafkaRecordView.EMPTY_HEADERS : extractHeaders(row);
+                row.isNullAt(colHeaders)
+                        ? KafkaRecordView.EMPTY_HEADERS
+                        : extractHeaders(row, colHeaders);
 
         if (tombstone) {
             return new KafkaRecordView(logOffset, ts, key, null, headers);
@@ -120,7 +145,7 @@ public final class TypedKafkaFetchCodec implements KafkaFetchCodec {
             LOG.error(
                     "Typed Fetch encode failed for table {} (schemaId={}, offset={}); skipping row",
                     tableInfo.getTablePath(),
-                    confluentSchemaId,
+                    srSchemaId,
                     logOffset,
                     t);
             return null;
@@ -132,23 +157,15 @@ public final class TypedKafkaFetchCodec implements KafkaFetchCodec {
     }
 
     private byte[] encodeValue(InternalRow row) {
-        if (!(row instanceof BinaryRow)) {
-            // RecordCodec.encodeInto requires the BinaryRow contract for direct memory reads.
-            // The Fluss fetch path returns IndexedRow / ARROW-decoded rows that all implement
-            // BinaryRow; if a future log format breaks that we will have to materialise into an
-            // IndexedRow via a writer here. For T.2 the row is always BinaryRow.
-            throw new IllegalStateException(
-                    "Typed codec requires BinaryRow but got " + row.getClass().getName());
-        }
         scratch.clear();
-        // Confluent wire frame: [0x00][big-endian int32 schemaId][body]
+        // Kafka SR wire frame: [0x00][big-endian int32 schemaId][body]
         scratch.writeByte(0x00);
-        scratch.writeInt(confluentSchemaId);
+        scratch.writeInt(srSchemaId);
         // For T.2 the typed table still uses the passthrough KafkaDataTable column layout — the
         // typed codec encodes the BYTES that *would have been* the typed columns once T.3 alters
         // the schema. Until then the IT pre-stages a topic where the value bytes already match
         // the codec's contract; we read the payload column directly and prepend the frame so
-        // the Kafka consumer sees a wire-correct Confluent record. This branch is structurally
+        // the Kafka consumer sees a wire-correct Kafka SR record. This branch is structurally
         // unreachable until T.3 flips a topic to KAFKA_TYPED_*, which is why the production
         // hot path remains the passthrough (default flag off).
         if (codec.rowType().getFieldCount() == 1
@@ -159,15 +176,171 @@ public final class TypedKafkaFetchCodec implements KafkaFetchCodec {
             byte[] body = row.getBytes(COL_PAYLOAD);
             scratch.writeBytes(body);
         } else {
-            codec.encodeInto((BinaryRow) row, scratch);
+            // Typed table (T.3+): user cols live at indices 1..N of the stored row (col 0 is
+            // record_key). The codec reads at indices 0..N-1, so wrap with a UserColumnSlice
+            // that shifts every column access by COL_RECORD_KEY + 1 = 1.
+            // UserColumnSlice accepts InternalRow so schema-evolved v1 batches — which arrive
+            // as ProjectedRow (not BinaryRow) after LogRecordReadContext re-maps column indices
+            // — are encoded correctly rather than silently skipped.
+            codec.encodeInto(new UserColumnSlice(row, COL_RECORD_KEY + 1), scratch);
         }
         byte[] out = new byte[scratch.readableBytes()];
         scratch.readBytes(out);
         return out;
     }
 
-    private static Header[] extractHeaders(InternalRow row) {
-        org.apache.fluss.row.InternalArray arr = row.getArray(COL_HEADERS);
+    /**
+     * Thin {@link BinaryRow} wrapper that shifts all column-index accesses by a fixed offset. Used
+     * so that {@link RecordCodec#encodeInto} can read user columns starting at index 0 while they
+     * actually live at {@code colOffset} onward in the physical typed-table row.
+     *
+     * <p>Only the {@link InternalRow} data-access methods are offset; the {@link
+     * org.apache.fluss.row.MemoryAwareGetters} and structural {@link BinaryRow} methods delegate
+     * directly to the underlying row — they are never called by the generated Avro encoder.
+     */
+    private static final class UserColumnSlice implements BinaryRow {
+
+        private final InternalRow delegate;
+        private final int colOffset;
+
+        UserColumnSlice(InternalRow delegate, int colOffset) {
+            this.delegate = delegate;
+            this.colOffset = colOffset;
+        }
+
+        @Override
+        public int getFieldCount() {
+            return delegate.getFieldCount() - colOffset;
+        }
+
+        @Override
+        public boolean isNullAt(int pos) {
+            return delegate.isNullAt(pos + colOffset);
+        }
+
+        @Override
+        public boolean getBoolean(int pos) {
+            return delegate.getBoolean(pos + colOffset);
+        }
+
+        @Override
+        public byte getByte(int pos) {
+            return delegate.getByte(pos + colOffset);
+        }
+
+        @Override
+        public short getShort(int pos) {
+            return delegate.getShort(pos + colOffset);
+        }
+
+        @Override
+        public int getInt(int pos) {
+            return delegate.getInt(pos + colOffset);
+        }
+
+        @Override
+        public long getLong(int pos) {
+            return delegate.getLong(pos + colOffset);
+        }
+
+        @Override
+        public float getFloat(int pos) {
+            return delegate.getFloat(pos + colOffset);
+        }
+
+        @Override
+        public double getDouble(int pos) {
+            return delegate.getDouble(pos + colOffset);
+        }
+
+        @Override
+        public BinaryString getChar(int pos, int length) {
+            return delegate.getChar(pos + colOffset, length);
+        }
+
+        @Override
+        public BinaryString getString(int pos) {
+            return delegate.getString(pos + colOffset);
+        }
+
+        @Override
+        public Decimal getDecimal(int pos, int precision, int scale) {
+            return delegate.getDecimal(pos + colOffset, precision, scale);
+        }
+
+        @Override
+        public TimestampNtz getTimestampNtz(int pos, int precision) {
+            return delegate.getTimestampNtz(pos + colOffset, precision);
+        }
+
+        @Override
+        public TimestampLtz getTimestampLtz(int pos, int precision) {
+            return delegate.getTimestampLtz(pos + colOffset, precision);
+        }
+
+        @Override
+        public byte[] getBytes(int pos) {
+            return delegate.getBytes(pos + colOffset);
+        }
+
+        @Override
+        public byte[] getBinary(int pos, int length) {
+            return delegate.getBinary(pos + colOffset, length);
+        }
+
+        @Override
+        public InternalArray getArray(int pos) {
+            return delegate.getArray(pos + colOffset);
+        }
+
+        @Override
+        public InternalMap getMap(int pos) {
+            return delegate.getMap(pos + colOffset);
+        }
+
+        @Override
+        public InternalRow getRow(int pos, int numFields) {
+            return delegate.getRow(pos + colOffset, numFields);
+        }
+
+        @Override
+        public MemorySegment[] getSegments() {
+            throw new UnsupportedOperationException("UserColumnSlice.getSegments");
+        }
+
+        @Override
+        public int getOffset() {
+            throw new UnsupportedOperationException("UserColumnSlice.getOffset");
+        }
+
+        @Override
+        public int getSizeInBytes() {
+            throw new UnsupportedOperationException("UserColumnSlice.getSizeInBytes");
+        }
+
+        @Override
+        public void copyTo(byte[] dst, int dstOffset) {
+            throw new UnsupportedOperationException("UserColumnSlice.copyTo");
+        }
+
+        @Override
+        public BinaryRow copy() {
+            throw new UnsupportedOperationException("UserColumnSlice.copy");
+        }
+
+        @Override
+        public void pointTo(MemorySegment segment, int offset, int sizeInBytes) {
+            throw new UnsupportedOperationException("UserColumnSlice.pointTo");
+        }
+
+        @Override
+        public void pointTo(MemorySegment[] segments, int offset, int sizeInBytes) {
+            throw new UnsupportedOperationException("UserColumnSlice.pointTo");
+        }
+    }
+
+    private static Header[] extractHeaders(InternalRow row, int colHeaders) {
+        org.apache.fluss.row.InternalArray arr = row.getArray(colHeaders);
         Header[] headers = new Header[arr.size()];
         for (int i = 0; i < arr.size(); i++) {
             if (arr.isNullAt(i)) {

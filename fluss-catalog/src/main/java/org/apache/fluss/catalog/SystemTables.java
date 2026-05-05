@@ -83,7 +83,7 @@ public final class SystemTables {
                             .column("version", DataTypes.INT().copy(false))
                             .column("format", DataTypes.STRING().copy(false))
                             .column("schema_text", DataTypes.STRING().copy(false))
-                            .column("confluent_id", DataTypes.INT().copy(false))
+                            .column("sr_id", DataTypes.INT().copy(false))
                             .column("registered_by", DataTypes.STRING())
                             .column("registered_at", DataTypes.TIMESTAMP_LTZ(3).copy(false))
                             .primaryKey("schema_id")
@@ -146,11 +146,11 @@ public final class SystemTables {
             new Table(
                     "_id_reservations",
                     Schema.newBuilder()
-                            .column("confluent_id", DataTypes.INT().copy(false))
+                            .column("sr_id", DataTypes.INT().copy(false))
                             .column("schema_id", DataTypes.STRING().copy(false))
                             .column("format", DataTypes.STRING().copy(false))
                             .column("reserved_at", DataTypes.TIMESTAMP_LTZ(3).copy(false))
-                            .primaryKey("confluent_id")
+                            .primaryKey("sr_id")
                             .build());
 
     /**
@@ -169,7 +169,7 @@ public final class SystemTables {
                             .build());
 
     /**
-     * Edge table for Confluent SR schema references. PK is {@code (referrer_schema_id,
+     * Edge table for Kafka SR schema references. PK is {@code (referrer_schema_id,
      * reference_name)}; trailing fields capture the wire-side {@code (subject, version)} plus the
      * pinned referent UUID. See design 0013.
      */

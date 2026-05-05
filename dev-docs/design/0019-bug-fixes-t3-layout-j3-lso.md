@@ -70,7 +70,7 @@ positional constants, not in the table structure.
 | `evolveAddNullableEmailExtendsTypedShape` | 209–235 | v1 `{id, name}` → v2 adds nullable `email`; round-trip fetch after reshape |
 | `evolveRenameIsRejected` | 237–263 | v1 → v2 (adds `email`) → v3 renames `id` to `user_id`; expects 422 reject |
 | `evolveNonNullAddIsRejected` | 265–289 | v1 → v2 (adds `email`) → v3 adds non-null `score`; expects 422 reject |
-| `confluentIdPreservedAcrossAdditiveAlter` | 365–386 | v1 → v2 (adds `email`); verify v1 Confluent schema id still resolves on fetch |
+| `srSchemaIdPreservedAcrossAdditiveAlter` | 365–386 | v1 → v2 (adds `email`); verify v1 Kafka SR schema id still resolves on fetch |
 
 All four depend on the v1 → v2 round-trip succeeding. Because the codec corrupts
 the fetch after reshape, none can pass.
@@ -272,7 +272,7 @@ Scenarios that must go green:
   fetch under v2, assert `email` field decoded correctly
 - `evolveRenameIsRejected` — v3 rename attempt returns 422
 - `evolveNonNullAddIsRejected` — v3 non-null add returns 422
-- `confluentIdPreservedAcrossAdditiveAlter` — v1 Confluent id resolves correctly
+- `srSchemaIdPreservedAcrossAdditiveAlter` — v1 SR schema id resolves correctly
   on fetch after v2 reshape
 
 Run: `./mvnw test -Dtest=KafkaTypedAlterITCase -pl fluss-kafka`

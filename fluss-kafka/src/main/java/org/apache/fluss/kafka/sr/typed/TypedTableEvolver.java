@@ -24,6 +24,8 @@ import org.apache.fluss.catalog.entities.CatalogTableEntity;
 import org.apache.fluss.client.admin.Admin;
 import org.apache.fluss.client.admin.ListOffsetsResult;
 import org.apache.fluss.client.admin.OffsetSpec;
+import org.apache.fluss.cluster.TabletServerInfo;
+import org.apache.fluss.exception.InvalidReplicationFactorException;
 import org.apache.fluss.kafka.fetch.KafkaTopicRoute;
 import org.apache.fluss.kafka.metadata.KafkaDataTable;
 import org.apache.fluss.kafka.sr.SchemaRegistryException;
@@ -33,6 +35,8 @@ import org.apache.fluss.metadata.TableDescriptor;
 import org.apache.fluss.metadata.TableInfo;
 import org.apache.fluss.metadata.TablePath;
 import org.apache.fluss.server.coordinator.MetadataManager;
+import org.apache.fluss.server.metadata.ServerMetadataCache;
+import org.apache.fluss.server.zk.data.TableAssignment;
 import org.apache.fluss.types.DataField;
 import org.apache.fluss.types.DataType;
 import org.apache.fluss.types.DataTypes;
@@ -54,6 +58,8 @@ import java.util.Set;
 import java.util.concurrent.ExecutionException;
 import java.util.function.Supplier;
 
+import static org.apache.fluss.server.utils.TableAssignmentUtils.generateAssignment;
+
 /**
  * Phase T.3 — ALTER-on-register orchestrator. Sits between {@code SchemaRegistryService.register}
  * and the underlying Fluss data table, and either:
@@ -65,8 +71,8 @@ import java.util.function.Supplier;
  *       subsequent registrations (additive evolve — design 0015 §5).
  * </ul>
  *
- * <p>Confluent ids are stored in {@code _catalog.__schemas__} keyed by the schema's UUID and are
- * not touched by either path: the table reshape changes the data table's column layout, but the
+ * <p>Kafka SR schema ids are stored in {@code _catalog.__schemas__} keyed by the schema's UUID and
+ * are not touched by either path: the table reshape changes the data table's column layout, but the
  * schema row's id column is append-only. T.2's decoder cache is keyed on {@code (tableId,
  * schemaId)}, which survives a reshape (design 0015 §9).
  *
@@ -91,6 +97,7 @@ public final class TypedTableEvolver {
     private final CatalogService catalog;
     private final String kafkaDatabase;
     private final Supplier<Admin> adminSupplier;
+    @Nullable private final ServerMetadataCache metadataCache;
     private final boolean enabled;
 
     public TypedTableEvolver(
@@ -98,11 +105,13 @@ public final class TypedTableEvolver {
             CatalogService catalog,
             String kafkaDatabase,
             Supplier<Admin> adminSupplier,
+            @Nullable ServerMetadataCache metadataCache,
             boolean enabled) {
         this.metadataManager = metadataManager;
         this.catalog = catalog;
         this.kafkaDatabase = kafkaDatabase;
         this.adminSupplier = adminSupplier;
+        this.metadataCache = metadataCache;
         this.enabled = enabled;
     }
 
@@ -115,7 +124,7 @@ public final class TypedTableEvolver {
      * Apply the typed-table reshape (first-register) or additive extension (evolve) for {@code
      * subject}'s topic. Called from {@code SchemaRegistryService.register} after the SR's own
      * subject / format / compatibility validation has succeeded but BEFORE {@code
-     * catalog.registerSchema(...)} mints a new Confluent id.
+     * catalog.registerSchema(...)} mints a new Kafka SR schema id.
      *
      * <p>Failure modes:
      *
@@ -304,27 +313,65 @@ public final class TypedTableEvolver {
         // dropTable schedules ZK deletion through the coordinator's event loop; the create-side
         // sees ALREADY_EXISTS until that's drained. Bounded backoff: 8 attempts × 50ms = ~400ms
         // worst case, well below the SR HTTP handler's request timeout.
+        //
+        // Compute bucket assignment locally (same as CoordinatorService.createTable) so
+        // metadataManager.createTable writes the assignment ZNode before the table ZNode.
+        // Without assignment, TableChangeWatcher silently drops the CreateTableEvent and tablets
+        // never receive UpdateMetadata, leaving the reshaped table in LEADER_NOT_AVAILABLE.
+        TableAssignment assignment = computeAssignment(descriptor);
         Exception last = null;
         for (int attempt = 0; attempt < 8; attempt++) {
             try {
                 metadataManager.createTable(
-                        path, descriptor, /* tableAssignment */ null, /* ignoreIfExists */ false);
+                        path, descriptor, assignment, /* ignoreIfExists */ false);
                 return;
             } catch (Exception e) {
-                last = e;
-                String msg = e.getMessage() == null ? "" : e.getMessage();
+                String msg = e.getMessage();
+                if (msg == null) {
+                    msg = "";
+                }
                 if (!msg.contains("already exists") && !msg.contains("ALREADY_EXISTS")) {
                     throw e;
                 }
+                last = e;
                 try {
                     Thread.sleep(50L);
                 } catch (InterruptedException ie) {
                     Thread.currentThread().interrupt();
-                    throw e;
+                    throw ie;
                 }
             }
         }
-        throw last == null ? new IllegalStateException("createTable failed after retries") : last;
+        throw last != null ? last : new IllegalStateException("createTable failed after retries");
+    }
+
+    @Nullable
+    private TableAssignment computeAssignment(TableDescriptor descriptor) {
+        if (metadataCache == null) {
+            return null;
+        }
+        TabletServerInfo[] servers = metadataCache.getLiveServers();
+        if (servers.length == 0) {
+            return null;
+        }
+        int buckets =
+                descriptor
+                        .getTableDistribution()
+                        .flatMap(TableDescriptor.TableDistribution::getBucketCount)
+                        .orElse(1);
+        int replication = descriptor.getReplicationFactor();
+        try {
+            return generateAssignment(buckets, replication, servers);
+        } catch (InvalidReplicationFactorException e) {
+            LOG.warn(
+                    "TypedTableEvolver: cannot compute assignment (buckets={}, rf={}, servers={}): {}; "
+                            + "falling back to null assignment",
+                    buckets,
+                    replication,
+                    servers.length,
+                    e.getMessage());
+            return null;
+        }
     }
 
     // -------------------------------------------------------------------------
@@ -463,18 +510,26 @@ public final class TypedTableEvolver {
             }
         }
         // Validate appended columns: each MUST be nullable per §5.3 (and SchemaUpdate's invariant).
+        // Use AFTER(<predecessor>) so each new column is inserted before the reserved suffix
+        // (event_time, headers) rather than at the absolute table tail.
         List<TableChange> changes = new ArrayList<>();
+        String lastColName = current.isEmpty() ? null : current.get(current.size() - 1).getName();
         for (int i = current.size(); i < proposed.size(); i++) {
             DataField appended = proposed.get(i);
             if (!appended.getType().isNullable()) {
                 return AdditiveDelta.reject("new column must be nullable: " + appended.getName());
             }
+            TableChange.ColumnPosition pos =
+                    lastColName != null
+                            ? TableChange.ColumnPosition.after(lastColName)
+                            : TableChange.ColumnPosition.last();
             changes.add(
                     TableChange.addColumn(
                             appended.getName(),
                             appended.getType(),
                             appended.getDescription().orElse(null),
-                            TableChange.ColumnPosition.last()));
+                            pos));
+            lastColName = appended.getName();
         }
         return AdditiveDelta.accept(changes);
     }
@@ -649,11 +704,11 @@ public final class TypedTableEvolver {
     @Nullable
     private static Long await(java.util.concurrent.CompletableFuture<Long> f) {
         try {
-            return f.get();
+            return f.get(3, java.util.concurrent.TimeUnit.SECONDS);
         } catch (InterruptedException ie) {
             Thread.currentThread().interrupt();
             return null;
-        } catch (ExecutionException ee) {
+        } catch (ExecutionException | java.util.concurrent.TimeoutException e) {
             return null;
         }
     }

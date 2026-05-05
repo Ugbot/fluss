@@ -25,7 +25,7 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Hand-rolled recursive-descent parser for the {@code .proto} text format subset Confluent's {@code
+ * Hand-rolled recursive-descent parser for the {@code .proto} text format subset that {@code
  * kafka-protobuf-serializer} emits. This avoids pulling Wire + Kotlin transitive dependencies for
  * what is a bounded, closed grammar.
  *
@@ -116,7 +116,8 @@ public final class ProtoParser {
             skipWs();
         }
         if (file.syntax == null) {
-            // Proto2 is the default per spec; Confluent emits proto3 with explicit syntax line,
+            // Proto2 is the default per spec; kafka-protobuf-serializer emits proto3 with explicit
+            // syntax line,
             // so this shouldn't happen in practice.
             file.syntax = "proto2";
         }

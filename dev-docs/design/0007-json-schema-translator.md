@@ -16,7 +16,7 @@ translator landed in Phase T.1 (`AvroFormatTranslator`,
 `AvroCodecCompiler`, `CompiledCodecCache`). This document specifies
 the JSON Schema side: how a submitted JSON Schema text is translated
 to a Fluss `RowType`, how the hot-path encoder/decoder is compiled,
-what compatibility rules apply at each of the seven Confluent levels,
+what compatibility rules apply at each of the seven Kafka SR levels,
 and what we deliberately reject.
 
 The design is anchored to three user-locked constraints from §27.1
@@ -25,28 +25,28 @@ of the plan:
 1. Full type coverage on the translator side. If the translator
    accepts a shape, the codec compiler must emit working code for it.
 2. No fluss-core edits. Everything here lives in `fluss-kafka/`.
-3. Confluent wire compatibility. Bytes produced by
+3. Kafka SR wire compatibility. Bytes produced by
    `io.confluent:kafka-json-schema-serializer:7.5.x` must decode
    without loss, and bytes this codec emits must decode through the
-   Confluent deserializer without modification.
+   Kafka SR deserializer without modification.
 
 ## 1. Scope
 
 ### 1.1 Draft versions
 
 We accept JSON Schema drafts 4, 6 and 7. This is exactly the set
-that Confluent's `kafka-json-schema-serializer` emits in practice;
+that Kafka SR's `kafka-json-schema-serializer` emits in practice;
 drafts 2019-09 and 2020-12 add dynamic keywords (`$dynamicRef`,
 `$vocabulary`, `unevaluatedProperties`) that have no stable
 projection onto a static `RowType`, and they are not emitted by any
-Confluent-shipped serializer today. They are rejected at register
+Kafka SR-shipped serializer today. They are rejected at register
 time with a clear 422 citing the draft version.
 
 Draft detection uses, in order:
 
 1. The `$schema` keyword at the top of the document
    (`http://json-schema.org/draft-07/schema#` etc.).
-2. Absence of `$schema` — treated as draft 7 (Confluent's default).
+2. Absence of `$schema` — treated as draft 7 (Kafka SR's default).
 3. A mixed-draft document (`$schema` inside a nested subtree
    differing from the root) — rejected.
 
@@ -70,14 +70,14 @@ under exactly one draft.
 The mapping below is the source of truth. Each row is exercised by a
 passing + failing test in `JsonSchemaFormatTranslatorTest` (§6). The
 table is a superset of plan §27.4 — it was expanded during drafting
-to cover every distinct JSON Schema construct emitted by Confluent's
+to cover every distinct JSON Schema construct emitted by Kafka SR's
 serializer.
 
 | JSON Schema construct                                          | Fluss `DataType`                                     | Notes                                                                                                 |
 |----------------------------------------------------------------|------------------------------------------------------|-------------------------------------------------------------------------------------------------------|
 | `{"type": "boolean"}`                                          | `BOOLEAN`                                            | —                                                                                                     |
 | `{"type": "integer"}`                                          | `BIGINT`                                             | Default width; JSON Schema `integer` is unbounded.                                                    |
-| `{"type": "integer", "format": "int32"}`                       | `INT`                                                | Confluent's serializer emits `format: int32` for Java `int`.                                          |
+| `{"type": "integer", "format": "int32"}`                       | `INT`                                                | Kafka SR's serializer emits `format: int32` for Java `int`.                                          |
 | `{"type": "integer", "minimum": x, "maximum": y}`              | `INT` / `BIGINT`                                     | If `[min, max]` fits in 32-bit signed, narrow to `INT`; otherwise `BIGINT`.                           |
 | `{"type": "number"}`                                           | `DOUBLE`                                             | —                                                                                                     |
 | `{"type": "number", "format": "float"}`                        | `FLOAT`                                              | —                                                                                                     |
@@ -145,7 +145,7 @@ maps to `ROW<id INT NOT NULL, name STRING>`.
 
 ### 3.2 Explicit nullable union
 
-Confluent's serializer emits nullable fields using `oneOf` with
+Kafka SR's serializer emits nullable fields using `oneOf` with
 `null`:
 
 ```json
@@ -161,7 +161,7 @@ projects to nullable `INT`.
 If a field is declared nullable via `oneOf` *and* included in the
 parent `required` list, we apply the stricter rule: the column is
 nullable, because JSON Schema evaluates null as a valid instance of
-the union even when the key is present. This matches Confluent's
+the union even when the key is present. This matches Kafka SR's
 validator.
 
 ### 3.4 Rejection set (sum types)
@@ -189,7 +189,7 @@ in RowType at <JSON pointer>`.
 
 JSON Schema signals logical types through the `format` keyword (a
 string hint) and through `multipleOf` (a numeric hint). Both are
-advisory in draft 7; Confluent's serializer treats them as binding.
+advisory in draft 7; Kafka SR's serializer treats them as binding.
 So do we.
 
 ### 4.1 `format: date`
@@ -213,7 +213,7 @@ Projects to `TIMESTAMP_LTZ(3)`. Encode writes a canonical form
 `YYYY-MM-DDTHH:MM:SS.sssZ`. Decode accepts any RFC-3339 variant
 (fractional-second precision 0–9, offset `Z` or `±HH:MM`), rounds
 to milliseconds. Nanoseconds beyond millisecond precision are
-silently truncated, matching Confluent's behaviour.
+silently truncated, matching Kafka SR's behaviour.
 
 ### 4.3 `format: byte` and `multipleOf` decimals
 
@@ -307,7 +307,7 @@ Both references are inlined; the resulting tree is acyclic.
 
 ## 6. Compatibility rules (seven levels)
 
-Confluent SR exposes seven compatibility levels: `NONE`, `BACKWARD`,
+Kafka SR exposes seven compatibility levels: `NONE`, `BACKWARD`,
 `BACKWARD_TRANSITIVE`, `FORWARD`, `FORWARD_TRANSITIVE`, `FULL`,
 `FULL_TRANSITIVE`. `JsonCompatibilityChecker` implements the SPI
 defined in 0009 and applies these rules in the JSON Schema domain
@@ -470,12 +470,12 @@ useful as a discipline for stable public contracts.
 
 Design 0002 §Core Principle 4 says evolution rules are Fluss's.
 For JSON Schema this is technically wrong in one direction:
-Confluent's JSON compat is a *weaker* set of rules than Fluss's
+Kafka SR's JSON compat is a *weaker* set of rules than Fluss's
 strictly-additive evolution, because JSON Schema has no column
 types in the Fluss sense (it has property schemas + required
 lists, and the compatibility rules are woven through both). We
 apply the JSON Schema rules at the wire-interface layer so that
-our error messages match what Confluent tooling surfaces, and we
+our error messages match what Kafka SR tooling surfaces, and we
 additionally enforce Fluss's evolution rules when we translate the
 accepted schema to a Fluss `alterTable`. That double-check is in
 0009; a schema that passes `JsonCompatibilityChecker` but would
@@ -619,7 +619,7 @@ lifted; this document would then be revised.
    silently skipped. Should they surface as a metric
    (`kafka.sr.json.unknown_field_total`)? Low cost, probably yes;
    T-MF.5 adds the meter.
-3. **Confluent's magic-byte envelope**. The JSON codec decodes the
+3. **Kafka SR's magic-byte envelope**. The JSON codec decodes the
    body only; the 5-byte `[0x00][id_be_i32]` prefix is stripped by
    the transcoder. Does the codec need to assert the prefix
    matches its `schemaId()`? Currently no — the transcoder already
@@ -634,5 +634,5 @@ lifted; this document would then be revised.
 - `AvroFormatTranslator.java` — sibling implementation, same SPI.
 - JSON Schema draft-07:
   https://json-schema.org/draft-07/json-schema-release-notes.html
-- Confluent JSON Schema serializer:
+- Kafka SR JSON Schema serializer:
   `io.confluent:kafka-json-schema-serializer:7.5.x` — test-scope only.

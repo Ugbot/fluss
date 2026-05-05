@@ -49,7 +49,7 @@ import java.util.Properties;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Confluent Schema Registry soft-delete semantics on the Coordinator's REST listener.
+ * Kafka Schema Registry soft-delete semantics on the Coordinator's REST listener.
  *
  * <p>Covers Phase SR-X.1 endpoints:
  *
@@ -57,7 +57,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *   <li>{@code DELETE /subjects/{s}/versions/{v}} — soft tombstone, optional {@code
  *       ?permanent=true}.
  *   <li>{@code DELETE /subjects/{s}} — cascade-tombstone a subject binding.
- *   <li>Re-register after soft delete clears the tombstone (Confluent resurrection semantics).
+ *   <li>Re-register after soft delete clears the tombstone (Kafka SR resurrection semantics).
  * </ul>
  */
 class SchemaRegistrySoftDeleteITCase {
@@ -130,7 +130,7 @@ class SchemaRegistrySoftDeleteITCase {
         assertThat(del.statusCode()).isEqualTo(200);
         assertThat(del.body().trim()).isEqualTo("1");
 
-        // listVersions now returns 404 (Confluent: no live versions → subject considered absent).
+        // listVersions now returns 404 (Kafka SR: no live versions → subject considered absent).
         HttpResponse<String> afterDelete = http("GET", "/subjects/" + subject + "/versions", null);
         assertThat(afterDelete.statusCode()).isEqualTo(404);
 
@@ -138,7 +138,7 @@ class SchemaRegistrySoftDeleteITCase {
         HttpResponse<String> del2 = http("DELETE", "/subjects/" + subject + "/versions/1", null);
         assertThat(del2.statusCode()).isEqualTo(404);
 
-        // Re-register the exact same schema body — tombstone clears, same Confluent id.
+        // Re-register the exact same schema body — tombstone clears, same Kafka SR schema id.
         int resurrectId = register(subject, SCHEMA_V1);
         assertThat(resurrectId).isEqualTo(v1Id);
 
@@ -199,7 +199,8 @@ class SchemaRegistrySoftDeleteITCase {
         HttpResponse<String> postLookup = http("GET", "/schemas/ids/" + v1Id, null);
         assertThat(postLookup.statusCode()).isEqualTo(404);
 
-        // Re-registering after a hard-delete mints a fresh version row — the Confluent id slot
+        // Re-registering after a hard-delete mints a fresh version row — the Kafka SR schema id
+        // slot
         // may be reclaimed from the dangling ID_RESERVATIONS row (that's by design: ids remain
         // stable across the registry lifetime), so we only assert that a version row exists.
         int refreshId = register(subject, SCHEMA_V2);

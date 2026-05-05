@@ -75,7 +75,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * End-to-end demo in the reverse direction: a native Fluss writer appends a row directly to the
- * {@code kafka.<topic>} backing table, and a {@link KafkaConsumer} reads the Confluent-framed Avro
+ * {@code kafka.<topic>} backing table, and a {@link KafkaConsumer} reads the Kafka SR-framed Avro
  * bytes back through the Kafka bolt-on's Fetch path.
  *
  * <p>Flow under test:
@@ -83,14 +83,14 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <ol>
  *   <li>Create the topic via {@code kafka.AdminClient.createTopics}; this creates the backing Fluss
  *       table {@code kafka.<topic>} with the right catalog markers so the broker recognises it.
- *   <li>Register an Avro subject with the SR HTTP endpoint; capture the Confluent schema id.
+ *   <li>Register an Avro subject with the SR HTTP endpoint; capture the Kafka SR schema id.
  *   <li>Use a native Fluss {@link AppendWriter} to write a row whose {@code payload} column is the
- *       Confluent-framed Avro bytes {@code [0x00][schema id][avro body]}. The {@code record_key}
+ *       Kafka SR-framed Avro bytes {@code [0x00][schema id][avro body]}. The {@code record_key}
  *       column carries the Kafka message key; {@code event_time} is a {@link TimestampLtz}; {@code
  *       headers} carries a single header.
  *   <li>Open a plain {@link KafkaConsumer} pointed at the same Kafka listener and consume from
  *       offset 0.
- *   <li>Assert key, value (byte-for-byte == Confluent frame), timestamp, and one header all
+ *   <li>Assert key, value (byte-for-byte == Kafka SR frame), timestamp, and one header all
  *       round-trip; decode the Avro body and compare every field.
  * </ol>
  */
@@ -153,13 +153,13 @@ class FlussWriteToKafkaConsumerITCase {
         int schemaId = registerAvroSchema(subject, SCHEMA_ORDER_JSON);
         assertThat(schemaId).isGreaterThan(0);
 
-        // 1. Build a Confluent-framed Avro payload.
+        // 1. Build a Kafka SR-framed Avro payload.
         Schema avroSchema = new Schema.Parser().parse(SCHEMA_ORDER_JSON);
         GenericRecord originalRecord = new GenericData.Record(avroSchema);
         originalRecord.put("id", 99L);
         originalRecord.put("qty", 3);
         originalRecord.put("sku", "NUT-M8");
-        byte[] confluentFramed = confluentFrame(schemaId, encodeAvro(avroSchema, originalRecord));
+        byte[] srFramed = kafkaSrFrame(schemaId, encodeAvro(avroSchema, originalRecord));
         byte[] keyBytes = "order-99".getBytes(StandardCharsets.UTF_8);
 
         long recordTimestamp = 1_700_000_000_000L;
@@ -188,7 +188,7 @@ class FlussWriteToKafkaConsumerITCase {
             GenericRow row =
                     GenericRow.of(
                             keyBytes,
-                            confluentFramed,
+                            srFramed,
                             TimestampLtz.fromEpochMillis(recordTimestamp),
                             headers);
 
@@ -218,8 +218,8 @@ class FlussWriteToKafkaConsumerITCase {
         assertThat(rec.partition()).isEqualTo(0);
         assertThat(rec.key()).as("Kafka record key").isEqualTo(keyBytes);
         assertThat(rec.value())
-                .as("Kafka record value == Confluent-framed Avro bytes we wrote")
-                .isEqualTo(confluentFramed);
+                .as("Kafka record value == Kafka SR-framed Avro bytes we wrote")
+                .isEqualTo(srFramed);
 
         // The Kafka broker may override record timestamps; assert it's at least within a minute
         // of our write (the event_time column we set, projected by KafkaFetchTranscoder).
@@ -234,8 +234,8 @@ class FlussWriteToKafkaConsumerITCase {
         assertThat(header.key()).isEqualTo("source");
         assertThat(header.value()).isEqualTo(headerValue);
 
-        // 5. Confluent framing + Avro semantic decode.
-        assertThat(rec.value()[0]).as("Confluent magic byte").isEqualTo((byte) 0x00);
+        // 5. Kafka SR framing + Avro semantic decode.
+        assertThat(rec.value()[0]).as("Kafka SR magic byte").isEqualTo((byte) 0x00);
         int decodedSchemaId = ByteBuffer.wrap(rec.value(), 1, 4).getInt();
         assertThat(decodedSchemaId).as("embedded schema id").isEqualTo(schemaId);
 
@@ -316,7 +316,7 @@ class FlussWriteToKafkaConsumerITCase {
         }
     }
 
-    private static byte[] confluentFrame(int schemaId, byte[] avroBody) {
+    private static byte[] kafkaSrFrame(int schemaId, byte[] avroBody) {
         ByteBuffer buf = ByteBuffer.allocate(1 + 4 + avroBody.length);
         buf.put((byte) 0x00);
         buf.putInt(schemaId);

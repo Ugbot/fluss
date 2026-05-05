@@ -25,7 +25,7 @@ format from `KAFKA_PASSTHROUGH` to `KAFKA_TYPED_<FORMAT>` and replaces the
 opaque `payload BYTES` column with typed `f1..fN` columns derived from the
 translator output. Subsequent registrations on the same topic extend the
 typed table under strict additive-nullable rules, preserving the live
-column layout so historical Confluent ids keep resolving. The central
+column layout so historical SR schema ids keep resolving. The central
 question this doc answers is whether we need a new `TableChange` variant
 in `fluss-common` (e.g. `ReplaceColumn`) to express that reshape, or
 whether existing `AddColumn` / `DropColumn` / `ModifyColumn` /
@@ -44,7 +44,7 @@ resurrection (`SchemaRegistryService.java:363`), compatibility gate
 `KAFKA_PASSTHROUGH`-shaped table row if absent
 (`SchemaRegistryService.java:376`, flowing into `ensureCatalogEntities`
 at `SchemaRegistryService.java:893`), `catalog.registerSchema(...)` which
-appends a `SchemaVersionEntity` and mints a Confluent id
+appends a `SchemaVersionEntity` and mints a SR schema id
 (`SchemaRegistryService.java:377`), and finally `catalog.bindKafkaSubject`
 to link the subject to the table row (`SchemaRegistryService.java:384`).
 
@@ -119,7 +119,7 @@ Three options were considered:
   Kafka topic row in the catalog is created lazily by
   `SchemaRegistryService.ensureCatalogEntities` right before we register
   the first schema version; the underlying data table likewise has no
-  records on first-register because no producer has yet seen a Confluent
+  records on first-register because no producer has yet seen a Kafka SR
   magic-byte envelope that would pass T.2's typed encoder. On first
   registration we drop the pre-existing passthrough data table and
   recreate it with the expanded shape, all within the SR handler and
@@ -205,10 +205,10 @@ catalog `format` column reads `KAFKA_PASSTHROUGH`:
     `KAFKA_PASSTHROUGH` to `KAFKA_TYPED_<FORMAT>`. The matching enum
     extension lives in `CatalogTableEntity` and the catalog service.
 11. `catalog.registerSchema(kafkaDatabase, topic, canonicalFormat,
-    schemaText, null)` mints a new Confluent id and records the version
+    schemaText, null)` mints a new SR schema id and records the version
     (`SchemaRegistryService.java:377`). `catalog.bindKafkaSubject`
     binds the subject.
-12. Return the Confluent id to the HTTP caller.
+12. Return the SR schema id to the HTTP caller.
 
 Steps 9–11 are the critical window. Rollback semantics are covered in §8.
 
@@ -249,14 +249,14 @@ format matches the request's `formatId`:
    through `SchemaUpdate.addColumn` which already enforces nullable +
    `LAST` (`SchemaUpdate.java:75`, `:79`).
 6. On success, call `catalog.registerSchema(...)` to append a new
-   `SchemaVersionEntity` and mint a new Confluent id. Old Confluent ids
+   `SchemaVersionEntity` and mint a new SR schema id. Old SR schema ids
    remain valid — they live in `_catalog.__schemas__` keyed by
    `schema_id UUID` and are not touched by the alter. T.2's decoder
    cache in `CompiledCodecCache`, keyed on `(tableId, schemaId)`
    (see doc 0014 §3), continues to resolve historical records because
    the cache key is schema-scoped, not table-shape-scoped.
 7. On `alterTable` failure, do not write to `__schemas__` — the caller
-   sees 409 and the invariant "a live Confluent id always matches the
+   sees 409 and the invariant "a live SR schema id always matches the
    current table shape up to its `AddColumn`-projection" is preserved.
 
 The per-field diff runs in `TypedTableEvolver.computeAdditiveDelta(
@@ -304,13 +304,13 @@ failure states and their handling:
 
 - **`alterTable` (or `dropTable` + `createTable`) fails before the
   catalog update.** The catalog row is unchanged, no `SchemaVersionEntity`
-  is appended, and no Confluent id is minted. The caller sees a 409 or
+  is appended, and no SR schema id is minted. The caller sees a 409 or
   503 depending on cause. Invariant: catalog format always matches the
   physical table shape.
 - **`alterTable` succeeds but the catalog update fails (typed-add path,
   §5).** The data table has the new column; the `__schemas__` history
   does not. Clients will not observe the new column via typed decode
-  because the Confluent id was never minted. Remediation: the caller
+  because the SR schema id was never minted. Remediation: the caller
   retries the register. On retry, step 2 of §5 sees the already-added
   column in the current `RowType`; the diff degenerates to "proposed
   matches current plus zero new fields" and the alter is a no-op; the
@@ -330,17 +330,17 @@ failure states and their handling:
 No partial state is unrecoverable so long as the HTTP caller is willing
 to retry. The evolver logs at WARN whenever it enters a recovery branch.
 
-## 9. Confluent id preservation across ALTER
+## 9. SR schema id preservation across ALTER
 
-Confluent ids are minted inside `catalog.registerSchema` and stored in
+SR schema ids are minted inside `catalog.registerSchema` and stored in
 `_catalog.__schemas__` keyed by a `schema_id UUID`. The data table's
 column layout lives in ZK under `/fluss/tables/.../schemas` and is
 versioned independently. The ALTER path in §5 touches both stores; the
 reshape in §4 drops the ZK schema and re-registers a fresh one. In
 neither case do existing `__schemas__` rows move: their `schema_id`,
-`confluent_id`, `format`, and `schema_text` fields are append-only.
+`sr_id`, `format`, and `schema_text` fields are append-only.
 
-This matches 0002's Fluss-first authority principle. The Confluent id is
+This matches 0002's Fluss-first authority principle. The SR schema id is
 a hash-derived external handle over `(catalog table id, version,
 format)`; the version counter is stored on the `__schemas__` row, not
 the data table, so a reshape of the data table cannot invalidate a
@@ -396,12 +396,12 @@ lands Option A or Option B then.
 
 ## 11. Verification: `KafkaTypedAlterITCase`
 
-Driven by an embedded Fluss cluster plus Confluent Schema Registry
+Driven by an embedded Fluss cluster plus Kafka Schema Registry
 client and `kafka-clients`. Every case starts from a fresh topic
 created by the Kafka admin path.
 
 1. Register Avro v1 for topic `alice` with record
-   `{id: int, name: string}`. Assert HTTP 200 and a numeric Confluent id.
+   `{id: int, name: string}`. Assert HTTP 200 and a numeric SR schema id.
 2. `Admin.describeTable(<kafkaDatabase>, "alice")` reports schema
    `(record_key BYTES, id INT NULL, name STRING NULL, event_time
    TIMESTAMP_LTZ(3) NOT NULL, headers ARRAY<...> NULL)`. Catalog
@@ -410,7 +410,7 @@ created by the Kafka admin path.
    offset advances; `Table.newScan().createLogScanner()` returns a row
    whose `id` and `name` columns contain the produced values.
 4. Register Avro v2 adding nullable `email` (`["null", "string"]`).
-   Assert 200 and a new Confluent id distinct from v1.
+   Assert 200 and a new SR schema id distinct from v1.
 5. `describeTable` now includes `email STRING NULL` at the end of the
    user-field region.
 6. Produce one v2 record; re-fetch v1's record → `email IS NULL`;
@@ -418,7 +418,7 @@ created by the Kafka admin path.
    that the v1 decoder pads the new column with null (§9).
 7. Attempt Avro v3 renaming `id` to `user_id`. Assert 409 with body
    containing `column rename not supported on typed tables`. Call
-   `describeTable` again; shape is unchanged; v2's Confluent id still
+   `describeTable` again; shape is unchanged; v2's SR schema id still
    resolves.
 8. Attempt Avro v3' adding a non-null field `score: int`. Assert 409
    with body `new column must be nullable: score`.

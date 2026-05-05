@@ -35,7 +35,7 @@ public final class SchemaVersionEntity {
     private final int version;
     private final String format;
     private final String schemaText;
-    private final int confluentId;
+    private final int srSchemaId;
     private final @Nullable String registeredBy;
     private final long registeredAtMillis;
 
@@ -45,7 +45,7 @@ public final class SchemaVersionEntity {
             int version,
             String format,
             String schemaText,
-            int confluentId,
+            int srSchemaId,
             @Nullable String registeredBy,
             long registeredAtMillis) {
         this.schemaId = schemaId;
@@ -53,7 +53,7 @@ public final class SchemaVersionEntity {
         this.version = version;
         this.format = format;
         this.schemaText = schemaText;
-        this.confluentId = confluentId;
+        this.srSchemaId = srSchemaId;
         this.registeredBy = registeredBy;
         this.registeredAtMillis = registeredAtMillis;
     }
@@ -78,8 +78,8 @@ public final class SchemaVersionEntity {
         return schemaText;
     }
 
-    public int confluentId() {
-        return confluentId;
+    public int srSchemaId() {
+        return srSchemaId;
     }
 
     @Nullable

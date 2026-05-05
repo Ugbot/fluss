@@ -314,6 +314,7 @@ public class ReplicaManager implements ServerReconfigurable {
     }
 
     public void startup() {
+        ReplicaManagers.register(this);
         // start up ISR expiration thread.
         // A follower can log behind leader for up tp configOptions#LOG_REPLICA_MAX_LAG_TIME x 1.5
         // before it is removed from ISR.
@@ -2185,6 +2186,7 @@ public class ReplicaManager implements ServerReconfigurable {
     public static final class OfflineReplica implements HostedReplica {}
 
     public void shutdown() throws InterruptedException {
+        ReplicaManagers.unregister(this);
         // Close the resources for snapshot kv
         kvSnapshotResource.close();
         replicaFetcherManager.shutdown();

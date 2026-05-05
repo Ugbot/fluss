@@ -24,7 +24,7 @@ import java.util.Objects;
 /**
  * Row-shaped mirror of {@code _catalog.__schema_references__}. PK is {@code (referrerSchemaId,
  * referenceName)}; the referent is identified by the trailing {@code (referencedSubject,
- * referencedVersion, referencedSchemaId)} triple — Confluent's wire shape plus the pinned catalog
+ * referencedVersion, referencedSchemaId)} triple — the Kafka SR wire shape plus the pinned catalog
  * UUID.
  */
 @PublicEvolving
@@ -76,7 +76,7 @@ public final class SchemaReferenceEntity {
         return createdAtMillis;
     }
 
-    /** Wire-side projection: drop the row metadata, keep the Confluent-shape reference. */
+    /** Wire-side projection: drop the row metadata, keep the Kafka SR wire-shape reference. */
     public SchemaReference toReference() {
         return new SchemaReference(
                 referenceName, referencedSubject, referencedVersion, referencedSchemaId);

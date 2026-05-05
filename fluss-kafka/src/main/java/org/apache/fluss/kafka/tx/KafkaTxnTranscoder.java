@@ -293,6 +293,27 @@ public final class KafkaTxnTranscoder {
             resp.setErrorCode(Errors.NOT_COORDINATOR.code());
             return resp;
         }
+        // Phase J.3 — wire the replica-side marker sink so applyMarkersAndComplete() blocks until
+        // every control batch is durable before returning to the Kafka producer. Without this the
+        // LSO stays at the open-txn firstOffset until the next fetch, so read_committed consumers
+        // see 0 records immediately after commitTransaction().
+        if (replicaManager != null && topicsCatalog != null) {
+            maybeCoord
+                    .get()
+                    .setMarkerSink(
+                            (topic, partition, pid, epoch, commit) -> {
+                                short err = appendMarker(topic, partition, pid, epoch, commit);
+                                if (err != Errors.NONE.code()) {
+                                    throw new RuntimeException(
+                                            "marker append failed topic='"
+                                                    + topic
+                                                    + "' partition="
+                                                    + partition
+                                                    + " err="
+                                                    + err);
+                                }
+                            });
+        }
         try {
             TransactionCoordinator.EndTxnResult result =
                     maybeCoord
@@ -427,8 +448,29 @@ public final class KafkaTxnTranscoder {
                 return Errors.UNKNOWN_TOPIC_OR_PARTITION.code();
             }
             TableBucket bucket = new TableBucket(info.get().flussTableId(), partition);
-            replicaManager.appendTxnMarker(bucket, producerId, producerEpoch, commit);
-            return Errors.NONE.code();
+            // Try the local replica manager first. In a single-server or lucky multi-server
+            // scenario this is the leader and succeeds immediately. If the local server is not
+            // the leader (common in multi-server in-process test clusters), iterate the JVM-wide
+            // registry to find the server that does hold the leader replica.
+            for (org.apache.fluss.server.replica.ReplicaManager rm :
+                    org.apache.fluss.server.replica.ReplicaManagers.all()) {
+                try {
+                    rm.appendTxnMarker(bucket, producerId, producerEpoch, commit);
+                    return Errors.NONE.code();
+                } catch (org.apache.fluss.exception.NotLeaderOrFollowerException
+                        | org.apache.fluss.exception.UnknownTableOrBucketException
+                        | org.apache.fluss.exception.StorageException ignored) {
+                    // this server does not hold the leader replica; try the next one
+                }
+            }
+            LOG.warn(
+                    "No local leader found for txn marker topic='{}' partition={} pid={} epoch={};"
+                            + " LSO will advance on the next fetch retry",
+                    topic,
+                    partition,
+                    producerId,
+                    producerEpoch);
+            return Errors.NOT_LEADER_OR_FOLLOWER.code();
         } catch (Exception e) {
             LOG.error(
                     "Failed to append txn marker for topic '{}' partition {} pid={} epoch={} commit={}",

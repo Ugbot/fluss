@@ -29,8 +29,12 @@ import org.apache.fluss.kafka.sr.typed.CompiledCodecCache;
 import org.apache.fluss.kafka.sr.typed.FormatRegistry;
 import org.apache.fluss.kafka.sr.typed.FormatTranslator;
 import org.apache.fluss.kafka.sr.typed.RecordCodec;
+import org.apache.fluss.metadata.Schema;
+import org.apache.fluss.metadata.SchemaGetter;
+import org.apache.fluss.metadata.SchemaInfo;
 import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.metadata.TableInfo;
+import org.apache.fluss.metadata.TablePath;
 import org.apache.fluss.record.ChangeType;
 import org.apache.fluss.record.LogRecord;
 import org.apache.fluss.record.LogRecordBatch;
@@ -39,8 +43,11 @@ import org.apache.fluss.record.LogRecords;
 import org.apache.fluss.row.InternalRow;
 import org.apache.fluss.rpc.entity.FetchLogResultForBucket;
 import org.apache.fluss.rpc.log.ClientFetchRequest;
+import org.apache.fluss.server.coordinator.MetadataManager;
+import org.apache.fluss.server.log.LogTablet;
 import org.apache.fluss.server.replica.ReplicaManager;
 import org.apache.fluss.utils.CloseableIterator;
+import org.apache.fluss.utils.concurrent.ExecutorThreadFactory;
 
 import org.apache.kafka.common.compress.Compression;
 import org.apache.kafka.common.message.FetchRequestData;
@@ -63,11 +70,16 @@ import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 /**
  * Transcodes Kafka {@code FetchRequest}s into Fluss {@link ReplicaManager#fetchLogRecords} calls.
@@ -79,7 +91,7 @@ import java.util.concurrent.CompletableFuture;
  *   <li>{@link PassthroughKafkaFetchCodec} for the byte-copy path (default; what every topic gets
  *       when {@code kafka.typed-tables.enabled=false}).
  *   <li>{@link TypedKafkaFetchCodec} for {@code KAFKA_TYPED_AVRO/JSON/PROTOBUF} topics — calls the
- *       compiled {@link RecordCodec} and prepends the 5-byte Confluent frame.
+ *       compiled {@link RecordCodec} and prepends the 5-byte Kafka SR wire frame.
  * </ul>
  *
  * <p>The driver here keeps the change-type filter ({@link ChangeType#UPDATE_BEFORE} skipped, {@link
@@ -99,6 +111,33 @@ public final class KafkaFetchTranscoder {
     private final ReplicaManager replicaManager;
     private final KafkaTopicRouteResolver routeResolver;
 
+    /**
+     * Cache of TYPED routes resolved for each topic. Only typed routes are stored; topics absent
+     * from this map are assumed passthrough until resolved. MUST be shared across all fetch
+     * requests on the same server — do not create a new transcoder per request or the cache will be
+     * discarded after every fetch.
+     */
+    private final Map<String, KafkaTopicRoute> routeCache;
+
+    /**
+     * One per in-flight topic resolution. {@link #resolveAsync} uses {@link
+     * ConcurrentHashMap#computeIfAbsent} to ensure exactly one task is submitted per topic per
+     * resolution cycle. Completed futures are removed so that passthrough topics can be re-resolved
+     * if they later become typed. Typed topics are never re-resolved once cached.
+     */
+    private final ConcurrentHashMap<String, CompletableFuture<Void>> pendingRoutes;
+
+    /** Single daemon thread used to drive route-resolution catalog scans off the worker threads. */
+    private final ExecutorService routeResolvePool;
+
+    /**
+     * Per-topic schema cache shared across all fetch requests. Keyed by table full-name, then by
+     * Fluss schemaId. Pre-seeded with the current schema on every pickCodec call so that the first
+     * ZK miss per (topic, old-schemaId) is the only blocking read.
+     */
+    private final ConcurrentHashMap<String, ConcurrentHashMap<Integer, Schema>> topicSchemaCache =
+            new ConcurrentHashMap<String, ConcurrentHashMap<Integer, Schema>>();
+
     public KafkaFetchTranscoder(
             KafkaServerContext context, KafkaTopicsCatalog catalog, ReplicaManager replicaManager) {
         this(
@@ -106,7 +145,11 @@ public final class KafkaFetchTranscoder {
                 catalog,
                 replicaManager,
                 KafkaTopicRouteResolver.fromCatalogServices(
-                        context.typedTablesEnabled(), context.kafkaDatabase()));
+                        context.typedTablesEnabled(), context.kafkaDatabase()),
+                new ConcurrentHashMap<String, KafkaTopicRoute>(),
+                new ConcurrentHashMap<String, CompletableFuture<Void>>(),
+                Executors.newSingleThreadExecutor(
+                        new ExecutorThreadFactory("kafka-route-resolver")));
     }
 
     /** Test-only constructor that takes a custom {@link KafkaTopicRouteResolver}. */
@@ -115,13 +158,91 @@ public final class KafkaFetchTranscoder {
             KafkaTopicsCatalog catalog,
             ReplicaManager replicaManager,
             KafkaTopicRouteResolver routeResolver) {
+        this(
+                context,
+                catalog,
+                replicaManager,
+                routeResolver,
+                new ConcurrentHashMap<String, KafkaTopicRoute>(),
+                new ConcurrentHashMap<String, CompletableFuture<Void>>(),
+                Executors.newSingleThreadExecutor(
+                        new ExecutorThreadFactory("kafka-route-resolver")));
+    }
+
+    /** Full constructor used by the shared per-server instance in {@link KafkaRequestHandler}. */
+    public KafkaFetchTranscoder(
+            KafkaServerContext context,
+            KafkaTopicsCatalog catalog,
+            ReplicaManager replicaManager,
+            KafkaTopicRouteResolver routeResolver,
+            Map<String, KafkaTopicRoute> routeCache,
+            ConcurrentHashMap<String, CompletableFuture<Void>> pendingRoutes,
+            ExecutorService routeResolvePool) {
         this.context = context;
         this.catalog = catalog;
         this.replicaManager = replicaManager;
         this.routeResolver = routeResolver;
+        this.routeCache = routeCache;
+        this.pendingRoutes = pendingRoutes;
+        this.routeResolvePool = routeResolvePool;
     }
 
     public CompletableFuture<FetchResponseData> fetch(FetchRequestData request) {
+        // Collect topics whose route hasn't been resolved yet (not in cache). TYPED routes are
+        // cached permanently; absent topics are either passthrough or not yet resolved — both
+        // require a catalog scan on the routeResolvePool thread before the first fetch can serve
+        // correct data. We chain doFetch() on the resolution futures so no worker thread blocks.
+        Set<String> unresolvedTopics = new LinkedHashSet<>();
+        for (FetchRequestData.FetchTopic topic : request.topics()) {
+            if (!routeCache.containsKey(topic.topic())) {
+                unresolvedTopics.add(topic.topic());
+            }
+        }
+        if (unresolvedTopics.isEmpty()) {
+            return doFetch(request);
+        }
+        List<CompletableFuture<Void>> resolvingList = new ArrayList<>(unresolvedTopics.size());
+        for (String topic : unresolvedTopics) {
+            resolvingList.add(resolveAsync(topic));
+        }
+        final FetchRequestData capturedRequest = request;
+        CompletableFuture<Void> allResolved =
+                CompletableFuture.allOf(
+                        resolvingList.toArray(new CompletableFuture[resolvingList.size()]));
+        return allResolved.thenCompose(ignored -> doFetch(capturedRequest));
+    }
+
+    /**
+     * Submit an async route-resolution task for {@code topic} and return a future that completes
+     * (with void) when the resolution finishes. The resolved route is stored in {@link #routeCache}
+     * if typed; passthrough results are NOT cached so re-registration via T.3 is picked up on the
+     * next fetch cycle. {@link ConcurrentHashMap#computeIfAbsent} ensures at most one task per
+     * topic is in flight at any time.
+     */
+    private CompletableFuture<Void> resolveAsync(final String topic) {
+        return pendingRoutes.computeIfAbsent(
+                topic,
+                t -> {
+                    CompletableFuture<Void> f = new CompletableFuture<>();
+                    routeResolvePool.submit(
+                            () -> {
+                                try {
+                                    KafkaTopicRoute route = routeResolver.resolve(t);
+                                    if (route.isTyped()) {
+                                        routeCache.put(t, route);
+                                    }
+                                    f.complete(null);
+                                } catch (Throwable ex) {
+                                    f.complete(null);
+                                } finally {
+                                    pendingRoutes.remove(t);
+                                }
+                            });
+                    return f;
+                });
+    }
+
+    private CompletableFuture<FetchResponseData> doFetch(FetchRequestData request) {
         FetchResponseData response = new FetchResponseData();
         response.setThrottleTimeMs(0).setErrorCode(Errors.NONE.code());
 
@@ -171,9 +292,12 @@ public final class KafkaFetchTranscoder {
                 continue;
             }
 
-            // Resolve the topic route once, then resolve a codec for that route. Per design
-            // 0014 §3 the decision is per-topic-per-call; cache on the PartitionContext.
-            KafkaTopicRoute route = routeResolver.resolve(topicName);
+            // Route was resolved before doFetch() ran (either from cache or just resolved
+            // by the resolveAsync() phase). Absent means passthrough.
+            KafkaTopicRoute route =
+                    routeCache.containsKey(topicName)
+                            ? routeCache.get(topicName)
+                            : KafkaTopicRoute.PASSTHROUGH;
             KafkaFetchCodec codec = pickCodec(route, topicInfo, tableInfo);
 
             List<PartitionContext> contexts = new ArrayList<>(topic.partitions().size());
@@ -203,6 +327,27 @@ public final class KafkaFetchTranscoder {
         Map<TableBucket, ClientFetchRequest.BucketRead> bucketReads = new HashMap<>();
         for (Map.Entry<TableBucket, PartitionContext> e : requested.entrySet()) {
             bucketReads.put(e.getKey(), e.getValue().bucketRead);
+        }
+
+        // For read_committed fetches, snapshot the aborted-transaction ranges up front (before the
+        // async fetch starts). The callback runs on the Netty I/O thread and must not acquire any
+        // LogTablet lock, so we do the synchronized snapshot here on the caller's thread and pass
+        // the result in. The snapshot uses Long.MAX_VALUE as the upper bound so we capture all
+        // currently-known aborted txns; the encode() path filters to the actual LSO ceiling.
+        if (readCommitted) {
+            for (Map.Entry<TableBucket, PartitionContext> e : requested.entrySet()) {
+                long fo = e.getValue().fetchOffset;
+                try {
+                    List<LogTablet.AbortedTxn> txns =
+                            replicaManager
+                                    .getReplicaOrException(e.getKey())
+                                    .getLogTablet()
+                                    .abortedTxnsInRange(fo, Long.MAX_VALUE);
+                    e.getValue().setAbortedTxns(txns);
+                } catch (Exception ignored) {
+                    // Not the leader or bucket unknown; abortedTxns will remain empty.
+                }
+            }
         }
 
         CompletableFuture<FetchResponseData> done = new CompletableFuture<>();
@@ -242,7 +387,7 @@ public final class KafkaFetchTranscoder {
      * Pick the right {@link KafkaFetchCodec} for {@code route}. Falls back to passthrough on any
      * resolution failure (codec compile, missing schema row, etc.) — design 0014 §8 says a typed
      * codec failure during fetch is logged at ERROR and the partition serves passthrough bytes; the
-     * consumer will see Confluent-framed bytes verbatim because passthrough is byte-copy.
+     * consumer will see SR-framed bytes verbatim because passthrough is byte-copy.
      */
     private KafkaFetchCodec pickCodec(
             KafkaTopicRoute route, KafkaTopicInfo topicInfo, TableInfo tableInfo) {
@@ -260,8 +405,9 @@ public final class KafkaFetchTranscoder {
                         route.catalogFormat());
                 return new PassthroughKafkaFetchCodec(tableInfo);
             }
+            SchemaGetter schemaGetter = metadataSchemaGetter(tableInfo);
             return new TypedKafkaFetchCodec(
-                    tableInfo, binding.codec, binding.confluentSchemaId, context.metrics());
+                    tableInfo, binding.codec, binding.srSchemaId, context.metrics(), schemaGetter);
         } catch (Throwable t) {
             LOG.error(
                     "Typed-fetch codec resolution failed for topic '{}' (format={}); serving"
@@ -316,6 +462,7 @@ public final class KafkaFetchTranscoder {
 
         private ClientFetchRequest.BucketRead bucketRead;
         private FetchLogResultForBucket result;
+        private List<LogTablet.AbortedTxn> abortedTxns = new ArrayList<>();
         private short errorCode = Errors.NONE.code();
         private String errorMessage;
 
@@ -345,6 +492,10 @@ public final class KafkaFetchTranscoder {
             }
         }
 
+        void setAbortedTxns(List<LogTablet.AbortedTxn> txns) {
+            this.abortedTxns = txns;
+        }
+
         void failWith(Errors err, String msg) {
             this.errorCode = err.code();
             this.errorMessage = msg;
@@ -372,6 +523,17 @@ public final class KafkaFetchTranscoder {
                 pd.setRecords(MemoryRecords.EMPTY);
                 return pd;
             }
+            if (readCommitted && !abortedTxns.isEmpty()) {
+                List<FetchResponseData.AbortedTransaction> kafkaAborted =
+                        new ArrayList<>(abortedTxns.size());
+                for (LogTablet.AbortedTxn txn : abortedTxns) {
+                    kafkaAborted.add(
+                            new FetchResponseData.AbortedTransaction()
+                                    .setProducerId(txn.writerId())
+                                    .setFirstOffset(txn.firstOffset()));
+                }
+                pd.setAbortedTransactions(kafkaAborted);
+            }
             try {
                 long ceiling =
                         readCommitted
@@ -386,7 +548,8 @@ public final class KafkaFetchTranscoder {
                                 timestampType,
                                 codec,
                                 readCommitted,
-                                ceiling));
+                                ceiling,
+                                abortedTxns));
             } catch (Exception e) {
                 LOG.error(
                         "Fetch transcode failed for topic '{}' partition {}",
@@ -406,13 +569,9 @@ public final class KafkaFetchTranscoder {
      * base offset.
      *
      * <p>When {@code readCommitted} is true, batches whose first offset is at-or-after {@code
-     * ceiling} are dropped; control batches (commit / abort markers) are also dropped. Aborted data
-     * batches before the LSO are filtered out — recognised by the writer-id matching an
-     * aborted-range entry in {@link org.apache.fluss.server.log.LogTablet#abortedTxnsInRange(long,
-     * long)}, but as that map is not surfaced through the wire entity yet (deferred for follow-on
-     * PR), the conservative client-visible filter is "drop control batches; clamp at LSO". The
-     * LogTablet still filters at append/marker time so commit-vs-abort semantics are correct
-     * end-to-end for producers that don't reuse writer-ids across aborted/committed transactions.
+     * ceiling} are dropped; control batches (commit / abort markers) are also dropped. Data batches
+     * whose writer-id falls in an aborted range (from {@code abortedTxns}) are also dropped so
+     * aborted records never reach the consumer.
      */
     private static MemoryRecords encode(
             LogRecords flussRecords,
@@ -420,7 +579,8 @@ public final class KafkaFetchTranscoder {
             TimestampType timestampType,
             KafkaFetchCodec codec,
             boolean readCommitted,
-            long ceiling) {
+            long ceiling,
+            List<LogTablet.AbortedTxn> abortedTxns) {
         // Walk once to count bytes; we'll allocate a single buffer slightly larger than needed.
         List<KafkaRecordView> views = new ArrayList<>();
         long firstOffset = -1L;
@@ -435,6 +595,10 @@ public final class KafkaFetchTranscoder {
                 }
                 if (batch.baseLogOffset() >= ceiling) {
                     // Past the LSO — exclude. Anything still in-flight stays hidden.
+                    continue;
+                }
+                if (isAborted(batch, abortedTxns)) {
+                    // This batch belongs to an aborted transaction; hide it from consumers.
                     continue;
                 }
             } else {
@@ -503,9 +667,25 @@ public final class KafkaFetchTranscoder {
         }
     }
 
+    private static boolean isAborted(LogRecordBatch batch, List<LogTablet.AbortedTxn> abortedTxns) {
+        if (abortedTxns.isEmpty() || !batch.hasWriterId()) {
+            return false;
+        }
+        long writerId = batch.writerId();
+        long batchOffset = batch.baseLogOffset();
+        for (LogTablet.AbortedTxn txn : abortedTxns) {
+            if (txn.writerId() == writerId
+                    && batchOffset >= txn.firstOffset()
+                    && batchOffset < txn.lastOffsetExclusive()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /**
-     * Resolve the typed codec + Confluent id for a typed-format topic. Returns {@code null} when
-     * the catalog lookup or codec compile fails; the caller falls back to passthrough.
+     * Resolve the typed codec + Kafka SR schema id for a typed-format topic. Returns {@code null}
+     * when the catalog lookup or codec compile fails; the caller falls back to passthrough.
      */
     @Nullable
     public static TypedCodecBinding resolveTypedCodec(
@@ -547,14 +727,14 @@ public final class KafkaFetchTranscoder {
         }
         try {
             CompiledCodecCache cache = FormatRegistry.instance().codecCache();
-            int confluentId = entity.confluentId();
+            int srSchemaId = entity.srSchemaId();
             String formatId = route.formatId() == null ? entity.format() : route.formatId();
             RecordCodec codec =
                     cache.getOrCompile(
                             tableInfo.getTableId(),
-                            confluentId,
+                            srSchemaId,
                             () -> compileCodec(formatId, entity, translator, tableInfo, metrics));
-            return new TypedCodecBinding(codec, confluentId);
+            return new TypedCodecBinding(codec, srSchemaId);
         } catch (RuntimeException e) {
             LOG.error(
                     "Codec compile failed for topic '{}' format='{}'",
@@ -608,14 +788,68 @@ public final class KafkaFetchTranscoder {
         return tableInfo.getTablePath().getDatabaseName();
     }
 
+    /**
+     * Build a {@link SchemaGetter} backed by the coordinator's schema history for {@code
+     * tableInfo}. Used by {@link TypedKafkaFetchCodec} so old-schema batches (written before T.3
+     * additive evolution) are deserialized with their original schema and then projected to the
+     * current layout via {@link org.apache.fluss.row.ProjectedRow}.
+     */
+    private SchemaGetter metadataSchemaGetter(final TableInfo tableInfo) {
+        final MetadataManager mm = context.metadataManager();
+        final TablePath tablePath = tableInfo.getTablePath();
+        final Schema currentSchema = tableInfo.getSchema();
+        final int currentSchemaId = tableInfo.getSchemaId();
+        // Retrieve (or create) the per-topic schema map and seed it with the current schema so
+        // the common case (batch.schemaId == current) never touches ZooKeeper.
+        final ConcurrentHashMap<Integer, Schema> schemaCache =
+                topicSchemaCache.computeIfAbsent(
+                        tablePath.toString(), k -> new ConcurrentHashMap<Integer, Schema>());
+        schemaCache.put(currentSchemaId, currentSchema);
+        return new SchemaGetter() {
+            @Override
+            public Schema getSchema(int schemaId) {
+                Schema cached = schemaCache.get(schemaId);
+                if (cached != null) {
+                    return cached;
+                }
+                try {
+                    Schema s = mm.getSchemaById(tablePath, schemaId).getSchema();
+                    schemaCache.put(schemaId, s);
+                    return s;
+                } catch (Exception e) {
+                    LOG.warn(
+                            "Schema history lookup failed for '{}' schemaId={}; using current",
+                            tablePath,
+                            schemaId,
+                            e);
+                    return currentSchema;
+                }
+            }
+
+            @Override
+            public CompletableFuture<SchemaInfo> getSchemaInfoAsync(int schemaId) {
+                return CompletableFuture.completedFuture(
+                        new SchemaInfo(getSchema(schemaId), schemaId));
+            }
+
+            @Override
+            public SchemaInfo getLatestSchemaInfo() {
+                return new SchemaInfo(currentSchema, currentSchemaId);
+            }
+
+            @Override
+            public void release() {}
+        };
+    }
+
     /** Pair returned by {@link #resolveTypedCodec}. */
     public static final class TypedCodecBinding {
         public final RecordCodec codec;
-        public final int confluentSchemaId;
+        public final int srSchemaId;
 
-        public TypedCodecBinding(RecordCodec codec, int confluentSchemaId) {
+        public TypedCodecBinding(RecordCodec codec, int srSchemaId) {
             this.codec = codec;
-            this.confluentSchemaId = confluentSchemaId;
+            this.srSchemaId = srSchemaId;
         }
     }
 }

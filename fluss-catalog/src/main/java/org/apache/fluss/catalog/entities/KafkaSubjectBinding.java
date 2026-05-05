@@ -22,7 +22,7 @@ import org.apache.fluss.annotation.PublicEvolving;
 import java.util.Objects;
 
 /**
- * One row in {@code _catalog.__kafka_bindings__}. The catalog doesn't care about Confluent subject
+ * One row in {@code _catalog.__kafka_bindings__}. The catalog doesn't care about Kafka SR subject
  * vocabulary; only the Kafka SR projection does. Keeping bindings as a separate entity keeps
  * Kafka-specific strings out of the core {@link CatalogTableEntity}.
  */

@@ -32,7 +32,7 @@ import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Generates a specialised {@link RecordCodec} for a given Fluss {@link RowType} emitted + consumed
- * as Confluent-framed JSON Schema payloads.
+ * as SR-framed JSON Schema payloads.
  *
  * <p>Phase T-MF.4 scalar-only scope — matches {@link AvroCodecCompiler}'s T.1 shape. For each
  * top-level field the compiler emits:

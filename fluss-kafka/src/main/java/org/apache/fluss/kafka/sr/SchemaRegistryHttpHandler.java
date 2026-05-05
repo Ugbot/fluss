@@ -52,7 +52,7 @@ import java.util.List;
 import java.util.Optional;
 
 /**
- * Confluent REST endpoints for Schema Registry Phase A1. Five routes:
+ * Kafka SR REST endpoints for Schema Registry Phase A1. Five routes:
  *
  * <ul>
  *   <li>{@code GET /} — compatibility ping.
@@ -60,7 +60,7 @@ import java.util.Optional;
  *   <li>{@code GET /subjects/{s}/versions/latest} — latest schema for a subject.
  *   <li>{@code POST /subjects/{s}/versions} — register a new Avro schema, idempotent on exact
  *       repeat.
- *   <li>{@code GET /schemas/ids/{id}} — schema lookup by Confluent global id.
+ *   <li>{@code GET /schemas/ids/{id}} — schema lookup by Kafka SR global id.
  * </ul>
  */
 @Internal
@@ -200,6 +200,7 @@ public final class SchemaRegistryHttpHandler extends SimpleChannelInboundHandler
                         SchemaRegistryException.Kind.NOT_FOUND, "schema id " + id + " not found");
             }
             ObjectNode body = MAPPER.createObjectNode();
+            body.put("id", found.get().id());
             body.put("schema", found.get().schema());
             body.put("schemaType", found.get().format());
             putReferences(body, found.get().references());
@@ -564,7 +565,7 @@ public final class SchemaRegistryHttpHandler extends SimpleChannelInboundHandler
     }
 
     /**
-     * Echo the references list onto a response body in Confluent shape. Skips emission when the
+     * Echo the references list onto a response body in Kafka SR wire shape. Skips emission when the
      * list is empty so we stay byte-equivalent with the pre-Phase-SR-X.5 body for refless schemas.
      */
     private static void putReferences(
@@ -583,7 +584,7 @@ public final class SchemaRegistryHttpHandler extends SimpleChannelInboundHandler
 
     /**
      * Inspect {@code ?permanent=true|false} on the decoded query string. Absent / any non-{@code
-     * true} value → {@code false} (Confluent default: soft delete).
+     * true} value → {@code false} (default: soft delete).
      */
     private static boolean isPermanent(QueryStringDecoder decoder) {
         List<String> values = decoder.parameters().get("permanent");

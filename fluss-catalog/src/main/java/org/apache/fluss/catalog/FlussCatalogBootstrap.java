@@ -31,6 +31,8 @@ import org.apache.fluss.server.zk.ZooKeeperClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.net.InetAddress;
+import java.net.UnknownHostException;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -73,7 +75,7 @@ public final class FlussCatalogBootstrap implements CoordinatorLeaderBootstrap {
         if (!catalogRequired(conf)) {
             return null;
         }
-        List<String> bootstrap = buildBootstrap(metadataCache, coordinatorBindEndpoints);
+        List<String> bootstrap = buildBootstrap(conf, metadataCache, coordinatorBindEndpoints);
         if (bootstrap.isEmpty()) {
             LOG.warn(
                     "No FLUSS listener available for catalog bootstrap; catalog service cannot start. "
@@ -111,27 +113,43 @@ public final class FlussCatalogBootstrap implements CoordinatorLeaderBootstrap {
     }
 
     private static List<String> buildBootstrap(
-            ServerMetadataCache cache, List<Endpoint> coordinatorBindEndpoints) {
+            Configuration conf,
+            ServerMetadataCache cache,
+            List<Endpoint> coordinatorBindEndpoints) {
         List<String> out = new ArrayList<>();
         // Prefer tablet-server FLUSS endpoints — they host the PK tables directly.
         for (ServerNode node : cache.getAllAliveTabletServers(FLUSS_LISTENER).values()) {
             out.add(node.host() + ":" + node.port());
         }
         if (out.isEmpty()) {
-            // Fall back to this coordinator's own FLUSS endpoint. The Fluss client will
-            // bootstrap cluster metadata from here and discover tablet servers before the first
-            // data RPC. Matters at leader bootstrap when tablet-server registrations may not
-            // yet be visible to the cache.
-            for (Endpoint e : coordinatorBindEndpoints) {
+            // Fall back to this coordinator's own FLUSS endpoint. Use the advertised address
+            // when configured (e.g. coordinator:9122 in Docker) so the Fluss client can reach
+            // the server. If advertised.listeners is not set, fall back to the bind address and
+            // replace any wildcard form (0.0.0.0, ::, etc.) with "localhost" since the client
+            // runs inside the same JVM/container.
+            List<Endpoint> effectiveEndpoints =
+                    Endpoint.loadAdvertisedEndpoints(coordinatorBindEndpoints, conf);
+            for (Endpoint e : effectiveEndpoints) {
                 if (FLUSS_LISTENER.equals(e.getListenerName())) {
-                    String host = e.getHost();
-                    if (host == null || host.isEmpty() || "0.0.0.0".equals(host)) {
-                        host = "localhost";
-                    }
+                    String host = resolveBootstrapHost(e.getHost());
                     out.add(host + ":" + e.getPort());
                 }
             }
         }
         return out;
+    }
+
+    private static String resolveBootstrapHost(String host) {
+        if (host == null || host.isEmpty()) {
+            return "localhost";
+        }
+        try {
+            if (InetAddress.getByName(host).isAnyLocalAddress()) {
+                return "localhost";
+            }
+        } catch (UnknownHostException ignored) {
+            return "localhost";
+        }
+        return host;
     }
 }

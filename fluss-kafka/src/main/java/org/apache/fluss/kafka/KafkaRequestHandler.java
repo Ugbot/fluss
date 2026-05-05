@@ -371,6 +371,14 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
 
     private final KafkaServerContext context;
 
+    /**
+     * Shared, lazily-initialised {@link KafkaFetchTranscoder} reused across all fetch requests on
+     * this server. Sharing is required so that the route cache and resolve-pool thread survive
+     * beyond a single request lifetime; a per-request transcoder would throw away the cache after
+     * every fetch and leak one executor thread per request.
+     */
+    private volatile KafkaFetchTranscoder sharedFetchTranscoder;
+
     public KafkaRequestHandler(TabletServerGateway gateway, KafkaServerContext context) {
         this.gateway = gateway;
         this.context = context;
@@ -2276,9 +2284,7 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
                             context.metrics());
 
             FetchRequestData filtered = filterFetchByAllowed(data, allowed);
-            KafkaFetchTranscoder transcoder =
-                    new KafkaFetchTranscoder(context, newCatalog(), context.replicaManager());
-            transcoder
+            sharedFetchTranscoder()
                     .fetch(filtered)
                     .whenComplete(
                             (result, err) -> {
@@ -2533,5 +2539,26 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
     private KafkaTopicsCatalog newCatalog() {
         return new CustomPropertiesTopicsCatalog(
                 context.metadataManager(), context.kafkaDatabase());
+    }
+
+    /**
+     * Returns the shared {@link KafkaFetchTranscoder} for this server, creating it on first use.
+     * Called only after {@link KafkaServerContext#hasReplicaManager()} has been confirmed true, so
+     * {@code context.replicaManager()} is safe to dereference here.
+     */
+    private KafkaFetchTranscoder sharedFetchTranscoder() {
+        KafkaFetchTranscoder t = sharedFetchTranscoder;
+        if (t == null) {
+            synchronized (this) {
+                t = sharedFetchTranscoder;
+                if (t == null) {
+                    sharedFetchTranscoder =
+                            t =
+                                    new KafkaFetchTranscoder(
+                                            context, newCatalog(), context.replicaManager());
+                }
+            }
+        }
+        return t;
     }
 }

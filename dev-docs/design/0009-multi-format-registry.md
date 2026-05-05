@@ -145,7 +145,7 @@ unknown format (the HTTP handler returns 422, the
 
 Keys are normalised to uppercase on both insert and lookup. The
 wire surface is case-insensitive (`"avro"` and `"AVRO"` resolve the
-same translator), matching Confluent.
+same translator), matching Kafka SR.
 
 `formatIds()` drives `GET /schemas/types`. After T-MF this returns
 `["AVRO", "JSON", "PROTOBUF"]` in stable order.
@@ -258,7 +258,7 @@ listing `FormatRegistry.INSTANCE.formatIds()`.
 
 ### 3.2 `POST /compatibility/subjects/{s}/versions/{v}`
 
-Confluent's "would this be compatible?" endpoint. Same dispatch:
+Kafka SR's "would this be compatible?" endpoint. Same dispatch:
 
 ```java
 String formatId = req.schemaType != null ? req.schemaType : "AVRO";
@@ -432,7 +432,7 @@ error code `SCHEMA_NOT_TRANSLATABLE` and the offending JSON pointer
 ### 6.3 `CompatibilityFailureException`
 
 Thrown by the HTTP handler when `CompatibilityChecker.check`
-returns incompatible. Maps to HTTP 409, matching Confluent.
+returns incompatible. Maps to HTTP 409, matching Kafka SR.
 
 ### 6.4 Error precedence
 
@@ -566,13 +566,13 @@ operators can spot a format-specific regression.
 
 ## 12. Open questions
 
-1. **Default format when `schemaType` is absent.** Confluent
+1. **Default format when `schemaType` is absent.** Kafka SR
    defaults to `"AVRO"`. We do the same for wire-compatibility.
    Open question: should we surface the default in `GET /config`?
    Yes, probably — operators need to know. T-MF.5.
 2. **Format aliases.** Should `"json"` resolve to the same
    translator as `"JSON"`? Yes, case-insensitive. Should
-   `"JSONSCHEMA"` resolve to `"JSON"`? Confluent uses `"JSON"` on
+   `"JSONSCHEMA"` resolve to `"JSON"`? Kafka SR uses `"JSON"` on
    the wire; we match and do not support aliases.
 3. **Per-format compat-level defaults.** Currently the subject's
    `compatibilityLevel` applies regardless of format. In principle

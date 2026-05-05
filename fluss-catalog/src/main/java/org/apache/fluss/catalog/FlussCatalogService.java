@@ -35,6 +35,8 @@ import org.apache.fluss.client.Connection;
 import org.apache.fluss.client.admin.Admin;
 import org.apache.fluss.client.lookup.Lookuper;
 import org.apache.fluss.client.table.Table;
+import org.apache.fluss.client.table.writer.DeleteResult;
+import org.apache.fluss.client.table.writer.UpsertResult;
 import org.apache.fluss.client.table.writer.UpsertWriter;
 import org.apache.fluss.exception.DatabaseAlreadyExistException;
 import org.apache.fluss.exception.TableAlreadyExistException;
@@ -57,6 +59,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 
@@ -75,7 +78,7 @@ public final class FlussCatalogService implements CatalogService, AutoCloseable 
     private static final Logger LOG = LoggerFactory.getLogger(FlussCatalogService.class);
 
     private static final long TIMEOUT_SECONDS = 20L;
-    private static final int CONFLUENT_ID_PROBE_LIMIT = 8;
+    private static final int SR_ID_PROBE_LIMIT = 8;
     private static final Duration SCAN_POLL_TIMEOUT = Duration.ofSeconds(5);
 
     /**
@@ -388,7 +391,7 @@ public final class FlussCatalogService implements CatalogService, AutoCloseable 
                                         .getAsInt()
                                 + 1;
         String schemaId = UUID.randomUUID().toString();
-        int confluentId = allocateConfluentId(table.tableId(), nextVersion, format, schemaId);
+        int srSchemaId = allocateSrSchemaId(table.tableId(), nextVersion, format, schemaId);
         SchemaVersionEntity entity =
                 new SchemaVersionEntity(
                         schemaId,
@@ -396,7 +399,7 @@ public final class FlussCatalogService implements CatalogService, AutoCloseable 
                         nextVersion,
                         format,
                         schemaText,
-                        confluentId,
+                        srSchemaId,
                         registeredBy,
                         System.currentTimeMillis());
         GenericRow row = new GenericRow(8);
@@ -405,7 +408,7 @@ public final class FlussCatalogService implements CatalogService, AutoCloseable 
         row.setField(2, nextVersion);
         row.setField(3, BinaryString.fromString(format));
         row.setField(4, BinaryString.fromString(schemaText));
-        row.setField(5, confluentId);
+        row.setField(5, srSchemaId);
         row.setField(6, registeredBy == null ? null : BinaryString.fromString(registeredBy));
         row.setField(7, TimestampLtz.fromEpochMillis(entity.registeredAtMillis()));
         upsert(Handle.SCHEMAS, row);
@@ -439,10 +442,10 @@ public final class FlussCatalogService implements CatalogService, AutoCloseable 
     }
 
     @Override
-    public Optional<SchemaVersionEntity> getSchemaById(int confluentId) throws Exception {
+    public Optional<SchemaVersionEntity> getSchemaById(int srSchemaId) throws Exception {
         Lookuper lookuper = table(Handle.ID_RESERVATIONS).newLookup().createLookuper();
         GenericRow key = new GenericRow(1);
-        key.setField(0, confluentId);
+        key.setField(0, srSchemaId);
         InternalRow found = awaitLookup(lookuper, key);
         if (found == null) {
             return Optional.empty();
@@ -1383,22 +1386,26 @@ public final class FlussCatalogService implements CatalogService, AutoCloseable 
 
     private void upsert(Handle handle, InternalRow row) throws Exception {
         UpsertWriter writer = table(handle).newUpsert().createWriter();
+        CompletableFuture<UpsertResult> future = writer.upsert(row);
+        // flush() must precede get() — the WriterClient buffers writes until flush() is called;
+        // calling get() first would always time out because the send never starts.
+        writer.flush();
         try {
-            writer.upsert(row).get(TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            future.get(TIMEOUT_SECONDS, TimeUnit.SECONDS);
         } catch (ExecutionException ee) {
             throw unwrap(ee);
         }
-        writer.flush();
     }
 
     private void delete(Handle handle, InternalRow fullRow) throws Exception {
         UpsertWriter writer = table(handle).newUpsert().createWriter();
+        CompletableFuture<DeleteResult> future = writer.delete(fullRow);
+        writer.flush();
         try {
-            writer.delete(fullRow).get(TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            future.get(TIMEOUT_SECONDS, TimeUnit.SECONDS);
         } catch (ExecutionException ee) {
             throw unwrap(ee);
         }
-        writer.flush();
     }
 
     /**
@@ -1689,7 +1696,7 @@ public final class FlussCatalogService implements CatalogService, AutoCloseable 
                 row.getTimestampLtz(7, 3).toEpochMicros() / 1000);
     }
 
-    // ---------- Confluent id allocator (no-CAS variant) ----------
+    // ---------- Schema id allocator (no-CAS variant) ----------
 
     /**
      * Deterministic base id = {@code hash(tableId, schemaVersion, format) & 0x7fffffff}. Because
@@ -1699,11 +1706,11 @@ public final class FlussCatalogService implements CatalogService, AutoCloseable 
      * 31-bit id space makes real-world collisions vanishingly rare and the penalty (losing to a
      * concurrent writer) is at most one wasted probe slot.
      */
-    private int allocateConfluentId(
+    private int allocateSrSchemaId(
             String tableId, int schemaVersion, String format, String schemaId) throws Exception {
         int base = stableHash(tableId, schemaVersion, format) & 0x7fffffff;
         Lookuper lookuper = table(Handle.ID_RESERVATIONS).newLookup().createLookuper();
-        for (int probe = 0; probe < CONFLUENT_ID_PROBE_LIMIT; probe++) {
+        for (int probe = 0; probe < SR_ID_PROBE_LIMIT; probe++) {
             int id = (base + probe) & 0x7fffffff;
             GenericRow key = new GenericRow(1);
             key.setField(0, id);
@@ -1741,14 +1748,14 @@ public final class FlussCatalogService implements CatalogService, AutoCloseable 
         }
         throw new CatalogException(
                 CatalogException.Kind.INTERNAL,
-                "Could not reserve a Confluent id for ("
+                "Could not reserve a Kafka SR schema id for ("
                         + tableId
                         + ", v"
                         + schemaVersion
                         + ", "
                         + format
                         + ") after "
-                        + CONFLUENT_ID_PROBE_LIMIT
+                        + SR_ID_PROBE_LIMIT
                         + " probes");
     }
 

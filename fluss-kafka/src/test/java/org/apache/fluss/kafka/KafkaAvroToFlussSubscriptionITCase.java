@@ -73,25 +73,25 @@ import java.util.concurrent.TimeUnit;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * End-to-end demo: a Kafka producer publishes a Confluent-framed Avro record, and a native Fluss
+ * End-to-end demo: a Kafka producer publishes a SR-framed Avro record, and a native Fluss
  * subscription (via {@link LogScanner}) receives it from the backing {@code kafka.<topic>} table.
  *
  * <p>Flow under test:
  *
  * <ol>
- *   <li>Register an Avro subject ({@code orders-value}) with the SR HTTP endpoint. Get the
- *       Confluent schema id back.
+ *   <li>Register an Avro subject ({@code orders-value}) with the SR HTTP endpoint. Get the Kafka SR
+ *       schema id back.
  *   <li>Serialise a {@link GenericRecord} via Apache Avro's own {@code BinaryEncoder}, prepend the
- *       Confluent wire frame {@code [0x00][4-byte schema id]}, and publish via plain {@code
+ *       Kafka SR wire frame {@code [0x00][4-byte schema id]}, and publish via plain {@code
  *       kafka-clients} producer.
  *   <li>Open a Fluss {@link Connection}, subscribe via {@link LogScanner} to {@code kafka.orders},
  *       and read the row back.
- *   <li>Assert the payload column is the exact Confluent frame we sent; decode the body with {@code
+ *   <li>Assert the payload column is the exact Kafka SR frame we sent; decode the body with {@code
  *       GenericDatumReader} and compare every field.
  * </ol>
  *
- * <p>We don't depend on Confluent's serializer client (Community License) — Apache Avro + a
- * hand-constructed Confluent frame gives the same wire bytes.
+ * <p>We don't depend on the Community License serializer client — Apache Avro + a hand-constructed
+ * Kafka SR frame gives the same wire bytes.
  */
 class KafkaAvroToFlussSubscriptionITCase {
 
@@ -149,23 +149,23 @@ class KafkaAvroToFlussSubscriptionITCase {
                 .all()
                 .get();
 
-        // 1. Register the Avro schema with our SR. Get back the deterministic Confluent id.
+        // 1. Register the Avro schema with our SR. Get back the deterministic Kafka SR schema id.
         int schemaId = registerAvroSchema(subject, SCHEMA_ORDER_JSON);
         assertThat(schemaId).isGreaterThan(0);
 
-        // 2. Build an Avro record, encode with Apache Avro, wrap in the Confluent frame, produce.
+        // 2. Build an Avro record, encode with Apache Avro, wrap in the Kafka SR frame, produce.
         Schema avroSchema = new Schema.Parser().parse(SCHEMA_ORDER_JSON);
         GenericRecord originalRecord = new GenericData.Record(avroSchema);
         originalRecord.put("id", 42L);
         originalRecord.put("qty", 7);
         originalRecord.put("sku", "BOLT-M8");
 
-        byte[] confluentFramed = confluentFrame(schemaId, encodeAvro(avroSchema, originalRecord));
+        byte[] srFramed = kafkaSrFrame(schemaId, encodeAvro(avroSchema, originalRecord));
 
         byte[] key = "order-42".getBytes(StandardCharsets.UTF_8);
         try (KafkaProducer<byte[], byte[]> producer = new KafkaProducer<>(producerProps())) {
             RecordMetadata md =
-                    producer.send(new ProducerRecord<>(topic, 0, key, confluentFramed))
+                    producer.send(new ProducerRecord<>(topic, 0, key, srFramed))
                             .get(30, TimeUnit.SECONDS);
             assertThat(md.topic()).isEqualTo(topic);
         }
@@ -189,7 +189,7 @@ class KafkaAvroToFlussSubscriptionITCase {
         }
 
         // 4. Assert the row shape: KafkaDataTable = (record_key BYTES, payload BYTES, event_time,
-        // headers). The payload column carries the exact Confluent frame we sent.
+        // headers). The payload column carries the exact Kafka SR frame we sent.
         assertThat(collected)
                 .as("Fluss subscription should have received the produced Kafka record")
                 .hasSize(1);
@@ -197,13 +197,13 @@ class KafkaAvroToFlussSubscriptionITCase {
         assertThat(row.getBytes(0)).as("record_key column").isEqualTo(key);
         byte[] receivedPayload = row.getBytes(1);
         assertThat(receivedPayload)
-                .as("payload column must be the Confluent-framed Avro bytes byte-for-byte")
-                .isEqualTo(confluentFramed);
+                .as("payload column must be the SR-framed Avro bytes byte-for-byte")
+                .isEqualTo(srFramed);
 
         // 5. Decode the Avro body with the schema and verify semantic equality.
-        assertThat(receivedPayload[0]).as("Confluent magic byte").isEqualTo((byte) 0x00);
+        assertThat(receivedPayload[0]).as("Kafka SR magic byte").isEqualTo((byte) 0x00);
         int decodedSchemaId = ByteBuffer.wrap(receivedPayload, 1, 4).getInt();
-        assertThat(decodedSchemaId).as("Confluent schema id prefix").isEqualTo(schemaId);
+        assertThat(decodedSchemaId).as("Kafka SR schema id prefix").isEqualTo(schemaId);
 
         byte[] avroBody = new byte[receivedPayload.length - 5];
         System.arraycopy(receivedPayload, 5, avroBody, 0, avroBody.length);
@@ -287,10 +287,10 @@ class KafkaAvroToFlussSubscriptionITCase {
     }
 
     /**
-     * Build the Confluent wire format: {@code [0x00][big-endian int32 schema id][avro body]}. This
+     * Build the Kafka SR wire format: {@code [0x00][big-endian int32 schema id][avro body]}. This
      * is exactly what {@code io.confluent.kafka.serializers.KafkaAvroSerializer} produces.
      */
-    private static byte[] confluentFrame(int schemaId, byte[] avroBody) {
+    private static byte[] kafkaSrFrame(int schemaId, byte[] avroBody) {
         ByteBuffer buf = ByteBuffer.allocate(1 + 4 + avroBody.length);
         buf.put((byte) 0x00);
         buf.putInt(schemaId);

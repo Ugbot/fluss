@@ -39,11 +39,13 @@ import org.apache.fluss.row.BinaryString;
 import org.apache.fluss.row.BinaryWriter;
 import org.apache.fluss.row.GenericArray;
 import org.apache.fluss.row.GenericRow;
+import org.apache.fluss.row.InternalRow;
 import org.apache.fluss.row.TimestampLtz;
 import org.apache.fluss.row.indexed.IndexedRow;
 import org.apache.fluss.row.indexed.IndexedRowWriter;
 import org.apache.fluss.rpc.entity.ProduceLogResultForBucket;
 import org.apache.fluss.server.replica.ReplicaManager;
+import org.apache.fluss.shaded.netty4.io.netty.buffer.Unpooled;
 import org.apache.fluss.types.DataType;
 import org.apache.fluss.types.RowType;
 
@@ -209,8 +211,7 @@ public final class KafkaProduceTranscoder {
                             route.catalogFormat());
                 } else {
                     typedBinding =
-                            new TypedProduceBinding(
-                                    fetchBinding.codec, fetchBinding.confluentSchemaId);
+                            new TypedProduceBinding(fetchBinding.codec, fetchBinding.srSchemaId);
                 }
             } catch (Throwable t) {
                 LOG.error(
@@ -285,7 +286,7 @@ public final class KafkaProduceTranscoder {
                     buildFlussRecords(
                             kafkaRecords, schemaId, rowType, valueWriters, info, typedBinding);
         } catch (InvalidProduceRecordException invalid) {
-            // Per design 0014 §8: Confluent-frame failures map to per-record codes; we narrow
+            // Per design 0014 §8: Kafka SR frame failures map to per-record codes; we narrow
             // the partition-level error code to the specific Errors enum the validator chose
             // (CORRUPT_MESSAGE for short / malformed frames, INVALID_RECORD for magic-byte and
             // schema-id mismatches). Logged at DEBUG since these are expected from non-SR
@@ -549,52 +550,82 @@ public final class KafkaProduceTranscoder {
             IndexedRowWriter rowWriter,
             BinaryWriter.ValueWriter[] valueWriters,
             @javax.annotation.Nullable TypedProduceBinding typedBinding) {
-        rowWriter.reset();
-
-        // Delegating through the nullable ValueWriter wrapper keeps the sequential IndexedRow
-        // writer's variable-length-pointer list consistent with its null bitmap.
-        valueWriters[0].writeValue(
-                rowWriter, 0, kafkaRecord.hasKey() ? byteBufferToBytes(kafkaRecord.key()) : null);
-
-        // Column 1 is the value column. For passthrough topics this is the raw Kafka bytes; for
-        // typed topics (design 0014 §4) we strip the 5-byte Confluent frame, validate the
-        // schemaId is the one this codec was compiled for, and write the body. Until T.3
-        // alters the table layout to expose typed value columns the body lives in the same
-        // BYTES column the passthrough path writes — what changes is the validation + future
-        // codec.decodeInto wiring (gated by the codec's RowType field-count matching the
-        // table's typed-column count).
         byte[] valueBytes = kafkaRecord.hasValue() ? byteBufferToBytes(kafkaRecord.value()) : null;
+
         if (typedBinding != null && valueBytes != null) {
-            byte[] body = stripConfluentFrame(valueBytes, typedBinding.confluentSchemaId);
-            valueWriters[1].writeValue(rowWriter, 1, body);
-        } else {
-            valueWriters[1].writeValue(rowWriter, 1, valueBytes);
-        }
+            // Typed produce path (T.4): decode the SR-encoded body into the N user columns,
+            // then write the full typed row in layout [key, user_col_0..N-1, event_time, headers].
+            byte[] body = stripKafkaSrFrame(valueBytes, typedBinding.srSchemaId);
+            typedBinding.codec.decodeInto(
+                    Unpooled.wrappedBuffer(body), 0, body.length, typedBinding.userColWriter);
+            typedBinding.userColRow.pointTo(
+                    typedBinding.userColWriter.segment(), 0, typedBinding.userColWriter.position());
 
-        long ts = kafkaRecord.timestamp();
-        if (ts == RecordBatch.NO_TIMESTAMP) {
-            ts = System.currentTimeMillis();
-        }
-        valueWriters[2].writeValue(rowWriter, 2, TimestampLtz.fromEpochMillis(ts));
-
-        Header[] headers = kafkaRecord.headers();
-        if (headers == null || headers.length == 0) {
-            valueWriters[3].writeValue(rowWriter, 3, null);
-        } else {
-            Object[] rows = new Object[headers.length];
-            for (int i = 0; i < headers.length; i++) {
-                Header h = headers[i];
-                rows[i] =
-                        GenericRow.of(
-                                h.key() == null ? null : BinaryString.fromString(h.key()),
-                                h.value());
+            int numUserCols = typedBinding.userColGetters.length;
+            rowWriter.reset();
+            valueWriters[0].writeValue(
+                    rowWriter,
+                    0,
+                    kafkaRecord.hasKey() ? byteBufferToBytes(kafkaRecord.key()) : null);
+            for (int i = 0; i < numUserCols; i++) {
+                valueWriters[i + 1].writeValue(
+                        rowWriter,
+                        i + 1,
+                        typedBinding.userColGetters[i].getFieldOrNull(typedBinding.userColRow));
             }
-            valueWriters[3].writeValue(rowWriter, 3, new GenericArray(rows));
+            long ts = kafkaRecord.timestamp();
+            if (ts == RecordBatch.NO_TIMESTAMP) {
+                ts = System.currentTimeMillis();
+            }
+            valueWriters[numUserCols + 1].writeValue(
+                    rowWriter, numUserCols + 1, TimestampLtz.fromEpochMillis(ts));
+            Header[] headers = kafkaRecord.headers();
+            if (headers == null || headers.length == 0) {
+                valueWriters[numUserCols + 2].writeValue(rowWriter, numUserCols + 2, null);
+            } else {
+                Object[] rows = new Object[headers.length];
+                for (int i = 0; i < headers.length; i++) {
+                    Header h = headers[i];
+                    rows[i] =
+                            GenericRow.of(
+                                    h.key() == null ? null : BinaryString.fromString(h.key()),
+                                    h.value());
+                }
+                valueWriters[numUserCols + 2].writeValue(
+                        rowWriter, numUserCols + 2, new GenericArray(rows));
+            }
+        } else {
+            // Passthrough path: 4-column layout [key, value_bytes, event_time, headers].
+            rowWriter.reset();
+            valueWriters[0].writeValue(
+                    rowWriter,
+                    0,
+                    kafkaRecord.hasKey() ? byteBufferToBytes(kafkaRecord.key()) : null);
+            valueWriters[1].writeValue(rowWriter, 1, valueBytes);
+            long ts = kafkaRecord.timestamp();
+            if (ts == RecordBatch.NO_TIMESTAMP) {
+                ts = System.currentTimeMillis();
+            }
+            valueWriters[2].writeValue(rowWriter, 2, TimestampLtz.fromEpochMillis(ts));
+            Header[] headers = kafkaRecord.headers();
+            if (headers == null || headers.length == 0) {
+                valueWriters[3].writeValue(rowWriter, 3, null);
+            } else {
+                Object[] rows = new Object[headers.length];
+                for (int i = 0; i < headers.length; i++) {
+                    Header h = headers[i];
+                    rows[i] =
+                            GenericRow.of(
+                                    h.key() == null ? null : BinaryString.fromString(h.key()),
+                                    h.value());
+                }
+                valueWriters[3].writeValue(rowWriter, 3, new GenericArray(rows));
+            }
         }
     }
 
     /**
-     * Strip the 5-byte Confluent wire frame ({@code [0x00][int32 schemaId]}) and return the body.
+     * Strip the 5-byte Kafka SR wire frame ({@code [0x00][int32 schemaId]}) and return the body.
      * Throws {@link InvalidProduceRecordException} when the frame is malformed (length &lt; 5,
      * magic byte ≠ 0x00) or when the framed schema id doesn't match the codec the topic was
      * resolved against — per design 0014 §8 the caller turns these into per-record {@link
@@ -605,16 +636,16 @@ public final class KafkaProduceTranscoder {
      * alters the layout the {@code typedBinding.codec.decodeInto(buf, offset, length, rowWriter)}
      * call replaces the body byte-write — the frame strip + validation logic stays here.
      */
-    private static byte[] stripConfluentFrame(byte[] framed, int expectedSchemaId) {
+    private static byte[] stripKafkaSrFrame(byte[] framed, int expectedSchemaId) {
         if (framed.length < 5) {
             throw new InvalidProduceRecordException(
                     Errors.CORRUPT_MESSAGE,
-                    "Confluent frame shorter than 5 bytes: length=" + framed.length);
+                    "Kafka SR frame shorter than 5 bytes: length=" + framed.length);
         }
         if (framed[0] != 0x00) {
             throw new InvalidProduceRecordException(
                     Errors.INVALID_RECORD,
-                    "Confluent magic byte expected 0x00, got 0x"
+                    "Kafka SR magic byte expected 0x00, got 0x"
                             + String.format("%02X", framed[0] & 0xFF));
         }
         int frameId =
@@ -632,14 +663,28 @@ public final class KafkaProduceTranscoder {
         return body;
     }
 
-    /** Codec + Confluent id pair carried through the produce path for typed topics. */
+    /** Codec + Kafka SR schema id pair carried through the produce path for typed topics. */
     static final class TypedProduceBinding {
         final RecordCodec codec;
-        final int confluentSchemaId;
+        final int srSchemaId;
+        /** Pre-allocated writer for decoding user columns from the SR-encoded body. */
+        final IndexedRowWriter userColWriter;
+        /** Pre-allocated row view over {@link #userColWriter}'s segment after each decode. */
+        final IndexedRow userColRow;
+        /** Per-column field getters for extracting values from {@link #userColRow}. */
+        final InternalRow.FieldGetter[] userColGetters;
 
-        TypedProduceBinding(RecordCodec codec, int confluentSchemaId) {
+        TypedProduceBinding(RecordCodec codec, int srSchemaId) {
             this.codec = codec;
-            this.confluentSchemaId = confluentSchemaId;
+            this.srSchemaId = srSchemaId;
+            RowType userRowType = codec.rowType();
+            this.userColWriter = new IndexedRowWriter(userRowType);
+            this.userColRow = new IndexedRow(userRowType.getChildren().toArray(new DataType[0]));
+            int numUserCols = userRowType.getFieldCount();
+            this.userColGetters = new InternalRow.FieldGetter[numUserCols];
+            for (int i = 0; i < numUserCols; i++) {
+                userColGetters[i] = InternalRow.createFieldGetter(userRowType.getTypeAt(i), i);
+            }
         }
     }
 

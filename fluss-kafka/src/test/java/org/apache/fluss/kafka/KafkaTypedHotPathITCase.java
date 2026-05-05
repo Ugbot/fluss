@@ -86,7 +86,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * <ul>
  *   <li><b>Scenario A — typed.</b> Feature flag on, catalog row pre-staged to {@code
- *       KAFKA_TYPED_AVRO}. The producer sends Confluent-framed Avro; the broker strips the frame on
+ *       KAFKA_TYPED_AVRO}. The producer sends SR-framed Avro; the broker strips the frame on
  *       Produce and re-prepends it on Fetch. The Kafka consumer must see byte-equal records; the
  *       Fluss subscription must observe the typed body in the table.
  *   <li><b>Scenario B — passthrough fallback.</b> Same setup but feature flag off. The catalog
@@ -103,8 +103,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  *       KAFKA_PASSTHROUGH} catalog row (T.1 default — T.3 will flip this at registration time).
  *       This test pre-stages the typed format directly via the in-process {@link
  *       CatalogServices#current()}, bypassing T.3.
- *   <li>Avro serialisation uses Apache Avro's own {@code BinaryEncoder} + a hand-built Confluent
- *       frame; we don't depend on Confluent's serializer client (Community License).
+ *   <li>Avro serialisation uses Apache Avro's own {@code BinaryEncoder} + a hand-built Kafka SR
+ *       wire frame; we don't depend on the Community License serializer client.
  * </ul>
  */
 class KafkaTypedHotPathITCase {
@@ -163,7 +163,7 @@ class KafkaTypedHotPathITCase {
                 .all()
                 .get();
 
-        // Register the schema with the SR HTTP endpoint to obtain the canonical Confluent id.
+        // Register the schema with the SR HTTP endpoint to obtain the canonical Kafka SR schema id.
         int schemaId = registerAvroSchema(subject, SCHEMA_ORDER_JSON);
         assertThat(schemaId).isGreaterThan(0);
 
@@ -184,7 +184,7 @@ class KafkaTypedHotPathITCase {
                 rec.put("qty", rnd.nextInt(100));
                 rec.put("sku", "SKU-" + Integer.toHexString(rnd.nextInt()));
                 byte[] body = encodeAvro(avroSchema, rec);
-                byte[] framed = confluentFrame(schemaId, body);
+                byte[] framed = kafkaSrFrame(schemaId, body);
                 byte[] key = ("k-" + i).getBytes(StandardCharsets.UTF_8);
                 framedValues.add(framed);
                 keys.add(key);
@@ -208,7 +208,7 @@ class KafkaTypedHotPathITCase {
         assertThat(received).as("Kafka consumer received").hasSize(recordCount);
         for (int i = 0; i < recordCount; i++) {
             assertThat(received.get(i))
-                    .as("Confluent-framed value byte-equal at index %d", i)
+                    .as("SR-framed value byte-equal at index %d", i)
                     .isEqualTo(framedValues.get(i));
         }
 
@@ -236,7 +236,7 @@ class KafkaTypedHotPathITCase {
             InternalRow r = rows.get(i).getRow();
             assertThat(r.getBytes(0)).as("record_key column row %d", i).isEqualTo(keys.get(i));
             byte[] storedValue = r.getBytes(1);
-            // The typed branch strips the 5-byte Confluent frame; what's stored is the body.
+            // The typed branch strips the 5-byte Kafka SR frame; what's stored is the body.
             byte[] expectedBody = new byte[framedValues.get(i).length - 5];
             System.arraycopy(framedValues.get(i), 5, expectedBody, 0, expectedBody.length);
             assertThat(storedValue)
@@ -260,7 +260,7 @@ class KafkaTypedHotPathITCase {
         // tearing down the partition. We assert that the future fails, not that it succeeds.
         int unknownId = schemaId + 1_000_000;
         byte[] bogus =
-                confluentFrame(
+                kafkaSrFrame(
                         unknownId,
                         "{\"id\":1,\"qty\":1,\"sku\":\"x\"}".getBytes(StandardCharsets.UTF_8));
         try (KafkaProducer<byte[], byte[]> producer = new KafkaProducer<>(producerProps())) {
@@ -386,7 +386,7 @@ class KafkaTypedHotPathITCase {
         }
     }
 
-    private static byte[] confluentFrame(int schemaId, byte[] avroBody) {
+    private static byte[] kafkaSrFrame(int schemaId, byte[] avroBody) {
         ByteBuffer buf = ByteBuffer.allocate(1 + 4 + avroBody.length);
         buf.put((byte) 0x00);
         buf.putInt(schemaId);

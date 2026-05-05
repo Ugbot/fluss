@@ -116,7 +116,7 @@ public final class JsonCodecRuntime {
         try {
             return Base64.getDecoder().decode(s);
         } catch (IllegalArgumentException iae) {
-            // Confluent's serializer may emit raw JSON strings for {@code format: byte} depending
+            // Kafka SR serializers may emit raw JSON strings for {@code format: byte} depending
             // on config; fall back to UTF-8 bytes so we don't throw on that variant.
             return s.getBytes(StandardCharsets.UTF_8);
         }

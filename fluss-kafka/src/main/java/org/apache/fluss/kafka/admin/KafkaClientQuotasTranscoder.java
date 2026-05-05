@@ -47,9 +47,9 @@ import java.util.Map;
  *
  * <p>Phase I.3 Path A: <b>accept-and-store only</b>. Produce / Fetch / request-dispatch paths don't
  * consult these rows; the transcoder exists so kafka-clients tooling ({@code kafka-configs.sh},
- * Confluent Cloud admin, etc.) can read back what it wrote. No throttle is installed. Supported
- * entity types are Kafka's conventional {@code user}, {@code client-id}, {@code ip}; unknown entity
- * types are accepted and stored (matching Kafka's own lenient storage semantics).
+ * Kafka-compatible admin tooling, etc.) can read back what it wrote. No throttle is installed.
+ * Supported entity types are Kafka's conventional {@code user}, {@code client-id}, {@code ip};
+ * unknown entity types are accepted and stored (matching Kafka's own lenient storage semantics).
  *
  * <p>The Kafka wire protocol groups quota entries by <em>entity</em> (a list of {@code (entityType,
  * entityName)} pairs, which together identify a multi-dimensional bucket such as "user=alice,

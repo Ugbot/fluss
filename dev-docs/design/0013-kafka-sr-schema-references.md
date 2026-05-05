@@ -9,7 +9,7 @@
 
 ## Context
 
-Confluent Schema Registry lets one subject-version import other
+Kafka Schema Registry lets one subject-version import other
 subject-versions by name. A register payload carries a `references`
 array; each entry is a triple `(name, subject, version)` where `name`
 is the symbolic token the referrer uses to point at the referent (an
@@ -17,7 +17,7 @@ Avro fullname, a JSON Schema `$ref` string, a `.proto` import path).
 At read time the registry round-trips the array in
 `GET /subjects/{s}/versions/{v}` and `GET /schemas/ids/{id}`, and
 exposes a reverse index via `GET /schemas/ids/{id}/referencedby`. The
-reference graph is used by every format-aware Confluent serializer:
+reference graph is used by every format-aware Kafka SR serializer:
 without it the consumer cannot reassemble a Protobuf descriptor that
 imports `google/protobuf/timestamp.proto`, cannot resolve a JSON
 Schema `$ref`, cannot validate an Avro schema that reuses a named
@@ -108,15 +108,15 @@ fields:
 Keys are the catalog's internal UUID `schema_id` (from
 `SchemaVersionEntity.schemaId()`, matching the storage style of
 every other catalog entity — see
-`SchemaVersionEntity.java:61`), not the Confluent 31-bit global id.
-Confluent ids are a derived projection; the primary edge storage
+`SchemaVersionEntity.java:61`), not the Kafka SR 31-bit global id.
+SR schema ids are a derived projection; the primary edge storage
 joins on the same UUID column that `_schemas.schema_id` publishes.
 
 ### Why pin `referenced_schema_id`
 
-The Confluent API exposes only `(subject, version)` on the wire, but
+The Kafka SR API exposes only `(subject, version)` on the wire, but
 a subject's version can be hard-deleted and re-registered (different
-`schema_id`, different Confluent id, possibly identical text), or
+`schema_id`, different SR schema id, possibly identical text), or
 the referent's catalog row may be mutated by a future migration. A
 referrer row that stored only `(subject, version)` would
 silently follow those changes; the referrer's compat semantics
@@ -125,7 +125,7 @@ the UUID makes each edge immutable — if the referent's `schema_id`
 no longer exists in `_schemas`, every read of the referrer surfaces
 that the edge is stale and the delete-path integrity check refuses
 a confused cascade. The wire projection still echoes
-`(subject, version)` (Confluent's shape); pinning is an internal
+`(subject, version)` (Kafka SR's shape); pinning is an internal
 detail.
 
 Both projections are cheap:
@@ -170,8 +170,8 @@ The value type:
 ```java
 public final class SchemaReference {
     private final String name;              // e.g. "com.example.Address"
-    private final String subject;           // Confluent subject of the referent
-    private final int version;              // Confluent version (1-based)
+    private final String subject;           // SR subject of the referent
+    private final int version;              // SR version (1-based)
     private final String referencedSchemaId; // catalog UUID, pinned
 
     // accessors, equals/hashCode on all four fields
@@ -196,7 +196,7 @@ filters in memory; `deleteReferences` uses the existing
 | `GET /subjects/{s}/versions/latest` | same |
 | `GET /schemas/ids/{id}` | response body includes `references` array |
 | `POST /subjects/{s}` (exists-probe) | response body includes `references` array |
-| `GET /schemas/ids/{id}/referencedby` | new; returns `[{subject, version}]` tuples for every referrer (Confluent shape) |
+| `GET /schemas/ids/{id}/referencedby` | new; returns `[{subject, version}]` tuples for every referrer (Kafka SR shape) |
 | `POST /compatibility/subjects/{s}/versions/{v}` | reads `references` off the request body and resolves them exactly like the register arm; resolved text is fed to the compat checker |
 | `DELETE /subjects/{s}/versions/{v}?permanent=true` | 422 when `listReferencedBy(schemaId)` is non-empty, citing each blocking `(subject, version)` tuple |
 | `DELETE /subjects/{s}?permanent=true` | 422 when any of its versions is still referenced; message iterates every offending `(subject, version)` |
@@ -253,10 +253,10 @@ call.
 The idempotent fast path
 (`SchemaRegistryService.java:347-357`) requires a light extension:
 two registrations with identical `schemaText` but different
-reference arrays must not collapse to the same Confluent id. The
+reference arrays must not collapse to the same SR schema id. The
 fast-path comparison becomes "same text AND same reference tuple
 list" before returning the prior id; otherwise it falls through to
-the compat gate and mints a new version. This matches Confluent's
+the compat gate and mints a new version. This matches Kafka SR's
 behaviour.
 
 ## Compatibility checking with references
@@ -310,7 +310,7 @@ Per-format notes:
   instance is per-call (already per-call today) — no threading
   change.
 
-- **JSON Schema.** The Confluent convention is `$ref` strings that
+- **JSON Schema.** The Kafka SR convention is `$ref` strings that
   name the reference's `name` field (e.g.
   `"google/protobuf/timestamp.json#"`). `JsonCompatibilityChecker`
   wires the resolver into a
@@ -340,16 +340,16 @@ catalog — the catalog stays a dumb row store. Rules:
 - **Hard-delete of a schema version (referent).** Before deleting,
   call `listReferencedBy(schemaId)`. If non-empty, raise
   `SchemaRegistryException(CONFLICT, "version is still referenced
-  by N schemas: {sub1 v1, sub2 v3, ...}")` → HTTP 422 (Confluent
+  by N schemas: {sub1 v1, sub2 v3, ...}")` → HTTP 422 (Kafka SR
   uses 422 for this class; we match). The message enumerates every
   blocking referrer as `(subject, version)` tuples resolved via
   the kafka-binding table.
 - **Soft-delete of a referent.** Allowed even when referenced. The
-  Confluent semantics here are "tombstoned but resolvable until
+  Kafka SR semantics here are "tombstoned but resolvable until
   hard-deleted"; a referrer's compat checker can still see the
   referent's text (soft-delete is a subject-scoped tombstone on
   `_sr_config`, not a row delete — see
-  `SchemaRegistryService.java:450`). This matches Confluent's
+  `SchemaRegistryService.java:450`). This matches Kafka SR's
   graph-is-still-walkable behaviour for soft-deleted referents.
 - **Hard-delete of a referrer.** Cascades: the SR calls
   `catalog.deleteReferences(schemaId)` before
@@ -366,7 +366,7 @@ catalog — the catalog stays a dumb row store. Rules:
   unconditionally hard-deletes each version.
 
 The rule "cannot delete a referent that is still referenced" is
-symmetric to the Confluent SR's and keeps the graph acyclic-by-age
+symmetric to the Kafka SR's and keeps the graph acyclic-by-age
 (a referrer is always younger than its referents).
 
 ## Canonicalization interaction
@@ -374,7 +374,7 @@ symmetric to the Confluent SR's and keeps the graph acyclic-by-age
 Phase SR-X.2 introduces register-path canonicalization: the
 `schemaText` is normalised (whitespace, field order per format
 rules) before hashing, so whitespace-only edits don't mint a new
-Confluent id. Phase SR-X.5 extends canonicalization over the
+SR schema id. Phase SR-X.5 extends canonicalization over the
 reference closure: the text being hashed is not the bare
 `proposedText` but
 `canonicalise(proposedText) || canonicalise(resolved_ref_1) ||
@@ -388,7 +388,7 @@ The referrer's hash is stable against its pinned
 `referenced_schema_id` — the referent's new version does not
 propagate into the referrer's canonical form. A referrer that
 wants to follow the referent must itself re-register against the
-new version. This is the correct Confluent semantics.
+new version. This is the correct Kafka SR semantics.
 
 ## Files
 
@@ -456,7 +456,7 @@ throughout (per CLAUDE.md §1.4). Covers:
    [{name: "missing", subject: "X", version: 9}]` → 422, message
    contains `"referenced subject X version 9 does not exist"`.
 9. Canonicalization: register `A/v2` as a whitespace-only edit of
-   `A/v1`; assert `B/v1` still pins `A/v1` and its Confluent id is
+   `A/v1`; assert `B/v1` still pins `A/v1` and its SR schema id is
    unchanged.
 10. Protobuf end-to-end: pre-register subject `well-known-timestamp`
     with the text of `google/protobuf/timestamp.proto`, then
@@ -464,7 +464,7 @@ throughout (per CLAUDE.md §1.4). Covers:
     `io.confluent:kafka-protobuf-serializer` pointed at our HTTP
     endpoint; the serializer must surface the reference array in
     its register call, and the consumer must deserialize a payload
-    that imports the timestamp. Test-scope only (Confluent
+    that imports the timestamp. Test-scope only (Kafka SR
     Community License forbids redistribution — same constraint as
     the existing Protobuf IT per design 0009 §11.2).
 
@@ -477,11 +477,11 @@ discipline.
 
 ## Out of scope
 
-- **Cross-cluster reference resolution.** Confluent's SR supports
+- **Cross-cluster reference resolution.** Kafka SR's SR supports
   references by a `{subject, version, clusterId?}` triple across
   federated registries. We target the single-cluster case; a
   reference always resolves inside the local catalog.
-- **Anonymous references.** Confluent accepts `"subject": ""` as a
+- **Anonymous references.** Kafka SR accepts `"subject": ""` as a
   shorthand for "the same subject I'm registering against". We
   reject empty subject strings in the resolver. Adding this is a
   later, purely projection-level, change.

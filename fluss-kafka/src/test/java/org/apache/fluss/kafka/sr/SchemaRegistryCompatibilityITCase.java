@@ -49,7 +49,7 @@ import java.util.Properties;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Confluent Schema Registry compatibility-gate semantics on the Coordinator's REST listener.
+ * Kafka Schema Registry compatibility-gate semantics on the Coordinator's REST listener.
  *
  * <p>Covers Phase SR-X.2 behaviour:
  *

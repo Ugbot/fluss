@@ -42,13 +42,13 @@ import java.util.Optional;
  *
  * <p>Consumed by HTTP-shaped projections (Kafka Schema Registry now, Iceberg REST Catalog and Flink
  * multi-format catalogs next) so that catalog semantics — namespaces, schema evolution history,
- * deterministic Confluent ids, eventual RBAC — live in one place, not spread across every wire
- * protocol Fluss speaks.
+ * deterministic Kafka SR schema ids, eventual RBAC — live in one place, not spread across every
+ * wire protocol Fluss speaks.
  *
  * <p>Phase C.1 scope: namespaces, tables, schema history, Kafka subject bindings, deterministic
- * Confluent id allocation. Phase C.2 adds {@link #grant}, {@link #revoke}, {@link #listGrants},
- * {@link #checkPrivilege}. See {@code dev-docs/design/0002-kafka-schema-registry-and-typed-
- * tables.md} and the structural plan for context.
+ * schema id allocation. Phase C.2 adds {@link #grant}, {@link #revoke}, {@link #listGrants}, {@link
+ * #checkPrivilege}. See {@code dev-docs/design/0002-kafka-schema-registry-and-typed- tables.md} and
+ * the structural plan for context.
  */
 @PublicEvolving
 public interface CatalogService {
@@ -113,7 +113,7 @@ public interface CatalogService {
     Optional<SchemaVersionEntity> getSchemaVersion(String namespace, String tableName, int version)
             throws Exception;
 
-    Optional<SchemaVersionEntity> getSchemaById(int confluentId) throws Exception;
+    Optional<SchemaVersionEntity> getSchemaById(int srSchemaId) throws Exception;
 
     /** PK-lookup by schema id. Read-after-write consistent, unlike scans. */
     Optional<SchemaVersionEntity> getSchemaBySchemaId(String schemaId) throws Exception;
@@ -127,8 +127,8 @@ public interface CatalogService {
     // --------------------------- Kafka subject bindings --------------- //
 
     /**
-     * Bind a Confluent-style Kafka subject to a catalog table. Idempotent on {@code (subject,
-     * namespace, tableName, keyOrValue)}.
+     * Bind a Kafka SR subject to a catalog table. Idempotent on {@code (subject, namespace,
+     * tableName, keyOrValue)}.
      */
     KafkaSubjectBinding bindKafkaSubject(
             String subject,
@@ -151,9 +151,9 @@ public interface CatalogService {
 
     /**
      * Hard-delete a single schema version by its internal schema id. Does NOT reclaim the
-     * associated Confluent id reservation — Confluent SR semantics require ids remain stable across
-     * the lifetime of the registry so that clients holding them keep dereferencing to "not found"
-     * rather than colliding with a future registration. No-op when absent.
+     * associated Kafka SR schema id reservation — Kafka SR semantics require ids remain stable
+     * across the lifetime of the registry so that clients holding them keep dereferencing to "not
+     * found" rather than colliding with a future registration. No-op when absent.
      */
     void deleteSchemaVersion(String schemaId) throws Exception;
 

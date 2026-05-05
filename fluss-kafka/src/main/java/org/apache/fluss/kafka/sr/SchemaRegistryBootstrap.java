@@ -110,6 +110,7 @@ public final class SchemaRegistryBootstrap implements CoordinatorLeaderBootstrap
                         catalog,
                         kafkaDatabase,
                         adminLifecycle::admin,
+                        metadataCache,
                         typedTablesEnabled);
         SchemaRegistryService service =
                 new SchemaRegistryService(

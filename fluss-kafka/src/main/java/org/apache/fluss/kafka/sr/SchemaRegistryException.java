@@ -20,7 +20,7 @@ package org.apache.fluss.kafka.sr;
 import org.apache.fluss.annotation.Internal;
 
 /**
- * Translates cleanly to Confluent REST HTTP status codes in {@link SchemaRegistryHttpHandler}. The
+ * Translates cleanly to Kafka SR REST HTTP status codes in {@link SchemaRegistryHttpHandler}. The
  * {@link Kind} enum captures enough variants to cover every 4xx the Phase A1 endpoints need.
  */
 @Internal

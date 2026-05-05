@@ -39,8 +39,8 @@ public interface KafkaFetchCodec {
     /**
      * Build the {@link LogRecordReadContext} the Fluss decoder uses to walk each {@code
      * LogRecordBatch}. The {@code schemaId} comes from the batch header — for the typed codec it is
-     * the Fluss table's current schema id (not the Confluent id; the Confluent id is recovered from
-     * the catalog binding).
+     * the Fluss table's current schema id (not the Kafka SR schema id; the Kafka SR schema id is
+     * recovered from the catalog binding).
      */
     LogRecordReadContext readContext(int schemaId);
 

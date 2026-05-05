@@ -22,7 +22,7 @@ import org.apache.fluss.annotation.Internal;
 import java.util.Locale;
 
 /**
- * Confluent Schema Registry compatibility levels.
+ * Kafka Schema Registry compatibility levels.
  *
  * <p>Each level controls how a proposed schema is validated against the existing version history:
  *
@@ -76,8 +76,8 @@ public enum CompatLevel {
     }
 
     /**
-     * Parse a Confluent-style level name (case-insensitive). Throws {@link
-     * IllegalArgumentException} for unknown names — SR service converts that to a {@code
+     * Parse a Kafka SR level name (case-insensitive). Throws {@link IllegalArgumentException} for
+     * unknown names — SR service converts that to a {@code
      * SchemaRegistryException.Kind.INVALID_INPUT}.
      */
     public static CompatLevel fromString(String name) {

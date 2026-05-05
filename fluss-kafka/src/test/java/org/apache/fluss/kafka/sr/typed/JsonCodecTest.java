@@ -70,7 +70,7 @@ class JsonCodecTest {
             double d = rnd.nextDouble();
             String s = randomAsciiString(rnd, 1 + rnd.nextInt(16));
 
-            // Build a JSON payload via Jackson (the "baseline" serializer Confluent would emit).
+            // Build a JSON payload via Jackson (the "baseline" serializer Kafka SR would emit).
             byte[] payload =
                     ("{\"f_bool\":"
                                     + b

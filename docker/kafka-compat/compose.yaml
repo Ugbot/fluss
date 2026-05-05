@@ -15,24 +15,27 @@
 # specific language governing permissions and limitations
 # under the License.
 
-# Fluss with Kafka wire-protocol compatibility.
+# Fluss with Kafka wire-protocol compatibility — 3-tablet cluster.
 #
 # Exposed ports:
-#   9092  — Kafka API (bootstrap server for any Kafka client)
-#   8081  — Confluent-compatible Schema Registry
-#   9123  — Fluss native RPC (optional direct access)
+#   9092  — Kafka API broker 0 (tablet)
+#   9093  — Kafka API broker 1 (tablet1)
+#   9094  — Kafka API broker 2 (tablet2)
+#   8081  — Kafka-compatible Schema Registry
+#   9122  — Fluss coordinator RPC (optional direct access)
+#   9123  — Fluss native RPC broker 0 (optional direct access)
 #
 # Quick start:
 #   ./build.sh                          # build image (once after each source change)
 #   podman compose up -d
-#   kcat -b localhost:9092 -L           # list topics via Kafka API
+#   kcat -b localhost:9092 -L           # list topics via Kafka API (shows all 3 brokers)
 #   podman compose down
 
 name: fluss-kafka
 
 services:
   zookeeper:
-    image: bitnami/zookeeper:3.8
+    image: zookeeper:3.9.2
     environment:
       ALLOW_ANONYMOUS_LOGIN: "yes"
     ports:
@@ -56,6 +59,7 @@ services:
       # Override bind.listeners for the coordinator role (no Kafka listener here).
       FLUSS_PROPERTIES: |
         bind.listeners: FLUSS://0.0.0.0:9122
+        advertised.listeners: FLUSS://coordinator:9122
         tablet-server.id: -1
     ports:
       - "9122:9122"
@@ -80,10 +84,59 @@ services:
       KAFKA_ADVERTISED_HOST: ${KAFKA_ADVERTISED_HOST:-localhost}
       FLUSS_PROPERTIES: |
         bind.listeners: FLUSS://0.0.0.0:9123,KAFKA://0.0.0.0:9092
+        advertised.listeners: FLUSS://tablet:9123,KAFKA://${KAFKA_ADVERTISED_HOST:-localhost}:9092
         tablet-server.id: 0
     ports:
       - "9092:9092"
       - "9123:9123"
+    healthcheck:
+      test: ["CMD", "bash", "-c", "echo > /dev/tcp/localhost/9092"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    networks:
+      - fluss-net
+
+  tablet1:
+    image: fluss-kafka:latest
+    command: tabletServer
+    depends_on:
+      coordinator:
+        condition: service_healthy
+    environment:
+      ZOOKEEPER_ADDRESS: zookeeper:2181
+      KAFKA_ADVERTISED_HOST: ${KAFKA_ADVERTISED_HOST:-localhost}
+      FLUSS_PROPERTIES: |
+        bind.listeners: FLUSS://0.0.0.0:9123,KAFKA://0.0.0.0:9092
+        advertised.listeners: FLUSS://tablet1:9123,KAFKA://${KAFKA_ADVERTISED_HOST:-localhost}:9093
+        tablet-server.id: 1
+    ports:
+      - "9093:9092"
+      - "9124:9123"
+    healthcheck:
+      test: ["CMD", "bash", "-c", "echo > /dev/tcp/localhost/9092"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    networks:
+      - fluss-net
+
+  tablet2:
+    image: fluss-kafka:latest
+    command: tabletServer
+    depends_on:
+      coordinator:
+        condition: service_healthy
+    environment:
+      ZOOKEEPER_ADDRESS: zookeeper:2181
+      KAFKA_ADVERTISED_HOST: ${KAFKA_ADVERTISED_HOST:-localhost}
+      FLUSS_PROPERTIES: |
+        bind.listeners: FLUSS://0.0.0.0:9123,KAFKA://0.0.0.0:9092
+        advertised.listeners: FLUSS://tablet2:9123,KAFKA://${KAFKA_ADVERTISED_HOST:-localhost}:9094
+        tablet-server.id: 2
+    ports:
+      - "9094:9092"
+      - "9125:9123"
     healthcheck:
       test: ["CMD", "bash", "-c", "echo > /dev/tcp/localhost/9092"]
       interval: 5s

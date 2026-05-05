@@ -22,9 +22,9 @@ import org.apache.fluss.annotation.PublicEvolving;
 import java.util.Objects;
 
 /**
- * Confluent-shaped Schema Registry reference. Represents one edge in the directed reference graph:
- * a referrer schema points at a referent {@code (subject, version)} pair under a symbolic {@code
- * name} (Avro fullname, JSON Schema {@code $ref}, {@code .proto} import path).
+ * Kafka SR reference. Represents one edge in the directed reference graph: a referrer schema points
+ * at a referent {@code (subject, version)} pair under a symbolic {@code name} (Avro fullname, JSON
+ * Schema {@code $ref}, {@code .proto} import path).
  *
  * <p>The wire-side payload only carries {@code (name, subject, version)}; the Fluss catalog
  * additionally pins {@link #referencedSchemaId()} (the catalog UUID of the referent) at register
@@ -53,12 +53,12 @@ public final class SchemaReference {
         return name;
     }
 
-    /** Confluent subject of the referent. */
+    /** Kafka SR subject of the referent. */
     public String subject() {
         return subject;
     }
 
-    /** Confluent version (1-based) of the referent. */
+    /** Kafka SR version (1-based) of the referent. */
     public int version() {
         return version;
     }

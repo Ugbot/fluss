@@ -46,7 +46,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /**
  * End-to-end IT for {@link FlussCatalogService}. Spins up a real Fluss cluster and exercises
  * namespace CRUD, multi-format tables, append-only schema history, Kafka subject bindings, and
- * deterministic Confluent id allocation.
+ * deterministic schema id allocation.
  */
 class FlussCatalogServiceITCase {
 
@@ -147,7 +147,7 @@ class FlussCatalogServiceITCase {
 
         assertThat(v1.version()).isEqualTo(1);
         assertThat(v2.version()).isEqualTo(2);
-        assertThat(v1.confluentId()).isNotEqualTo(v2.confluentId());
+        assertThat(v1.srSchemaId()).isNotEqualTo(v2.srSchemaId());
 
         // idempotent re-register with identical text returns the same row.
         SchemaVersionEntity v1Again =
@@ -158,8 +158,8 @@ class FlussCatalogServiceITCase {
         assertThat(all).hasSize(2);
         assertThat(all).extracting(SchemaVersionEntity::version).containsExactly(1, 2);
 
-        // Confluent-id lookup returns the exact same row.
-        assertThat(catalog.getSchemaById(v2.confluentId()))
+        // SR schema id lookup returns the exact same row.
+        assertThat(catalog.getSchemaById(v2.srSchemaId()))
                 .map(SchemaVersionEntity::schemaText)
                 .contains("{\"v\":2}");
     }

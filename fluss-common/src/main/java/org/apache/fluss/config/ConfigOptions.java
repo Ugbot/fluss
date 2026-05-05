@@ -2146,7 +2146,7 @@ public class ConfigOptions {
                                     + "retained for one release as a migration escape hatch).");
 
     /**
-     * Whether the Confluent-compatible Schema Registry HTTP endpoint is started on the coordinator
+     * Whether the Kafka-compatible Schema Registry HTTP endpoint is started on the coordinator
      * leader. Phase A1 scaffolding: implements ping, GET /subjects, POST /subjects/{s}/versions,
      * and GET /schemas/ids/{id}. Avro-only, TopicNameStrategy value subjects only (design 0002).
      */
@@ -2155,7 +2155,7 @@ public class ConfigOptions {
                     .booleanType()
                     .defaultValue(false)
                     .withDescription(
-                            "Whether to start the Confluent-compatible Schema Registry HTTP endpoint "
+                            "Whether to start the Kafka-compatible Schema Registry HTTP endpoint "
                                     + "on the coordinator leader. Requires kafka.enabled=true.");
 
     /**
@@ -2171,7 +2171,7 @@ public class ConfigOptions {
 
     /**
      * Bind port for the Schema Registry HTTP listener. {@code 0} binds to a random free port
-     * (useful for tests); {@code 8081} matches the Confluent default.
+     * (useful for tests); {@code 8081} is the standard Schema Registry default port.
      */
     public static final ConfigOption<Integer> KAFKA_SCHEMA_REGISTRY_PORT =
             key("kafka.schema-registry.port")
@@ -2235,10 +2235,10 @@ public class ConfigOptions {
 
     /**
      * Whether Kafka topics with a registered typed format ({@code KAFKA_TYPED_AVRO}, {@code
-     * KAFKA_TYPED_JSON}, {@code KAFKA_TYPED_PROTOBUF}) take the typed Produce/Fetch hot path
-     * (Confluent frame stripping + compiled codec decode/encode into typed columns). When {@code
-     * false} (the default), every topic — including ones whose catalog row carries a typed format —
-     * falls back to the byte-copy passthrough path. The flag is read once at server start; toggling
+     * KAFKA_TYPED_JSON}, {@code KAFKA_TYPED_PROTOBUF}) take the typed Produce/Fetch hot path (Kafka
+     * SR frame stripping + compiled codec decode/encode into typed columns). When {@code false}
+     * (the default), every topic — including ones whose catalog row carries a typed format — falls
+     * back to the byte-copy passthrough path. The flag is read once at server start; toggling
      * requires a restart. See design 0014.
      */
     public static final ConfigOption<Boolean> KAFKA_TYPED_TABLES_ENABLED =
@@ -2248,7 +2248,7 @@ public class ConfigOptions {
                     .withDescription(
                             "Whether the Kafka bolt-on routes registered typed-format topics "
                                     + "(KAFKA_TYPED_AVRO/JSON/PROTOBUF) through the typed "
-                                    + "Produce/Fetch hot path that strips the Confluent frame "
+                                    + "Produce/Fetch hot path that strips the Kafka SR frame "
                                     + "and decodes / encodes via the compiled codec. Defaults to "
                                     + "false; with the flag off, every topic takes the byte-copy "
                                     + "passthrough path regardless of its catalog format. Read "

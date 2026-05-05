@@ -24,11 +24,11 @@ that read/write directly from Netty `ByteBuf` using manual
 varint/zigzag logic, avoiding the per-call allocations in
 `CodedInputStream`. The compat-checker side is a clean-room
 implementation of the Protobuf schema-diff semantics, and §8
-explains why we chose that over reusing Confluent's
+explains why we chose that over reusing Kafka SR's
 `kafka-protobuf-provider`.
 
 Design constraints from §27.1 of the plan are the same as the JSON
-document (full type coverage, no fluss-core edits, Confluent wire
+document (full type coverage, no fluss-core edits, Kafka SR wire
 compatibility). The wire-compat target specifically is:
 `io.confluent:kafka-protobuf-serializer:7.5.x`.
 
@@ -42,10 +42,10 @@ We accept:
   messages, and `oneof` (§3). `map<K, V>` is supported for the
   Protobuf-defined key types. Well-known types (`google.protobuf.*`)
   are mapped per §4.
-- **proto2 (Confluent subset).** Confluent's protobuf serializer
+- **proto2 (Kafka SR subset).** Kafka SR's protobuf serializer
   emits a strict proto2 subset: `optional` and `repeated` fields,
   no `required`. We accept that subset. `proto2 required` is
-  rejected with a clear message ("Confluent's protobuf serializer
+  rejected with a clear message ("Kafka SR's protobuf serializer
   does not emit `required`; Fluss refuses to accept a shape that
   can't round-trip"). Groups are rejected.
 
@@ -69,7 +69,7 @@ Descriptors.Descriptor root = file.getMessageTypes().get(0);  // first message
 
 If there are zero top-level messages, we reject. If there are
 multiple, we take the one whose name matches the subject's record
-FQN (Confluent does the same); absent a match, we reject with
+FQN (Kafka SR does the same); absent a match, we reject with
 "ambiguous message root".
 
 ### 1.3 What "translator" means
@@ -125,8 +125,8 @@ constraint on `map`.
 | `google.protobuf.Struct`                              | `MAP<STRING, STRING>` (JSON-stringified)          | Best-effort projection; values are JSON-serialised on encode, parsed back on decode.                         |
 | `google.protobuf.FieldMask`                           | `ARRAY<STRING>`                                   | Paths list.                                                                                                  |
 | recursive `message`                                   | — rejected                                        | `RowType` is tree-shaped.                                                                                    |
-| `proto2 required T`                                   | — rejected                                        | Confluent does not emit; refusing stays consistent with the Confluent-compat contract.                       |
-| `extensions`, `extend`, `group`                       | — rejected                                        | Not in Confluent's emit surface; deferred indefinitely.                                                      |
+| `proto2 required T`                                   | — rejected                                        | Kafka SR does not emit; refusing stays consistent with the Kafka SR-compat contract.                       |
+| `extensions`, `extend`, `group`                       | — rejected                                        | Not in Kafka SR's emit surface; deferred indefinitely.                                                      |
 | `reserved 1 to 5;`                                    | — honoured at compat check only                   | Reserved field numbers are tracked to enforce field-number immutability (§6).                                |
 | `service`, `rpc`                                      | — ignored                                         | Service definitions are skipped; only messages project.                                                      |
 
@@ -190,7 +190,7 @@ structural `RowType` would require either:
   invariant "at most one is non-null" — enforceable only at the
   codec boundary, not at the schema boundary.
 
-Confluent's behaviour is the product-of-nullables projection. We
+Kafka SR's behaviour is the product-of-nullables projection. We
 could match, but the invariant loses meaning on the read side (Fluss
 SQL queries can freely `WHERE a IS NOT NULL AND b IS NOT NULL`,
 which is a valid row under the projection but violates the original
@@ -233,7 +233,7 @@ is caught the same way.
 ### 3.4 proto3 `optional` (accepted, not rejected — spec clarification)
 
 Protobuf 3.15 reinstated explicit `optional` on proto3 scalar fields
-by lowering to a synthetic one-field `oneof`. The Confluent
+by lowering to a synthetic one-field `oneof`. The Kafka SR
 serializer emits this shape for any field marked `optional`. The
 translator:
 
@@ -433,7 +433,7 @@ message User { int32 id = 1; int32 years = 2; }
 ```
 
 The tag-level wire shape is preserved; the name changed. Whether
-this is accepted depends on the Confluent rule we're matching —
+this is accepted depends on the Kafka SR rule we're matching —
 see §6.6 for the naming exception.
 
 ### 6.2 Type immutability on an existing tag
@@ -488,7 +488,7 @@ Each level has a pair of passing + failing tests; see §7.
 
 ### 6.6 Field-name sensitivity
 
-Confluent's Protobuf provider does **not** break on field renames
+Kafka SR's Protobuf provider does **not** break on field renames
 (renaming is a source-compatibility concern, not a wire-compatibility
 one). We match that: renaming a field is compatible at every level
 if the tag number and wire type are unchanged. The column name in
@@ -615,7 +615,7 @@ readability. Cases cover:
 3. **Semantic divergence.** We want the compat checker to slot
    into the `CompatibilityChecker` SPI (0009) and emit rejection
    messages that cite both the Protobuf rule and the corresponding
-   Fluss evolution rule. The Confluent implementation doesn't
+   Fluss evolution rule. The Kafka SR implementation doesn't
    speak Fluss's language. Wrapping it would be ~200 LOC of
    translation anyway; implementing cleanly is ~600 LOC.
 
@@ -661,7 +661,7 @@ CCL, test-scope only. Drives `SchemaRegistryProtobufITCase`.
 
 ## 10. Deferred
 
-- `extensions` / `extend` (proto2). Not emitted by Confluent.
+- `extensions` / `extend` (proto2). Not emitted by Kafka SR.
 - `group` (proto2). Deprecated, not emitted.
 - `service` + `rpc`. Not payload-relevant; currently ignored on
   parse, not erroring.
@@ -698,5 +698,5 @@ CCL, test-scope only. Drives `SchemaRegistryProtobufITCase`.
 - Design 0009 (multi-format registry SPI).
 - Protobuf language guide:
   https://protobuf.dev/programming-guides/proto3/
-- Confluent Protobuf serializer:
+- Kafka SR Protobuf serializer:
   `io.confluent:kafka-protobuf-serializer:7.5.x` — test scope only.

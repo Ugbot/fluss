@@ -301,7 +301,7 @@ deletes `stateDir` recursively via `IOUtils.deleteFileQuietly`
   real consumer that depends on it; Phase C-T.2 already landed the
   compacted storage, but nothing today reads it as a changelog.
 - **`KafkaStreamsSchemaRegistryITCase`** — Streams app wired with
-  Confluent `SpecificAvroSerde` pointing at our Schema Registry
+  Kafka SR `SpecificAvroSerde` pointing at our Schema Registry
   HTTP listener. Produces typed Avro records to `input-topic`,
   consumes typed records from `output-topic`, asserts field-level
   equality. **Depends on Phase T.2 + T.3** (doc 0014, doc 0015)
@@ -315,7 +315,7 @@ deletes `stateDir` recursively via `IOUtils.deleteFileQuietly`
   Streams app sees byte-identical Avro-framed payloads to what the
   Kafka protocol would have emitted for the same rows. Proves that
   the typed hot path (doc 0015) preserves the Kafka wire contract
-  end-to-end, including Confluent framing, schema-id embedding,
+  end-to-end, including Kafka SR framing, schema-id embedding,
   and tombstone semantics.
 
 ## Harness design notes

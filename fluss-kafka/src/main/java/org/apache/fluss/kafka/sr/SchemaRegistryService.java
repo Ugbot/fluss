@@ -47,7 +47,7 @@ import java.util.List;
 import java.util.Optional;
 
 /**
- * Projection over {@link CatalogService} that speaks the Confluent Schema Registry REST shape.
+ * Projection over {@link CatalogService} that speaks the Kafka Schema Registry REST shape.
  *
  * <p>Every SR operation is a read / write against the catalog entity tables in the reserved {@code
  * _catalog} database:
@@ -59,8 +59,8 @@ import java.util.Optional;
  *   <li><b>latestForSubject</b> → {@code resolveKafkaSubject} + {@code listSchemaVersions}.
  * </ul>
  *
- * <p>Confluent ids are deterministic on {@code (catalog table id, version, format)}; schema history
- * is append-only. There is no per-topic custom-property storage.
+ * <p>Kafka SR schema ids are deterministic on {@code (catalog table id, version, format)}; schema
+ * history is append-only. There is no per-topic custom-property storage.
  *
  * <p>The only non-catalog dependency is {@link MetadataManager}, used to verify that the Fluss
  * Kafka data table ({@code <kafkaDatabase>.<topic>}) exists before we let a subject bind — keeping
@@ -96,7 +96,7 @@ public final class SchemaRegistryService {
                 catalog,
                 kafkaDatabase,
                 rbacEnforced,
-                new TypedTableEvolver(metadataManager, catalog, kafkaDatabase, null, false));
+                new TypedTableEvolver(metadataManager, catalog, kafkaDatabase, null, null, false));
     }
 
     /**
@@ -131,8 +131,8 @@ public final class SchemaRegistryService {
     /**
      * Tombstone keys stored in {@code _sr_config}. Presence of either key marks the corresponding
      * entity as soft-deleted. Re-registering the subject or version clears the tombstone. The
-     * per-schema key is the catalog schema UUID (not the Confluent id) so that a hard-delete of the
-     * row doesn't orphan a tombstone.
+     * per-schema key is the catalog schema UUID (not the Kafka SR schema id) so that a hard-delete
+     * of the row doesn't orphan a tombstone.
      */
     private static final String KEY_TOMBSTONE_SUBJECT_PREFIX = "tombstone_subject:";
 
@@ -375,7 +375,7 @@ public final class SchemaRegistryService {
         requireKafkaTable(topic, subject);
         try {
             // Clear a subject tombstone first so the idempotent fast path and compat check see the
-            // subject as live again (Confluent SR behaviour: re-registering a soft-deleted subject
+            // subject as live again (Kafka SR behaviour: re-registering a soft-deleted subject
             // resurrects it).
             clearSubjectTombstone(subject);
 
@@ -384,9 +384,10 @@ public final class SchemaRegistryService {
             ReferenceResolver resolver = referenceResolver(resolved);
 
             // Idempotent fast path: if the subject is already bound and the latest <live> schema
-            // text matches AND the prior reference set matches, return the existing Confluent id
+            // text matches AND the prior reference set matches, return the existing Kafka SR schema
+            // id
             // without appending a new version. Same text but different references must mint a new
-            // version (Confluent semantics).
+            // version (Kafka SR semantics).
             Optional<RegisteredSchemaWithRefs> latest = latestForSubjectWithRefs(subject);
             if (LOG.isDebugEnabled()) {
                 LOG.debug(
@@ -404,7 +405,8 @@ public final class SchemaRegistryService {
             }
 
             // Resurrect soft-deleted version if the text + refs match an existing (tombstoned)
-            // row — clears the tombstone and returns that row's Confluent id rather than minting
+            // row — clears the tombstone and returns that row's Kafka SR schema id rather than
+            // minting
             // a new version.
             Optional<RegisteredSchema> resurrected =
                     resurrectTombstonedSchemaIfMatches(subject, topic, schemaText, resolved);
@@ -431,8 +433,9 @@ public final class SchemaRegistryService {
             // KAFKA_TYPED_<FORMAT> on first registration, or apply additive evolution on
             // subsequent ones. No-op when kafka.typed-tables.enabled = false. Runs AFTER
             // ensureCatalogEntities (so the catalog row exists) and BEFORE catalog.registerSchema
-            // (so the Confluent id is minted only when the reshape / alter has succeeded).
-            // Confluent ids live in __schemas__ keyed by schema_id UUID and are not touched by
+            // (so the Kafka SR schema id is minted only when the reshape / alter has succeeded).
+            // Kafka SR schema ids live in __schemas__ keyed by schema_id UUID and are not touched
+            // by
             // the reshape; T.2's decoder cache key (tableId, schemaId) is reshape-stable.
             typedTableEvolver.onRegister(topic, canonicalFormat, schemaText);
             SchemaVersionEntity version =
@@ -445,7 +448,7 @@ public final class SchemaRegistryService {
             catalog.bindReferences(version.schemaId(), toCatalogRefs(resolved));
             catalog.bindKafkaSubject(
                     subject, kafkaDatabase, topic, KEY_OR_VALUE_VALUE, NAMING_STRATEGY);
-            return version.confluentId();
+            return version.srSchemaId();
         } catch (Exception e) {
             throw translate(e);
         }
@@ -472,8 +475,8 @@ public final class SchemaRegistryService {
 
     /**
      * Soft-delete one version under {@code subject}. {@code permanent=true} hard-deletes the schema
-     * row instead of tombstoning it. Returns the deleted version number (Confluent's behaviour —
-     * the HTTP response body is the integer version).
+     * row instead of tombstoning it. Returns the deleted version number (Kafka SR behaviour — the
+     * HTTP response body is the integer version).
      */
     public int deleteVersion(String subject, int version, boolean permanent) {
         authorize(GrantEntity.PRIVILEGE_WRITE);
@@ -504,7 +507,7 @@ public final class SchemaRegistryService {
                 catalog.deleteSrConfig(KEY_TOMBSTONE_SCHEMA_PREFIX + schemaId);
             } else {
                 if (alreadyTombstoned) {
-                    // Confluent SR returns 404 when the same version is soft-deleted twice.
+                    // Kafka SR returns 404 when the same version is soft-deleted twice.
                     throw new SchemaRegistryException(
                             SchemaRegistryException.Kind.NOT_FOUND,
                             "Subject '"
@@ -524,7 +527,7 @@ public final class SchemaRegistryService {
     /**
      * Soft-delete {@code subject} (tombstone its binding). {@code permanent=true} hard-deletes the
      * binding and cascades into every schema version bound to its table. Returns the list of
-     * versions that were deleted, in ascending order — mirrors Confluent's {@code DELETE
+     * versions that were deleted, in ascending order — mirrors Kafka SR {@code DELETE
      * /subjects/{s}} response body.
      */
     public List<Integer> deleteSubject(String subject, boolean permanent) {
@@ -580,7 +583,7 @@ public final class SchemaRegistryService {
     /**
      * Check the proposed {@code schemaText} against {@code subject}'s existing versions at the
      * effective compatibility level. Does <b>not</b> register — backs {@code POST
-     * /compatibility/subjects/{s}/versions/{v}}. {@code version == -1} is Confluent's alias for
+     * /compatibility/subjects/{s}/versions/{v}}. {@code version == -1} is Kafka SR alias for
      * "latest".
      */
     public CompatibilityResult checkCompatibility(String subject, int version, String schemaText) {
@@ -612,7 +615,7 @@ public final class SchemaRegistryService {
                 // No prior history → vacuously compatible.
                 return CompatibilityResult.compatible();
             }
-            // The {version} path segment scopes which priors participate; Confluent lets callers
+            // The {version} path segment scopes which priors participate; Kafka SR lets callers
             // target any live version. For non-"latest" values we ensure the requested version
             // actually exists (returns 404 otherwise).
             if (version != -1) {
@@ -659,7 +662,7 @@ public final class SchemaRegistryService {
     /**
      * Resolve every requested reference against the catalog. A missing {@code (subject, version)}
      * pair, or a tombstoned referent, raises {@link SchemaRegistryException.Kind#INVALID_INPUT} →
-     * HTTP 422 with the Confluent-style "referenced subject X version Y does not exist" message.
+     * HTTP 422 with the Kafka SR-style "referenced subject X version Y does not exist" message.
      * Empty input returns an empty list.
      */
     private List<ResolvedReference> resolveReferences(List<RequestedReference> refs)
@@ -803,7 +806,7 @@ public final class SchemaRegistryService {
 
     /**
      * Reverse-index lookup: every {@code (subject, version)} tuple that references the schema with
-     * the given Confluent {@code id}. Backs {@code GET /schemas/ids/{id}/referencedby}.
+     * the given Kafka SR schema {@code id}. Backs {@code GET /schemas/ids/{id}/referencedby}.
      */
     public List<SubjectVersion> referencedBy(int id) {
         authorize(GrantEntity.PRIVILEGE_READ);
@@ -930,7 +933,7 @@ public final class SchemaRegistryService {
                 catalog.deleteSrConfig(KEY_TOMBSTONE_SCHEMA_PREFIX + v.schemaId());
                 return Optional.of(
                         new RegisteredSchema(
-                                v.confluentId(),
+                                v.srSchemaId(),
                                 subject,
                                 v.version(),
                                 v.format(),
@@ -953,7 +956,7 @@ public final class SchemaRegistryService {
 
     /**
      * Refuse to hard-delete {@code schemaId} when at least one live referrer points at it. The 422
-     * message enumerates every blocking referrer as a Confluent-shape {@code (subject, version)}
+     * message enumerates every blocking referrer as a Kafka SR-shape {@code (subject, version)}
      * tuple — multi-binding referrers expand to one tuple per binding.
      */
     private void refuseIfReferenced(String schemaId, String subject, int version) throws Exception {
@@ -1005,7 +1008,7 @@ public final class SchemaRegistryService {
             SchemaVersionEntity s = schema.get();
             return Optional.of(
                     new RegisteredSchema(
-                            s.confluentId(),
+                            s.srSchemaId(),
                             /* subject unused by GET /schemas/ids */ "",
                             s.version(),
                             s.format(),
@@ -1043,7 +1046,7 @@ public final class SchemaRegistryService {
     }
 
     /**
-     * Subjects that have bound any schema version sharing the Confluent global {@code id}. Backs
+     * Subjects that have bound any schema version sharing the Kafka SR global {@code id}. Backs
      * {@code GET /schemas/ids/{id}/subjects}. Returns empty when the id is unknown.
      */
     public List<String> subjectsForId(int id) {
@@ -1068,7 +1071,7 @@ public final class SchemaRegistryService {
     }
 
     /**
-     * {@code (subject, version)} tuples for the Confluent id. Backs {@code GET
+     * {@code (subject, version)} tuples for the Kafka SR schema id. Backs {@code GET
      * /schemas/ids/{id}/versions}. Returns empty when the id is unknown.
      */
     public List<SubjectVersion> subjectVersionsForId(int id) {
@@ -1138,7 +1141,7 @@ public final class SchemaRegistryService {
     }
 
     /**
-     * Resolve a specific version for a subject. {@code version == -1} is Confluent's alias for
+     * Resolve a specific version for a subject. {@code version == -1} is Kafka SR alias for
      * "latest" and is accepted here; callers translate textual {@code "latest"} before invoking.
      */
     public Optional<RegisteredSchema> versionForSubject(String subject, int version) {
@@ -1160,7 +1163,7 @@ public final class SchemaRegistryService {
             SchemaVersionEntity s = schema.get();
             return Optional.of(
                     new RegisteredSchema(
-                            s.confluentId(),
+                            s.srSchemaId(),
                             subject,
                             s.version(),
                             s.format(),
@@ -1192,7 +1195,7 @@ public final class SchemaRegistryService {
                 if (schemaText.equals(v.schemaText()) && !isSchemaTombstoned(v.schemaId())) {
                     return Optional.of(
                             new RegisteredSchema(
-                                    v.confluentId(),
+                                    v.srSchemaId(),
                                     subject,
                                     v.version(),
                                     v.format(),
@@ -1228,7 +1231,7 @@ public final class SchemaRegistryService {
                 SchemaVersionEntity s = schema.get();
                 return Optional.of(
                         new RegisteredSchema(
-                                s.confluentId(),
+                                s.srSchemaId(),
                                 subject,
                                 s.version(),
                                 s.format(),
@@ -1244,7 +1247,7 @@ public final class SchemaRegistryService {
             SchemaVersionEntity s = live.get(live.size() - 1);
             return Optional.of(
                     new RegisteredSchema(
-                            s.confluentId(),
+                            s.srSchemaId(),
                             subject,
                             s.version(),
                             s.format(),
@@ -1417,7 +1420,7 @@ public final class SchemaRegistryService {
         }
     }
 
-    /** Confluent-shape echo of one reference on a read response. */
+    /** Kafka SR-shape echo of one reference on a read response. */
     public static final class SubjectReference {
         private final String name;
         private final String subject;

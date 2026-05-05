@@ -20,9 +20,9 @@ package org.apache.fluss.kafka.sr;
 import org.apache.fluss.annotation.Internal;
 
 /**
- * Resolves Confluent SR subject names onto Fluss topic names. Phase A1 supports only
- * TopicNameStrategy value subjects ({@code <topic>-value}). Key subjects ({@code <topic>-key}) and
- * the other Confluent naming strategies surface as {@link SchemaRegistryException} with HTTP 400.
+ * Resolves Kafka SR subject names onto Fluss topic names. Phase A1 supports only TopicNameStrategy
+ * value subjects ({@code <topic>-value}). Key subjects ({@code <topic>-key}) and the other Kafka SR
+ * naming strategies surface as {@link SchemaRegistryException} with HTTP 400.
  */
 @Internal
 public final class SubjectResolver {

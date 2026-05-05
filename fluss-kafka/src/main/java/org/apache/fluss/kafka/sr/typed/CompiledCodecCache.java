@@ -93,7 +93,7 @@ public final class CompiledCodecCache {
      * always know the {@code tableId} / {@code schemaId} pair separately.
      *
      * @param tableId the Fluss table id
-     * @param schemaId the Confluent global schema id
+     * @param schemaId the Kafka SR global schema id
      * @param supplier codec factory; invoked at most once per {@code (tableId, schemaId)}
      * @return the cached or freshly compiled codec
      */

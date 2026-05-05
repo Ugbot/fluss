@@ -49,8 +49,8 @@ import java.util.Properties;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * End-to-end coverage of Phase SR-X.5 — Confluent Schema Registry {@code references} arrays on
- * register / read / referenced-by / delete.
+ * End-to-end coverage of Phase SR-X.5 — Kafka Schema Registry {@code references} arrays on register
+ * / read / referenced-by / delete.
  *
  * <p>Drives every scenario over the live HTTP listener with a raw {@link java.net.http.HttpClient},
  * mirroring the pattern in {@link SchemaRegistryHttpITCase} and {@link
@@ -63,7 +63,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *   <li>{@code GET /schemas/ids/{a-id}/referencedby} returns {@code [{subject: B, version: 1}]}.
  *   <li>{@code DELETE /subjects/{A}/versions/1?permanent=true} → 422 with referrer list.
  *   <li>Soft-then-hard-delete B v1, then hard-delete A v1, all succeed.
- *   <li>Register subject C v1 with a missing reference target → 422 with the Confluent-style
+ *   <li>Register subject C v1 with a missing reference target → 422 with the Kafka SR-style
  *       "referenced subject ... does not exist" message.
  * </ol>
  *
@@ -164,7 +164,7 @@ class SchemaRegistryReferencesITCase {
         assertThat(bId).isGreaterThanOrEqualTo(0);
         assertThat(bId).isNotEqualTo(aId);
 
-        // Scenario 2: GET /subjects/{B}/versions/1 echoes the references array in Confluent shape.
+        // Scenario 2: GET /subjects/{B}/versions/1 echoes the references array in Kafka SR shape.
         HttpResponse<String> bV1 = http("GET", "/subjects/" + subjectB + "/versions/1", null);
         assertThat(bV1.statusCode())
                 .as("GET subjects/%s/versions/1 body=%s", subjectB, bV1.body())
@@ -198,7 +198,7 @@ class SchemaRegistryReferencesITCase {
         assertThat(deleteABlocked.statusCode())
                 .as("hard-delete of referenced A body=%s", deleteABlocked.body())
                 .isEqualTo(422);
-        // The Confluent-shape error message must enumerate the blocking referrer.
+        // The Kafka SR-shape error message must enumerate the blocking referrer.
         assertThat(deleteABlocked.body()).contains(subjectB);
         assertThat(deleteABlocked.body()).contains("v1");
 
@@ -209,7 +209,7 @@ class SchemaRegistryReferencesITCase {
 
         // A soft-deleted referent still blocks hard-delete of the referent (graph still walkable);
         // we have to hard-delete the referrer too. This matches design 0013 §7 "soft-delete of a
-        // referent" / Confluent semantics.
+        // referent" / Kafka SR semantics.
         HttpResponse<String> hardB =
                 http("DELETE", "/subjects/" + subjectB + "/versions/1?permanent=true", null);
         assertThat(hardB.statusCode()).as("hard-delete B body=%s", hardB.body()).isEqualTo(200);
@@ -225,7 +225,7 @@ class SchemaRegistryReferencesITCase {
         assertThat(lookupAGone.statusCode()).isEqualTo(404);
 
         // Scenario 6: register C with a reference whose subject does not exist → 422 with the
-        // Confluent-shape "referenced subject X version Y does not exist" message.
+        // Kafka SR-shape "referenced subject X version Y does not exist" message.
         JsonNode missingRef = makeReference("missing", "does-not-exist-subject-value", 1);
         HttpResponse<String> registerC =
                 http(
@@ -242,7 +242,7 @@ class SchemaRegistryReferencesITCase {
     // ---------- helpers ----------
 
     /**
-     * Build a Jackson {@link JsonNode} encoding of one Confluent-shape reference triple {@code
+     * Build a Jackson {@link JsonNode} encoding of one Kafka SR-shape reference triple {@code
      * {name, subject, version}}.
      */
     private static JsonNode makeReference(String name, String subject, int version) {
@@ -256,7 +256,7 @@ class SchemaRegistryReferencesITCase {
 
     /**
      * Issue {@code POST /subjects/{s}/versions} with the supplied schema text + references; assert
-     * a 200 response and return the assigned Confluent id.
+     * a 200 response and return the assigned Kafka SR schema id.
      */
     private static int registerExpectingOk(String subject, String schema, List<JsonNode> refs)
             throws Exception {

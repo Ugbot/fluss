@@ -14,7 +14,7 @@ on `LogTablet`) was confirmed out of reach for Phase I.
 Kafka transactions are the last piece of functional parity the bolt-on is
 missing. Three concrete workloads want them: (a) Kafka Streams with
 `processing.guarantee=exactly_once_v2`, which drives the majority of
-Confluent-compatible deployments and is unusable without transactions, (b)
+Kafka-compatible deployments and is unusable without transactions, (b)
 atomic multi-partition writes — a producer that publishes to `orders` and
 `outbox` in the same batch and wants them either both committed or both
 discarded, and (c) consumer-read-your-writes across groups, where a transform

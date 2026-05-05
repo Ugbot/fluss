@@ -23,16 +23,28 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 BUILD_TARGET="${SCRIPT_DIR}/build-target"
 
-echo "==> Building Fluss dist (skipping tests)..."
+echo "==> Building Fluss dist + Kafka plugin (skipping tests)..."
 cd "${REPO_ROOT}"
 JAVA_HOME="${JAVA_HOME:-${HOME}/.sdkman/candidates/java/11.0.25-tem}" \
-  mvn clean install -DskipTests -pl fluss-dist --also-make -T 1C -q
+  mvn clean install -DskipTests -pl fluss-kafka,fluss-dist --also-make -T 1C -q
 
 echo "==> Extracting dist to ${BUILD_TARGET}..."
 rm -rf "${BUILD_TARGET}"
 mkdir -p "${BUILD_TARGET}"
 TARBALL="$(ls "${REPO_ROOT}/fluss-dist/target/fluss-"*"-bin.tgz" | head -1)"
 tar -xzf "${TARBALL}" -C "${BUILD_TARGET}" --strip-components=1
+
+echo "==> Adding Kafka protocol plugin to lib/..."
+# Copy the fluss-kafka jar (the ServiceLoader plugin)
+cp "${REPO_ROOT}/fluss-kafka/target/fluss-kafka-"*"-SNAPSHOT.jar" "${BUILD_TARGET}/lib/"
+# Copy kafka-clients and other external runtime deps not already in the server jar.
+# Excludes fluss modules (in server jar) and logging (already in lib/).
+JAVA_HOME="${JAVA_HOME:-${HOME}/.sdkman/candidates/java/11.0.25-tem}" \
+  mvn dependency:copy-dependencies -q \
+    -pl fluss-kafka \
+    -DincludeScope=runtime \
+    -DoutputDirectory="${BUILD_TARGET}/lib" \
+    -Dexcludes="org.apache.fluss:*,org.apache.logging.log4j:*,org.slf4j:*"
 
 echo "==> Building Podman image fluss-kafka:latest..."
 cd "${SCRIPT_DIR}"

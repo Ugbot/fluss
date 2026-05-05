@@ -21,14 +21,14 @@
 # ZooKeeper
 #==============================================================================
 
-zookeeper.address: ${ZOOKEEPER_ADDRESS:-zookeeper:2181}
+zookeeper.address: ${ZOOKEEPER_ADDRESS}
 
 #==============================================================================
 # Storage
 #==============================================================================
 
-default.bucket.number: 1
-default.replication.factor: 1
+default.bucket.number: 3
+default.replication.factor: 3
 data.dir: /tmp/fluss/data
 remote.data.dir: /tmp/fluss/remote
 
@@ -48,11 +48,11 @@ kafka.enabled: true
 kafka.listener.names: KAFKA
 kafka.database: kafka
 
-# Advertised to Kafka clients — set to the host reachable from outside the pod.
-# Injected via KAFKA_ADVERTISED_HOST env var; falls back to "localhost".
-advertised.listeners: KAFKA://${KAFKA_ADVERTISED_HOST:-localhost}:9092
+# advertised.listeners is set per-role via FLUSS_PROPERTIES in compose.yaml:
+#   tablet:  KAFKA://${KAFKA_ADVERTISED_HOST}:9092
+# coordinator has no KAFKA listener so it must not set this.
 
-# Schema Registry (Confluent-compatible) on the coordinator leader.
+# Schema Registry (Kafka-compatible) on the coordinator leader.
 kafka.schema-registry.enabled: true
 kafka.schema-registry.host: 0.0.0.0
 kafka.schema-registry.port: 8081

@@ -31,7 +31,7 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * Clean-room JSON Schema compatibility checker covering the seven Confluent SR levels.
+ * Clean-room JSON Schema compatibility checker covering the seven Kafka SR levels.
  *
  * <p>Scope matches design doc 0007:
  *
@@ -245,7 +245,7 @@ public final class JsonCompatibilityChecker implements CompatibilityChecker {
             } else {
                 // Writer emits a property reader doesn't know about.
                 // Strict readers break on unknown fields; liberal readers drop them.
-                // We treat this as incompatible for backward safety — matches Confluent's
+                // We treat this as incompatible for backward safety — matches Kafka SR's
                 // strict JSON Schema BACKWARD.
                 if (wRequired.contains(prop)) {
                     out.add(

@@ -37,7 +37,7 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * Clean-room Protobuf compatibility checker covering the seven Confluent SR levels.
+ * Clean-room Protobuf compatibility checker covering the seven Kafka SR levels.
  *
  * <p>Rule set (both directions share the underlying "tag numbers are load-bearing; names are not"
  * invariant; direction determines which tag-additions are breaking):
@@ -239,7 +239,7 @@ public final class ProtobufCompatibilityChecker implements CompatibilityChecker 
             return false;
         }
         // required vs optional: changing presence affects what prior readers accept —
-        // conservative: treat as incompatible. Confluent does the same for strict BACKWARD.
+        // conservative: treat as incompatible. Kafka SR does the same for strict BACKWARD.
         if ("required".equals(ma) || "required".equals(mb)) {
             return false;
         }

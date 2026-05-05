@@ -41,7 +41,6 @@ import org.apache.kafka.common.serialization.ByteArraySerializer;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
 
@@ -128,6 +127,12 @@ class KafkaReadCommittedITCase {
         catalog.listKafkaTxnStates();
         catalog.listKafkaProducerIds();
         catalog.listKafkaTxnOffsets("__warmup__");
+        // Warm up the producer-id seed counter from the test thread before any Kafka producer
+        // calls InitProducerId. The seed operation does a blocking table scan; if it runs on the
+        // Netty I/O thread (as it would during InitProducerId) it can deadlock the event loop.
+        // Calling allocateProducerId() here seeds the counter safely on the test thread so the
+        // first real producer call takes the fast path.
+        catalog.allocateProducerId(null);
         CLUSTER.awaitSystemTablesReady(
                 java.time.Duration.ofSeconds(60),
                 "_catalog._kafka_txn_state",
@@ -136,13 +141,6 @@ class KafkaReadCommittedITCase {
     }
 
     @Test
-    @Disabled(
-            "Phase J.3 read_committed visibility bug — produced 13 records, consumer reads 0. "
-                    + "Either KafkaFetchTranscoder truncates at LSO too aggressively before the "
-                    + "control-batch marker write completes, or the marker fan-out from "
-                    + "TransactionCoordinator.endTxn(commit) doesn't update the in-memory "
-                    + "lastStableOffset on time. See dev-docs/design/0016 §7-§8 + the Workstream B "
-                    + "notes in the plan. Reproducible alone; not a contention artifact.")
     void readCommittedHonoursLsoAndAbortFilter() throws Exception {
         Random rng = new Random();
 
@@ -289,9 +287,11 @@ class KafkaReadCommittedITCase {
         props.put(ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG, true);
         props.put(ProducerConfig.TRANSACTIONAL_ID_CONFIG, txnId);
         props.put(ProducerConfig.TRANSACTION_TIMEOUT_CONFIG, 60_000);
-        props.put(ProducerConfig.REQUEST_TIMEOUT_MS_CONFIG, 60_000);
-        props.put(ProducerConfig.MAX_BLOCK_MS_CONFIG, 90_000);
-        props.put(ProducerConfig.DELIVERY_TIMEOUT_MS_CONFIG, 90_000);
+        // The coordinator opens its catalog connection lazily on the first request. The first
+        // INIT_PRODUCER_ID pays that one-time connection cost (~30-60s observed on a cold JVM);
+        // subsequent calls are fast. 120s absorbs the cold start without masking real regressions.
+        props.put(ProducerConfig.MAX_BLOCK_MS_CONFIG, 120_000);
+        props.put(ProducerConfig.DELIVERY_TIMEOUT_MS_CONFIG, 120_000);
         return props;
     }
 

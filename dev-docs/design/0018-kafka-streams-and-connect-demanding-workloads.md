@@ -19,7 +19,7 @@ works against Fluss." Real-world Streams workloads exercise:
 - compacted changelog topics rebuilt from CDC after a restart;
 - repartition topics for grouping operations;
 - co-partitioning checks for joins;
-- `SpecificAvroSerde` round-tripping with Confluent's serdes against our
+- `SpecificAvroSerde` round-tripping with Kafka SR's serdes against our
   Schema Registry endpoint;
 - exactly-once-v2 (`processing.guarantee=exactly_once_v2`) — full Kafka
   txn protocol on top of `read_committed` consumers;
@@ -44,7 +44,7 @@ clearly-documented unblocking phase.
 | B — verify already-coded ITs | landed | `0bf657c1` | T.3 + J.3 bugs surfaced & `@Disabled` |
 | C.1 — Streams stateful aggregation | in flight | — | this is the seed |
 | C.2 — Streams windowed + joins | pending | — | depends on C.1 patterns |
-| C.3 — Streams Schema Registry | pending | — | depends on Confluent serde deps |
+| C.3 — Streams Schema Registry | pending | — | depends on Kafka SR serde deps |
 | C.4 — Streams exactly-once | pending | — | `@Disabled` (waiting on J.3 fix) |
 | C.5 — Streams typed-tables | pending | — | `@Disabled` (waiting on T.3 fix) |
 | D.1 — Connect file-sink | pending | — | mirror of smoke source |
@@ -145,7 +145,7 @@ Three possible fixes, none cheap:
 
 Status: `@Disabled` with the `evolveAddNullableEmailExtendsTypedShape`,
 `evolveRenameIsRejected`, `evolveNonNullAddIsRejected`, and
-`confluentIdPreservedAcrossAdditiveAlter` scenarios.
+`srSchemaIdPreservedAcrossAdditiveAlter` scenarios.
 
 ### 4.2 Phase J.3 read_committed visibility bug
 
@@ -246,9 +246,9 @@ Path:
 `fluss-kafka/src/test/java/org/apache/fluss/kafka/streams/KafkaStreamsSchemaRegistryITCase.java`
 
 Tests `SpecificAvroSerde<OrderCreated>` registering schemas through the
-Confluent SR client against our SR endpoint, producing + consuming
+Kafka SR client against our SR endpoint, producing + consuming
 typed records. **Phase T.2 typed-tables flag stays off** —
-`SpecificAvroSerde` uses Confluent's wire-framed Avro on the value
+`SpecificAvroSerde` uses Kafka SR's wire-framed Avro on the value
 column; `KAFKA_PASSTHROUGH` topics already round-trip those bytes
 correctly.
 
@@ -276,7 +276,7 @@ Topology: simple map — input `OrderCreated` → output `OrderEnriched`
 
 Scenarios:
 
-1. Register both schemas via the Confluent client.
+1. Register both schemas via the Kafka SR client.
 2. Produce 50 `OrderCreated` records with `KafkaAvroSerializer`.
 3. Streams app reads with `SpecificAvroSerde<OrderCreated>`,
    transforms, writes `SpecificAvroSerde<OrderEnriched>`.
@@ -422,7 +422,7 @@ D.4 MirrorMaker        ← parallel; biggest scope
 
 Total commits remaining: ~10.
 Total LOC: ~2 500 across new ITs + ~150 for distributed Connect
-helper + ~50 for new Confluent Streams test deps.
+helper + ~50 for new Kafka SR Streams test deps.
 
 ## 8. Critical files
 

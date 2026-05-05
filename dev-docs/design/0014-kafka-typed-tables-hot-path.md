@@ -11,7 +11,7 @@
 ## 1. Context
 
 Design 0002 fixed the principle: Fluss's own schema model is canonical,
-and Confluent-framed wire bytes for a registered subject must land in a
+and Kafka SR-framed wire bytes for a registered subject must land in a
 typed Fluss row — not in a `payload BYTES` column. Design 0009 extended
 the registry to three formats (Avro, JSON Schema, Protobuf) behind a
 common `FormatTranslator` SPI, each paired with a compiled `RecordCodec`
@@ -25,11 +25,11 @@ column of `KafkaDataTable`. Registering an Avro schema against topic
 
 Phase T.2's job is to flip that. For a topic whose catalog row has a
 typed format (`KAFKA_TYPED_AVRO` / `KAFKA_TYPED_JSON` /
-`KAFKA_TYPED_PROTOBUF`), the Produce path must strip the Confluent
+`KAFKA_TYPED_PROTOBUF`), the Produce path must strip the Kafka SR
 frame, look up the compiled codec, and decode directly into the
 `BinaryRow` the Fluss append path expects. The Fetch path must do the
 reverse: read the Fluss row as the typed row type, re-prepend the
-Confluent frame, and hand the bytes back to the Kafka consumer. The
+Kafka SR frame, and hand the bytes back to the Kafka consumer. The
 hot path stays zero-allocation on the happy path — the codec cache
 resolves by a packed 64-bit key, the decoder writes straight into an
 `IndexedRowWriter`, and the byte-copy branch remains available (and
@@ -73,7 +73,7 @@ column 1 via `byteBufferToBytes(...)` at
 `KafkaProduceTranscoder.java:463`. Schema id carried on the Fluss
 `MemoryLogRecordsIndexedBuilder` (`KafkaProduceTranscoder.java:420`) is
 the **Fluss** schema id from `TableInfo.getSchemaId()`, not the
-Confluent wire id.
+SR wire schema id.
 
 `KafkaFetchTranscoder.encode` (`KafkaFetchTranscoder.java:294-405`)
 decodes the Fluss row through `RowView.of` at
@@ -136,7 +136,7 @@ mid-life migration surface to reason about in T.2.
 
 ## 4. Produce path (Kafka bytes → Fluss row)
 
-**Wire frame.** Confluent-framed producer records carry:
+**Wire frame.** Kafka SR-framed producer records carry:
 
 ```
 [0x00]               // magic byte
@@ -172,8 +172,8 @@ For every record batch whose topic route is typed, the Produce path:
 **Codec miss.** On a cache miss for a live schema id the codec has to
 be compiled:
 
-1. Fetch the `SchemaVersionEntity` for the global Confluent id via the
-   catalog (`catalog.getSchemaByConfluentId(schemaId)`). The entity
+1. Fetch the `SchemaVersionEntity` for the global SR schema id via the
+   catalog (`catalog.getSchemaBySrSchemaId(schemaId)`). The entity
    carries the schema text and the `format` string.
 2. Sanity-check the entity's format against the topic's catalog-row
    format. A typed topic receiving a record framed with a schema id
@@ -221,7 +221,7 @@ Two implementations:
 | Class | Behaviour |
 |---|---|
 | `PassthroughKafkaFetchCodec` | Today's logic, verbatim. `readContext(int)` returns `LogRecordReadContext.createReadContext(tableInfo, …, schemaGetter)`. `rowToKafkaRecord` is the body of `RowView.of` with the `payload BYTES` column read at column 1. |
-| `TypedKafkaFetchCodec` | Calls `codec.encodeInto(row, scratchBuf)` where `codec` is resolved from `CompiledCodecCache` by `(tableId, rowSchemaId)`. Prepends the 5-byte Confluent frame. `record_key`, `event_time`, and `headers` columns are still read from fixed column indices — the typed codec only owns the value bytes. |
+| `TypedKafkaFetchCodec` | Calls `codec.encodeInto(row, scratchBuf)` where `codec` is resolved from `CompiledCodecCache` by `(tableId, rowSchemaId)`. Prepends the 5-byte Kafka SR frame. `record_key`, `event_time`, and `headers` columns are still read from fixed column indices — the typed codec only owns the value bytes. |
 
 `KafkaFetchTranscoder.encode` becomes a thin driver: pick the codec
 once per batch based on the `PartitionContext.route`, iterate rows,
@@ -231,8 +231,8 @@ The existing ChangeType filter (`KafkaFetchTranscoder.java:365-371`:
 because both codec impls share it.
 
 **Schema id on the wire.** The typed Fluss row carries a Fluss schema
-id — not the Confluent id the producer framed with. The catalog's
-`SchemaVersionEntity.confluentId()` is the mapping. `TypedKafkaFetchCodec`
+id — not the SR schema id the producer framed with. The catalog's
+`SchemaVersionEntity.srSchemaId()` is the mapping. `TypedKafkaFetchCodec`
 looks it up once per batch via the topic's current schema id and
 prepends that integer. For topics whose schema is static for the life
 of the cluster this is a single lookup per fetch; T.3 addresses the
@@ -248,7 +248,7 @@ packing is:
 packedKey = (tableId << 32) | (schemaId & 0xFFFFFFFFL)
 ```
 
-`tableId` is the Fluss table id (`long`); `schemaId` is the Confluent
+`tableId` is the Fluss table id (`long`); `schemaId` is the Kafka SR
 global id (`int`). Collisions are structurally impossible: a `tableId`
 is unique per cluster, a `schemaId` is unique across all subjects, and
 the product space is 96 bits of which we keep 64 — enough for
@@ -362,7 +362,7 @@ the table itself (produced by the translator at registration time).
 
 ### 11.1 Integration test — `KafkaTypedHotPathITCase`
 
-Uses `kafka-clients 3.9` + Confluent `KafkaAvroSerializer` /
+Uses `kafka-clients 3.9` + Kafka SR `KafkaAvroSerializer` /
 `KafkaAvroDeserializer` pointed at the SR HTTP listener. Fluss cluster
 is the standard `FlussClusterExtension`.
 

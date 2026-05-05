@@ -26,7 +26,11 @@ if [ -n "${FLUSS_PROPERTIES}" ]; then
     echo "${FLUSS_PROPERTIES}" >> "${CONF_FILE}"
 fi
 
-# Substitute environment variables (e.g. KAFKA_ADVERTISED_HOST) into the config.
+# envsubst does not support bash ${VAR:-default} syntax; resolve defaults here first.
+export ZOOKEEPER_ADDRESS="${ZOOKEEPER_ADDRESS:-zookeeper:2181}"
+export KAFKA_ADVERTISED_HOST="${KAFKA_ADVERTISED_HOST:-localhost}"
+
+# Substitute environment variables into the config.
 envsubst < "${CONF_FILE}" > "${CONF_FILE}.tmp" && mv "${CONF_FILE}.tmp" "${CONF_FILE}"
 
 case "$1" in

@@ -33,9 +33,9 @@ import java.util.List;
 
 /**
  * Thin wrapper around {@link SchemaCompatibility#checkReaderWriterCompatibility(Schema, Schema)}
- * that implements the seven Confluent SR compatibility levels. Stateless — safe to share.
+ * that implements the seven Kafka SR compatibility levels. Stateless — safe to share.
  *
- * <p>Confluent semantics mapping (reader/writer direction is load-bearing):
+ * <p>Kafka SR semantics mapping (reader/writer direction is load-bearing):
  *
  * <ul>
  *   <li><b>BACKWARD / BACKWARD_TRANSITIVE</b> — proposed schema must read old data → proposed is
@@ -69,7 +69,7 @@ public final class AvroCompatibilityChecker implements CompatibilityChecker {
      * @param proposedText proposed Avro schema JSON (required)
      * @param priorTexts prior Avro schema JSONs in registration order (oldest first). May be empty
      *     — a first registration is always compatible.
-     * @param level Confluent compatibility level
+     * @param level Kafka SR compatibility level
      * @param resolver references bound at register time; pass {@link ReferenceResolver#empty()}
      *     when none.
      */

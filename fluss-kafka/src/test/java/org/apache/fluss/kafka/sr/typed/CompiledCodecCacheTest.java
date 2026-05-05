@@ -55,7 +55,7 @@ class CompiledCodecCacheTest {
         assertThat(CompiledCodecCache.tableId(key)).isEqualTo(tableId);
         assertThat(CompiledCodecCache.schemaId(key)).isEqualTo(schemaId);
 
-        // Negative schema id space (unused in Confluent SR but valid 32-bit int) round-trips too.
+        // Negative schema id space (unused in Kafka SR but valid 32-bit int) round-trips too.
         long key2 = CompiledCodecCache.packKey(42L, -1);
         assertThat(CompiledCodecCache.tableId(key2)).isEqualTo(42L);
         assertThat(CompiledCodecCache.schemaId(key2)).isEqualTo(-1);

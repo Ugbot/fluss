@@ -7,7 +7,7 @@
 
 ## Core principles (governing all other choices)
 
-1. **Fluss-first.** Fluss's own schema model is canonical. Subjects, Confluent IDs, Avro
+1. **Fluss-first.** Fluss's own schema model is canonical. Subjects, SR schema IDs, Avro
    JSON texts — all of those are *projections* over Fluss table metadata. There is no
    parallel subject lifecycle storing "what the user submitted"; every external schema
    passes through a Fluss-native translator on the way in and is re-derived on the way
@@ -18,7 +18,7 @@
    row format without any intermediate object model (`GenericRecord`, `DynamicMessage`,
    `JsonNode`). Codecs are compiled once per (schema-id × direction) pair, cached, and
    reused for the life of the cluster.
-3. **No Confluent-shaped redundancy in our ZK.** A Confluent SR stores each submitted
+3. **No Kafka SR-shaped redundancy in our ZK.** A Kafka SR stores each submitted
    schema text verbatim plus its own id counter plus subject→version chains. We refuse
    to pay that cost. Fluss's existing schema versioning (in `/fluss/tables/.../schemas`)
    is the truth; SR-facing state is a deterministic view over it.
@@ -27,7 +27,7 @@ These are non-negotiable. Everything below is derived.
 
 ## Locked from prior interview
 
-1. Wire API: Confluent-compatible REST.
+1. Wire API: Kafka-compatible REST.
 2. Authority direction: Fluss-first. (Adjusted from "SR-first" per the core principles.
    The earlier interview answer still holds *in effect* — registering a subject is how
    external tools drive Fluss schema changes — but the internal representation is
@@ -86,9 +86,9 @@ compilation; no second wire format description.
    translator is total and pure.
 2. **Global schema id is a deterministic function of `(tableId, schemaVersion, format)`.**
    We do NOT mint a separate monotonic counter. Given Fluss's existing `(tableId,
-   schemaId)` and the chosen format, we derive a 31-bit Confluent id by
+   schemaId)` and the chosen format, we derive a 31-bit SR schema id by
    `hash(tableId, schemaId, format) mod (2^31-1)`, rejecting collisions at register time
-   (ZK CAS on `/fluss/kafka-sr/id-reservations/<id>`). This keeps Confluent's global-id
+   (ZK CAS on `/fluss/kafka-sr/id-reservations/<id>`). This keeps SR global-id
    API stable without shadowing Fluss's id system.
 3. **"Subject" is a view.** The canonical state is:
    - a Fluss table (`kafka.<topic>` for TopicNameStrategy)
@@ -98,9 +98,9 @@ compilation; no second wire format description.
    = creating a table with that binding, or evolving one that has it.
 4. **Evolution rules are Fluss's.** BACKWARD compatibility is checked in the Fluss
    schema domain (not the Avro domain). Avro's BACKWARD rules are a proper superset of
-   Fluss's strictly-additive evolution today, so we reject more than Confluent does —
+   Fluss's strictly-additive evolution today, so we reject more than Kafka SR does —
    that's a feature, not a bug. The rejection message cites both the Fluss and the
-   Confluent rule for UX.
+   Kafka SR rule for UX.
 5. **RecordNameStrategy and TopicRecordNameStrategy store a record-type → table map**,
    not separate subjects. A topic under TopicRecordNameStrategy is backed by a
    `kafka_passthrough` table with `_kafka_key BYTES`, `_schema_id INT`, `_payload BYTES`
@@ -158,7 +158,7 @@ specialized codec. For each format:
 ```
 CompiledCodecCache
   ConcurrentHashMap<Long, RecordCodec>   // key = packed (tableId<<32) | schemaId
-  ConcurrentHashMap<Integer, Long>       // Confluent global id → packed key
+  ConcurrentHashMap<Integer, Long>       // SR global schema id → packed key
 ```
 
 - First lookup on Produce/Fetch path: direct array-backed table when id is dense.
@@ -192,7 +192,7 @@ New JMH benchmarks in `fluss-jmh`:
 - `CodecCacheContentionBench`: 64 threads, 1k distinct schema ids round-robin.
 
 Benchmarks are gating — we don't ship Phase A if the codec path is slower than the
-published Confluent Avro serde by more than 20 %.
+published Kafka SR Avro serde by more than 20 %.
 
 ## HTTP stack
 
@@ -206,7 +206,7 @@ thread model.
 /fluss
   /kafka-sr
     /global-config                 # compatibility default, other globals
-    /id-reservations/<id>          # Confluent-style global id → (tableId, schemaId, format)
+    /id-reservations/<id>          # Kafka SR-style global id → (tableId, schemaId, format)
     /record-type-index/<fqn>       # RecordNameStrategy: record FQN → tableId
     /topic-bindings/<topic>        # value-subject + key-subject resolved to tableId
 
@@ -220,7 +220,7 @@ thread model.
 Notice what's NOT here: no `/subjects/{s}/versions/N/schema` with Avro text. The schema
 is always `Fluss table @ schemaVersion`, re-projected to Avro on demand.
 
-## Confluent endpoints (unchanged from prior draft except semantic)
+## Kafka SR endpoints (unchanged from prior draft except semantic)
 
 Same endpoint list as before. The semantic change: `GET /schemas/ids/{id}` returns a
 projection, not storage. `POST /subjects/{s}/versions` translates into a Fluss
@@ -235,9 +235,9 @@ projection, not storage. `POST /subjects/{s}/versions` translates into a Fluss
 - Avro only, TopicNameStrategy only, value-only.
 - Fluss-table auto-creation via translator.
 - Compiled Avro codec + benchmark gates.
-- Deterministic Confluent id allocation + ZK CAS reservation.
+- Deterministic SR schema id allocation + ZK CAS reservation.
 
-Exit: a Confluent Avro producer sends SR-framed bytes, a Fluss query returns the rows
+Exit: a Kafka Avro producer sends SR-framed bytes, a Fluss query returns the rows
 typed, and the hot-path decoder is within 20 % of the baseline.
 
 ### Phase B — compatibility + keys
@@ -264,7 +264,7 @@ typed, and the hot-path decoder is within 20 % of the baseline.
    same principal propagation as the KAFKA listener.
 2. **Codec compilation tool**: Janino vs ASM. Janino is ~1 MB and JIT-friendly; ASM is
    smaller but more invasive to maintain. Recommend **Janino** for Phase A.
-3. **Benchmark baseline source**: Confluent's published Avro serde, run in-process in
+3. **Benchmark baseline source**: Kafka SR's published Avro serde, run in-process in
    fluss-jmh? Needs a non-Apache-2.0 check on the baseline dep (SR client is Apache 2).
 4. **Zero-copy Fetch short-circuit**: requires storing wire bytes alongside rows. Size
    overhead ~15-30 % for Avro. Worth it? Probably yes for pure-Kafka workloads,
@@ -278,7 +278,7 @@ typed, and the hot-path decoder is within 20 % of the baseline.
    Avro text" stance — it's the right thing but it means `GET /schemas/ids/{id}` is
    a projection, not a retrieval.
 2. **Janino for codec compilation, yes/no?**
-3. **Phase A benchmark target: 20 % of Confluent serde — acceptable, or tighter?**
+3. **Phase A benchmark target: 20 % of Kafka SR serde — acceptable, or tighter?**
 4. **Phase sequencing vs Kafka-protocol Produce/Fetch from design 0001** — do we ship
    Phase A SR before KAFKA Produce/Fetch, at the same time, or after? They're
    independent by construction (SR is coordinator, Produce/Fetch is tablet server)
@@ -316,7 +316,7 @@ Multi-format work is in flight. Summary of what has landed and what remains:
   `if (!"AVRO".equalsIgnoreCase(schemaType)) reject` gates in
   `SchemaRegistryHttpHandler` and replaces them with `FormatRegistry` lookups.
   `GET /schemas/types` returns `["AVRO", "JSON", "PROTOBUF"]`. E2E ITs drive the
-  real Confluent serializers for each format (test-scope only; Confluent Community
+  real Kafka SR serializers for each format (test-scope only; Kafka SR Community
   License forbids redistribution).
 
 **Deferred, still needs fluss-core edits (explicit user constraint at T-MF):**

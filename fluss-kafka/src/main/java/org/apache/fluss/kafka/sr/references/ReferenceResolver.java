@@ -24,7 +24,7 @@ import java.util.Collections;
 import java.util.Optional;
 
 /**
- * Resolves a Confluent Schema Registry reference {@code name} to the referenced schema's text.
+ * Resolves a Kafka Schema Registry reference {@code name} to the referenced schema's text.
  * Implementations look up bound references by symbolic name (Avro fullname, JSON Schema {@code
  * $ref} URI, {@code .proto} import path) and return the referent's stored schema text.
  *

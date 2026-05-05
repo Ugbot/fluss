@@ -95,10 +95,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  *   <li>All 3 tablets are visible in Kafka metadata responses.
  *   <li>Passthrough produce/consume routes correctly across all brokers.
  *   <li>Avro schema registration propagates the typed-table reshape via {@code UpdateMetadata} to
- *       all 3 tablets; typed Confluent-encoded produces succeed on each individual broker endpoint.
+ *       all 3 tablets; typed Kafka SR-encoded produces succeed on each individual broker endpoint.
  *   <li>Additive Avro schema evolution extends the typed table shape cluster-wide.
  *   <li>Protobuf schema registration reshapes the table to {@code KAFKA_TYPED_PROTOBUF} and the
- *       reshaped table accepts Confluent-framed records from any broker endpoint.
+ *       reshaped table accepts Kafka SR-framed records from any broker endpoint.
  * </ul>
  */
 class KafkaMultiBrokerITCase {
@@ -292,7 +292,7 @@ class KafkaMultiBrokerITCase {
                 record.put("name", "user-" + i);
                 record.put("age", i);
                 byte[] avroBytes = encodeAvro(avroSchema, record);
-                byte[] payload = confluentFrame(schemaId, avroBytes);
+                byte[] payload = kafkaSrFrame(schemaId, avroBytes);
                 producer.send(new ProducerRecord<>(topic, payload)).get(120, TimeUnit.SECONDS);
             }
         }
@@ -342,7 +342,7 @@ class KafkaMultiBrokerITCase {
                 rec.put("score", i * 100);
                 producer.send(
                                 new ProducerRecord<>(
-                                        topic, confluentFrame(v1Id, encodeAvro(v1Schema, rec))))
+                                        topic, kafkaSrFrame(v1Id, encodeAvro(v1Schema, rec))))
                         .get(120, TimeUnit.SECONDS);
             }
         }
@@ -374,7 +374,7 @@ class KafkaMultiBrokerITCase {
                 rec.put("label", "gold");
                 producer.send(
                                 new ProducerRecord<>(
-                                        topic, confluentFrame(v2Id, encodeAvro(v2Schema, rec))))
+                                        topic, kafkaSrFrame(v2Id, encodeAvro(v2Schema, rec))))
                         .get(120, TimeUnit.SECONDS);
             }
         }
@@ -440,7 +440,7 @@ class KafkaMultiBrokerITCase {
                 new KafkaProducer<>(producerProps(allBrokersBootstrap()))) {
             for (int i = 0; i < totalRecords; i++) {
                 byte[] protoBytes = encodeProtoEvent("event-" + i, i);
-                byte[] payload = confluentFrameProtobuf(schemaId, protoBytes);
+                byte[] payload = kafkaSrFrameProtobuf(schemaId, protoBytes);
                 producer.send(new ProducerRecord<>(topic, payload)).get(120, TimeUnit.SECONDS);
             }
         }
@@ -449,7 +449,7 @@ class KafkaMultiBrokerITCase {
         assertThat(consumedValues.size())
                 .as("%d Kafka-SR-framed Protobuf records visible cluster-wide", totalRecords)
                 .isEqualTo(totalRecords);
-        // Kafka framing on the fetch side (not Confluent framing): [0x00][4-byte schemaId][body].
+        // Kafka framing on the fetch side (not Kafka SR framing): [0x00][4-byte schemaId][body].
         // The produce-side message-index bytes ([0x02][0x00]) are consumed by the Protobuf codec
         // during decode and are NOT re-emitted on Fetch. Byte[5] is therefore the first byte of
         // the re-encoded Protobuf binary: tag for field "id" = (1 << 3) | 2 = 0x0A.
@@ -595,8 +595,8 @@ class KafkaMultiBrokerITCase {
         }
     }
 
-    /** Confluent wire-format prefix for Avro: magic(1) + schema_id(4) + payload. */
-    private static byte[] confluentFrame(int schemaId, byte[] body) {
+    /** Kafka SR wire-format prefix for Avro: magic(1) + schema_id(4) + payload. */
+    private static byte[] kafkaSrFrame(int schemaId, byte[] body) {
         ByteBuffer buf = ByteBuffer.allocate(1 + 4 + body.length);
         buf.put((byte) 0x00);
         buf.putInt(schemaId);
@@ -605,12 +605,12 @@ class KafkaMultiBrokerITCase {
     }
 
     /**
-     * Confluent wire-format prefix for Protobuf: magic(1) + schema_id(4) + message-index(2) +
+     * Kafka SR wire-format prefix for Protobuf: magic(1) + schema_id(4) + message-index(2) +
      * payload. The message index {@code [0]} is zigzag-encoded as 1 element (count = zigzag(1) =
-     * 0x02) at index 0 (zigzag(0) = 0x00), matching the Confluent Protobuf serializer contract for
-     * a single top-level message type in the descriptor.
+     * 0x02) at index 0 (zigzag(0) = 0x00), matching the Kafka SR Protobuf serializer contract for a
+     * single top-level message type in the descriptor.
      */
-    private static byte[] confluentFrameProtobuf(int schemaId, byte[] body) {
+    private static byte[] kafkaSrFrameProtobuf(int schemaId, byte[] body) {
         ByteBuffer buf = ByteBuffer.allocate(1 + 4 + 2 + body.length);
         buf.put((byte) 0x00);
         buf.putInt(schemaId);

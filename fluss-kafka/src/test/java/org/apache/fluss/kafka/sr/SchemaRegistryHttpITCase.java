@@ -50,7 +50,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * End-to-end test of the Schema Registry HTTP listener on the Coordinator leader. Hits each Phase
- * A1 endpoint from a raw {@link java.net.http.HttpClient} — no Confluent client dependency.
+ * A1 endpoint from a raw {@link java.net.http.HttpClient} — no Kafka SR client dependency.
  */
 class SchemaRegistryHttpITCase {
 
@@ -130,8 +130,8 @@ class SchemaRegistryHttpITCase {
         assertThat(MAPPER.readTree(secondRegister.body()).get("id").asInt()).isEqualTo(firstId);
 
         // POST with a new schema text — the catalog appends a new version and mints a fresh
-        // Confluent id (deterministic on tableId + version + format). That's the correct
-        // Confluent-SR shape: each distinct submission gets its own id.
+        // Kafka SR schema id (deterministic on tableId + version + format). That's the correct
+        // Kafka SR shape: each distinct submission gets its own id.
         String v2Body = "{\"schemaType\":\"AVRO\",\"schema\":" + escape(SCHEMA_ORDER_V2) + "}";
         HttpResponse<String> rebind = http("POST", "/subjects/" + subject + "/versions", v2Body);
         assertThat(rebind.statusCode()).isEqualTo(200);

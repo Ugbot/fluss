@@ -57,7 +57,7 @@ public final class HttpPrincipalExtractor {
 
     private static final Logger LOG = LoggerFactory.getLogger(HttpPrincipalExtractor.class);
 
-    /** Header Confluent / NGINX-style proxies set when forwarding the authenticated username. */
+    /** Header Kafka SR / NGINX-style proxies set when forwarding the authenticated username. */
     public static final String HEADER_FORWARDED_USER = "X-Forwarded-User";
 
     /** Standard HTTP authorisation header. */
