@@ -27,6 +27,8 @@ import org.apache.fluss.kafka.fetch.KafkaTopicRouteResolver;
 import org.apache.fluss.kafka.metadata.KafkaDataTable;
 import org.apache.fluss.kafka.metrics.KafkaMetricGroup;
 import org.apache.fluss.kafka.sr.typed.RecordCodec;
+import org.apache.fluss.kafka.tx.TransactionCoordinator;
+import org.apache.fluss.kafka.tx.TransactionCoordinators;
 import org.apache.fluss.memory.UnmanagedPagedOutputView;
 import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.metadata.TableInfo;
@@ -280,11 +282,23 @@ public final class KafkaProduceTranscoder {
                     response.setErrorCode(Errors.NONE.code()).setBaseOffset(-1));
         }
 
+        PartitionProduceResponse fenced = checkEpochFencing(kafkaRecords, response);
+        if (fenced != null) {
+            return CompletableFuture.completedFuture(fenced);
+        }
+
         MemoryLogRecords flussRecords;
         try {
             flussRecords =
                     buildFlussRecords(
-                            kafkaRecords, schemaId, rowType, valueWriters, info, typedBinding);
+                            kafkaRecords,
+                            tableId,
+                            partitionIndex,
+                            schemaId,
+                            rowType,
+                            valueWriters,
+                            info,
+                            typedBinding);
         } catch (InvalidProduceRecordException invalid) {
             // Per design 0014 §8: Kafka SR frame failures map to per-record codes; we narrow
             // the partition-level error code to the specific Errors enum the validator chose
@@ -361,11 +375,22 @@ public final class KafkaProduceTranscoder {
                     response.setErrorCode(Errors.NONE.code()).setBaseOffset(-1));
         }
 
+        PartitionProduceResponse fenced = checkEpochFencing(kafkaRecords, response);
+        if (fenced != null) {
+            return CompletableFuture.completedFuture(fenced);
+        }
+
         org.apache.fluss.record.KvRecordBatch kvBatch;
         try {
             kvBatch =
                     buildFlussKvRecords(
-                            kafkaRecords, schemaId, rowType, valueWriters, typedBinding);
+                            kafkaRecords,
+                            tableId,
+                            partitionIndex,
+                            schemaId,
+                            rowType,
+                            valueWriters,
+                            typedBinding);
         } catch (InvalidProduceRecordException invalid) {
             LOG.debug(
                     "Typed Produce frame validation failed for compacted topic '{}' partition"
@@ -412,6 +437,39 @@ public final class KafkaProduceTranscoder {
     }
 
     /**
+     * Scans the first producer-aware batch in {@code kafkaRecords} and, when a {@link
+     * TransactionCoordinator} is running, checks the epoch against the coordinator's view.
+     *
+     * @return a pre-filled {@link PartitionProduceResponse} with {@code INVALID_PRODUCER_EPOCH} if
+     *     the producer is fenced; {@code null} if the batch is either not producer-aware, no
+     *     coordinator is running, or the epoch is current.
+     */
+    @javax.annotation.Nullable
+    private static PartitionProduceResponse checkEpochFencing(
+            MemoryRecords kafkaRecords, PartitionProduceResponse response) {
+        for (RecordBatch batch : kafkaRecords.batches()) {
+            if (!batch.hasProducerId()) {
+                continue;
+            }
+            long producerId = batch.producerId();
+            short producerEpoch = batch.producerEpoch();
+            Optional<TransactionCoordinator> coord = TransactionCoordinators.current();
+            if (!coord.isPresent()) {
+                return null;
+            }
+            TransactionCoordinator.EpochCheck check =
+                    coord.get().checkProducerEpoch(producerId, producerEpoch);
+            if (check == TransactionCoordinator.EpochCheck.INVALID_PRODUCER_EPOCH) {
+                return response.setErrorCode(Errors.INVALID_PRODUCER_EPOCH.code())
+                        .setErrorMessage("Fenced producer epoch")
+                        .setBaseOffset(-1);
+            }
+            return null; // only check the first producer-aware batch per partition
+        }
+        return null;
+    }
+
+    /**
      * Build a Fluss {@link org.apache.fluss.record.KvRecordBatch} from a Kafka {@link
      * MemoryRecords}. The {@code record_key} column in the row mirrors the separate {@code key}
      * byte array the KV batch builder expects — Fluss's row-format constraint is satisfied by using
@@ -422,6 +480,8 @@ public final class KafkaProduceTranscoder {
      */
     private org.apache.fluss.record.KvRecordBatch buildFlussKvRecords(
             MemoryRecords kafkaRecords,
+            long tableId,
+            int partitionIdx,
             int schemaId,
             RowType rowType,
             BinaryWriter.ValueWriter[] valueWriters,
@@ -439,14 +499,17 @@ public final class KafkaProduceTranscoder {
         IndexedRowWriter rowWriter = new IndexedRowWriter(rowType);
         IndexedRow row = new IndexedRow(fieldTypes);
         KafkaMetricGroup metrics = context.metrics();
+        KafkaWriterSeqCache seqCache = context.writerSeqCache();
 
         long writerId = -1L;
-        int baseSequence = -1;
+        int flussSeq = -1;
 
         for (RecordBatch batch : kafkaRecords.batches()) {
-            if (batch.hasProducerId()) {
+            if (batch.hasProducerId() && writerId == -1L) {
                 writerId = batch.producerId();
-                baseSequence = batch.baseSequence();
+                flussSeq =
+                        seqCache.nextSeq(
+                                batch.producerId(), tableId, partitionIdx, batch.baseSequence());
             }
             for (Record kafkaRecord : batch) {
                 byte[] key =
@@ -466,7 +529,7 @@ public final class KafkaProduceTranscoder {
         }
 
         if (writerId >= 0) {
-            builder.setWriterState(writerId, baseSequence);
+            builder.setWriterState(writerId, flussSeq);
         }
 
         org.apache.fluss.record.bytesview.BytesView built = builder.build();
@@ -499,33 +562,46 @@ public final class KafkaProduceTranscoder {
                 .setBaseOffset(-1);
     }
 
-    /** Build a Fluss {@link MemoryLogRecords} from a Kafka {@link MemoryRecords}. */
+    /**
+     * Build a Fluss {@link MemoryLogRecords} from a Kafka {@link MemoryRecords}.
+     *
+     * <p>Each Kafka {@link RecordBatch} becomes its own Fluss batch. Kafka sequences are per-record
+     * (the next batch's {@code baseSequence} advances by {@code numRecords}), whereas Fluss
+     * validates {@code nextBatchSeq == lastBatchSeq + 1}. To bridge that gap, each Fluss batch
+     * receives a synthetic per-batch counter from {@link KafkaWriterSeqCache} rather than the raw
+     * Kafka {@code baseSequence}. The counter resets to 0 when the Kafka {@code baseSequence} is 0
+     * (fresh producer or epoch reset), which is also the signal used by {@code
+     * WriterAppendInfo.inSequence} to accept new-epoch appends.
+     *
+     * <p>All Fluss batches for this partition are concatenated into a single {@link
+     * MemoryLogRecords} so that {@code appendRecordsToLog} validates them atomically in one call,
+     * with each sub-batch's sequence checked sequentially by {@code analyzeAndValidateWriterState}.
+     */
     private MemoryLogRecords buildFlussRecords(
             MemoryRecords kafkaRecords,
+            long tableId,
+            int partitionIdx,
             int schemaId,
             RowType rowType,
             BinaryWriter.ValueWriter[] valueWriters,
             KafkaTopicInfo info,
             @javax.annotation.Nullable TypedProduceBinding typedBinding)
             throws Exception {
-        UnmanagedPagedOutputView outputView = new UnmanagedPagedOutputView(INITIAL_SEGMENT_BYTES);
-        MemoryLogRecordsIndexedBuilder builder =
-                MemoryLogRecordsIndexedBuilder.builder(
-                        schemaId, Integer.MAX_VALUE, outputView, /* appendOnly */ true);
-
         DataType[] fieldTypes = rowType.getChildren().toArray(new DataType[0]);
         IndexedRowWriter rowWriter = new IndexedRowWriter(rowType);
         IndexedRow row = new IndexedRow(fieldTypes);
         KafkaMetricGroup metrics = context.metrics();
+        KafkaWriterSeqCache seqCache = context.writerSeqCache();
 
-        long writerId = -1L;
-        int baseSequence = -1;
+        List<BytesView> builtBatches = new ArrayList<>();
 
         for (RecordBatch batch : kafkaRecords.batches()) {
-            if (batch.hasProducerId()) {
-                writerId = batch.producerId();
-                baseSequence = batch.baseSequence();
-            }
+            UnmanagedPagedOutputView outputView =
+                    new UnmanagedPagedOutputView(INITIAL_SEGMENT_BYTES);
+            MemoryLogRecordsIndexedBuilder builder =
+                    MemoryLogRecordsIndexedBuilder.builder(
+                            schemaId, Integer.MAX_VALUE, outputView, /* appendOnly */ true);
+
             for (Record kafkaRecord : batch) {
                 writeRow(kafkaRecord, rowWriter, valueWriters, typedBinding);
                 if (metrics != null && typedBinding != null) {
@@ -534,15 +610,38 @@ public final class KafkaProduceTranscoder {
                 row.pointTo(rowWriter.segment(), 0, rowWriter.position());
                 builder.append(ChangeType.APPEND_ONLY, row);
             }
+
+            if (batch.hasProducerId()) {
+                int flussSeq =
+                        seqCache.nextSeq(
+                                batch.producerId(), tableId, partitionIdx, batch.baseSequence());
+                builder.setWriterState(batch.producerId(), flussSeq);
+            }
+
+            BytesView built = builder.build();
+            builder.close();
+            builtBatches.add(built);
         }
 
-        if (writerId >= 0) {
-            builder.setWriterState(writerId, baseSequence);
-        }
+        return combineBatches(builtBatches);
+    }
 
-        BytesView built = builder.build();
-        builder.close();
-        return MemoryLogRecords.pointToBytesView(built);
+    /** Combines a list of {@link BytesView} objects into a single {@link MemoryLogRecords}. */
+    private static MemoryLogRecords combineBatches(List<BytesView> batches) {
+        if (batches.isEmpty()) {
+            return MemoryLogRecords.EMPTY;
+        }
+        if (batches.size() == 1) {
+            return MemoryLogRecords.pointToBytesView(batches.get(0));
+        }
+        org.apache.fluss.shaded.netty4.io.netty.buffer.ByteBuf[] bufs =
+                new org.apache.fluss.shaded.netty4.io.netty.buffer.ByteBuf[batches.size()];
+        for (int i = 0; i < batches.size(); i++) {
+            bufs[i] = batches.get(i).getByteBuf();
+        }
+        org.apache.fluss.shaded.netty4.io.netty.buffer.ByteBuf combined =
+                Unpooled.wrappedBuffer(bufs);
+        return MemoryLogRecords.pointToByteBuffer(combined.nioBuffer());
     }
 
     private void writeRow(

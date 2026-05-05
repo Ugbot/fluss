@@ -33,9 +33,15 @@ import org.apache.kafka.clients.admin.NewTopic;
 import org.apache.kafka.clients.admin.TransactionDescription;
 import org.apache.kafka.clients.admin.TransactionListing;
 import org.apache.kafka.clients.admin.TransactionState;
+import org.apache.kafka.clients.consumer.ConsumerConfig;
+import org.apache.kafka.clients.consumer.ConsumerRecords;
+import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
+import org.apache.kafka.common.TopicPartition;
+import org.apache.kafka.common.errors.ProducerFencedException;
+import org.apache.kafka.common.serialization.ByteArrayDeserializer;
 import org.apache.kafka.common.serialization.ByteArraySerializer;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -257,6 +263,81 @@ class KafkaTransactionalProducerITCase {
             assertThat(desc.topicPartitions().iterator().next().topic()).isEqualTo(topicAdmin);
 
             producer.commitTransaction();
+        }
+
+        // Scenario 5: fenced producer cannot write records to the log (produce-side epoch gate).
+        String topicFence = "txn_fence_" + System.nanoTime();
+        admin.createTopics(Collections.singletonList(new NewTopic(topicFence, 1, (short) 1)))
+                .all()
+                .get();
+        String txnIdFence = "txn-fence-" + UUID.randomUUID();
+
+        // Producer 1 inits and begins a transaction (epoch 0).
+        KafkaProducer<byte[], byte[]> fencedProducer =
+                new KafkaProducer<>(transactionalProducerProps(txnIdFence));
+        fencedProducer.initTransactions();
+        fencedProducer.beginTransaction();
+
+        // Producer 2 inits with the same transactional.id → bumps epoch to 1, fencing producer 1.
+        try (KafkaProducer<byte[], byte[]> producer2 =
+                new KafkaProducer<>(transactionalProducerProps(txnIdFence))) {
+            producer2.initTransactions();
+        }
+
+        // Producer 1 attempts to send — must be rejected with ProducerFencedException.
+        boolean fenced = false;
+        try {
+            fencedProducer
+                    .send(
+                            new ProducerRecord<>(
+                                    topicFence, 0, randomBytes(rng, 8), randomBytes(rng, 32)))
+                    .get();
+            fencedProducer.flush();
+        } catch (ProducerFencedException e) {
+            fenced = true;
+        } catch (Exception e) {
+            Throwable cause =
+                    e instanceof java.util.concurrent.ExecutionException ? e.getCause() : e;
+            if (cause instanceof ProducerFencedException
+                    || cause instanceof org.apache.kafka.common.errors.InvalidProducerEpochException
+                    || (cause != null
+                            && cause.getMessage() != null
+                            && cause.getMessage().contains("fenced"))) {
+                fenced = true;
+            } else {
+                throw new AssertionError(
+                        "Expected fencing exception but got: " + e.getClass().getName(), e);
+            }
+        } finally {
+            fencedProducer.close(Duration.ofSeconds(1));
+        }
+        assertThat(fenced)
+                .as("Producer 1 must be rejected after epoch bump by producer 2")
+                .isTrue();
+
+        // No data from the fenced producer should appear in the topic.
+        Properties fenceConsumerProps = new Properties();
+        fenceConsumerProps.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrap());
+        fenceConsumerProps.put(
+                ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG,
+                ByteArrayDeserializer.class.getName());
+        fenceConsumerProps.put(
+                ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG,
+                ByteArrayDeserializer.class.getName());
+        fenceConsumerProps.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
+        fenceConsumerProps.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, false);
+        try (KafkaConsumer<byte[], byte[]> consumer = new KafkaConsumer<>(fenceConsumerProps)) {
+            consumer.assign(Collections.singletonList(new TopicPartition(topicFence, 0)));
+            consumer.seekToBeginning(consumer.assignment());
+            int seen = 0;
+            long fenceDeadline = System.currentTimeMillis() + 5_000L;
+            while (System.currentTimeMillis() < fenceDeadline) {
+                ConsumerRecords<byte[], byte[]> records = consumer.poll(Duration.ofMillis(500));
+                seen += records.count();
+            }
+            assertThat(seen)
+                    .as("Fenced producer must not commit any records to the topic")
+                    .isZero();
         }
     }
 

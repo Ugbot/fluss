@@ -21,6 +21,7 @@ import org.apache.fluss.annotation.Internal;
 import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.config.Configuration;
 import org.apache.fluss.kafka.metrics.KafkaMetricGroup;
+import org.apache.fluss.kafka.produce.KafkaWriterSeqCache;
 import org.apache.fluss.rpc.gateway.CoordinatorGateway;
 import org.apache.fluss.server.authorizer.Authorizer;
 import org.apache.fluss.server.coordinator.MetadataManager;
@@ -52,6 +53,7 @@ public final class KafkaServerContext {
     private final String kafkaDatabase;
     private final Configuration serverConf;
     private final boolean typedTablesEnabled;
+    private final KafkaWriterSeqCache writerSeqCache;
 
     /**
      * When this context is attached to a real tablet server, the numeric id of that server. {@link
@@ -157,6 +159,7 @@ public final class KafkaServerContext {
         // §7). Toggling requires a server restart; cached as a primitive boolean so the
         // hot-path branch in the Produce/Fetch transcoders is a single field load.
         this.typedTablesEnabled = serverConf.get(ConfigOptions.KAFKA_TYPED_TABLES_ENABLED);
+        this.writerSeqCache = new KafkaWriterSeqCache();
     }
 
     public ClusterMetadataProvider metadataCache() {
@@ -262,5 +265,13 @@ public final class KafkaServerContext {
     @Nullable
     public KafkaMetricGroup metrics() {
         return metrics;
+    }
+
+    /**
+     * Per-producer Fluss batch-sequence cache. Translates Kafka per-record producer sequences into
+     * the per-batch monotonic sequences that Fluss's {@code WriterAppendInfo} validates.
+     */
+    public KafkaWriterSeqCache writerSeqCache() {
+        return writerSeqCache;
     }
 }

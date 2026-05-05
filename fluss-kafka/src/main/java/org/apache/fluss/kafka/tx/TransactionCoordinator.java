@@ -415,6 +415,29 @@ public final class TransactionCoordinator {
     }
 
     /**
+     * Read-only epoch check for the produce path. Scans active transactions by {@code producerId}
+     * to detect a fenced (stale-epoch) producer before its records reach the log.
+     *
+     * <p>Returns {@link EpochCheck#INVALID_PRODUCER_EPOCH} if a state entry for {@code producerId}
+     * exists with a strictly higher epoch than {@code producerEpoch}. Returns {@link EpochCheck#OK}
+     * when no entry is found (idempotent-only producer with no transactional state) or when the
+     * epoch matches the current entry.
+     *
+     * <p>Stateless read — safe to call without holding any lock.
+     */
+    public EpochCheck checkProducerEpoch(long producerId, short producerEpoch) {
+        for (KafkaTxnStateEntity entity : states.values()) {
+            if (entity.producerId() == producerId) {
+                if (producerEpoch < entity.producerEpoch()) {
+                    return EpochCheck.INVALID_PRODUCER_EPOCH;
+                }
+                return EpochCheck.OK;
+            }
+        }
+        return EpochCheck.OK;
+    }
+
+    /**
      * Implement {@code ADD_PARTITIONS_TO_TXN}. Validates the fencing key, then transitions {@code
      * Empty → Ongoing} (with an initial partition set) or extends the partition set on an
      * already-{@code Ongoing} row. Persists the row before returning.

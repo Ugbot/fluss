@@ -354,8 +354,14 @@ public final class KafkaGroupRegistry {
             if (memberId.equals(leaderMemberId)) {
                 leaderMemberId = null;
             }
+            // Same credit logic as reapExpired: surviving members with a pending JoinGroup future
+            // are advanced to the new generation so maybeCompleteJoins() resolves them immediately.
             for (Member m : members.values()) {
-                m.joinedAtGeneration = -1;
+                if (pendingJoins.containsKey(m.memberId)) {
+                    m.joinedAtGeneration = generation;
+                } else {
+                    m.joinedAtGeneration = -1;
+                }
             }
             failPendingSyncs(SyncResult.rebalanceInProgress());
             pendingAssignments.clear();
@@ -407,8 +413,15 @@ public final class KafkaGroupRegistry {
             if (leaderMemberId != null && !members.containsKey(leaderMemberId)) {
                 leaderMemberId = null;
             }
+            // Members that already have a pending JoinGroup future are credited at the new
+            // generation so that maybeCompleteJoins() can immediately resolve them. A surviving
+            // member without a pending future must re-send JoinGroup at the new generation.
             for (Member m : members.values()) {
-                m.joinedAtGeneration = -1;
+                if (pendingJoins.containsKey(m.memberId)) {
+                    m.joinedAtGeneration = generation;
+                } else {
+                    m.joinedAtGeneration = -1;
+                }
             }
             failPendingSyncs(SyncResult.rebalanceInProgress());
             pendingAssignments.clear();
