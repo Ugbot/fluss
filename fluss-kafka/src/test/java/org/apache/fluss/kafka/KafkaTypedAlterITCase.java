@@ -52,7 +52,6 @@ import org.apache.kafka.common.serialization.ByteArraySerializer;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
 
@@ -181,7 +180,7 @@ class KafkaTypedAlterITCase {
 
         // Scenario 1 — Register Avro v1 (id INT, name STRING) on empty topic; expect 200 + id.
         int v1Id = registerAvro(subject, AVRO_V1);
-        assertThat(v1Id).as("v1 Confluent id").isGreaterThan(0);
+        assertThat(v1Id).as("v1 Kafka SR schema id").isGreaterThan(0);
 
         // Scenario 1 (cont.) — describeTable returns the typed shape.
         TableInfo info = describeTable(topic);
@@ -207,13 +206,6 @@ class KafkaTypedAlterITCase {
     }
 
     @Test
-    @Disabled(
-            "Phase T.3 evolution layout bug: TypedTableEvolver appends new columns via "
-                    + "AddColumn LAST (the only position fluss-server's SchemaUpdate accepts), so "
-                    + "they land AFTER `headers` rather than between user fields and event_time. "
-                    + "Fix requires either (a) AddColumn(BEFORE) support in fluss-core, (b) a "
-                    + "different KAFKA_TYPED layout invariant, or (c) drop+recreate on each "
-                    + "evolution. See dev-docs/design/0015 §3 + the Workstream B notes in plan.")
     void evolveAddNullableEmailExtendsTypedShape() throws Exception {
         String topic = "evolve_" + System.nanoTime();
         String subject = topic + "-value";
@@ -225,7 +217,7 @@ class KafkaTypedAlterITCase {
         // Scenario 3 — Register Avro v2 adding nullable email; expect new id distinct from v1 and
         // the table shape extended at the user-region tail.
         int v2Id = registerAvro(subject, AVRO_V2);
-        assertThat(v2Id).as("v2 Confluent id").isGreaterThan(0).isNotEqualTo(v1Id);
+        assertThat(v2Id).as("v2 Kafka SR schema id").isGreaterThan(0).isNotEqualTo(v1Id);
 
         TableInfo info = describeTable(topic);
         assertThat(info.getRowType().getFieldNames())
@@ -235,10 +227,6 @@ class KafkaTypedAlterITCase {
     }
 
     @Test
-    @Disabled(
-            "Phase T.3 evolution depends on a prior @Test in this class that lands new columns; "
-                    + "since that test is @Disabled (layout bug), the rename-rejection check has "
-                    + "no consistent precondition. See evolveAddNullableEmailExtendsTypedShape.")
     void evolveRenameIsRejected() throws Exception {
         String topic = "rename_" + System.nanoTime();
         String subject = topic + "-value";
@@ -263,9 +251,6 @@ class KafkaTypedAlterITCase {
     }
 
     @Test
-    @Disabled(
-            "Phase T.3 evolution layout bug — same root cause as "
-                    + "evolveAddNullableEmailExtendsTypedShape. See that method's Disabled note.")
     void evolveNonNullAddIsRejected() throws Exception {
         String topic = "nonnull_" + System.nanoTime();
         String subject = topic + "-value";
@@ -359,14 +344,11 @@ class KafkaTypedAlterITCase {
     }
 
     // ==========================================================================
-    //  Scenario 9: Confluent-id preservation across an additive ALTER.
+    //  Scenario 9: SR schema id preservation across an additive ALTER.
     // ==========================================================================
 
     @Test
-    @Disabled(
-            "Phase T.3 evolution layout bug — same root cause as "
-                    + "evolveAddNullableEmailExtendsTypedShape. See that method's Disabled note.")
-    void confluentIdPreservedAcrossAdditiveAlter() throws Exception {
+    void srSchemaIdPreservedAcrossAdditiveAlter() throws Exception {
         String topic = "ids_" + System.nanoTime();
         String subject = topic + "-value";
         admin.createTopics(Collections.singletonList(new NewTopic(topic, 1, (short) 1)))
@@ -382,7 +364,21 @@ class KafkaTypedAlterITCase {
         assertThat(resp.statusCode())
                 .as("v1 schema lookup after alter (got %s: %s)", resp.statusCode(), resp.body())
                 .isEqualTo(200);
-        assertThat(resp.body()).contains("\"id\"").contains(Integer.toString(v1Id));
+        // Response must contain the schema type and a recognisable fragment of the original schema
+        // text we registered (the record name "User" survives JSON-escaping in the "schema" field).
+        assertThat(resp.body())
+                .as("GET /schemas/ids response must contain schemaType")
+                .contains("\"schemaType\"");
+        assertThat(resp.body())
+                .as("GET /schemas/ids response must contain AVRO type")
+                .contains("AVRO");
+        assertThat(resp.body())
+                .as("GET /schemas/ids response must contain schema text (record name 'User')")
+                .contains("User");
+        assertThat(resp.body())
+                .as("GET /schemas/ids response must contain v1 fields (id, name)")
+                .contains("\"id\"")
+                .contains("name");
     }
 
     // ==========================================================================
@@ -489,7 +485,7 @@ class KafkaTypedAlterITCase {
         }
     }
 
-    private static byte[] confluentFrame(int schemaId, byte[] body) {
+    private static byte[] kafkaSrFrame(int schemaId, byte[] body) {
         ByteBuffer buf = ByteBuffer.allocate(1 + 4 + body.length);
         buf.put((byte) 0x00);
         buf.putInt(schemaId);
@@ -543,6 +539,9 @@ class KafkaTypedAlterITCase {
         props.put(
                 ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, ByteArraySerializer.class.getName());
         props.put(ProducerConfig.ACKS_CONFIG, "all");
+        // kafka-clients 3.x defaults enable.idempotence=true when acks=all; disable it here because
+        // the Fluss Kafka wire protocol handler does not support InitProducerId under load.
+        props.put(ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG, false);
         props.put(ProducerConfig.REQUEST_TIMEOUT_MS_CONFIG, 30_000);
         props.put(ProducerConfig.MAX_BLOCK_MS_CONFIG, 30_000);
         return props;
