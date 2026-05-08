@@ -20,12 +20,17 @@ package org.apache.fluss.spark.read
 import org.apache.fluss.config.{Configuration => FlussConfiguration}
 import org.apache.fluss.metadata.{LogFormat, TableInfo, TablePath}
 import org.apache.fluss.predicate.{Predicate => FlussPredicate}
+import org.apache.fluss.spark.read.lake.{FlussLakeBatch, FlussLakeUtils}
 import org.apache.fluss.spark.utils.SparkPredicateConverter
 
 import org.apache.spark.sql.connector.expressions.filter.Predicate
 import org.apache.spark.sql.connector.read.{Scan, ScanBuilder, SupportsPushDownRequiredColumns, SupportsPushDownV2Filters}
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.util.CaseInsensitiveStringMap
+
+import java.util.{Collections, IdentityHashMap, Set => JSet}
+
+import scala.collection.JavaConverters._
 
 /** An interface that extends from Spark [[ScanBuilder]]. */
 trait FlussScanBuilder extends ScanBuilder with SupportsPushDownRequiredColumns {
@@ -45,19 +50,52 @@ trait FlussSupportsPushDownV2Filters extends FlussScanBuilder with SupportsPushD
   protected var pushedPredicate: Option[FlussPredicate] = None
   protected var acceptedPredicates: Array[Predicate] = Array.empty[Predicate]
 
+  protected def convertAndStorePredicates(predicates: Array[Predicate]): Unit = {
+    val (predicate, accepted) =
+      SparkPredicateConverter.convertPredicates(tableInfo.getRowType, predicates.toSeq)
+    pushedPredicate = predicate
+    acceptedPredicates = accepted.toArray
+  }
+
   override def pushPredicates(predicates: Array[Predicate]): Array[Predicate] = {
     // Server-side batch filter only supports ARROW; other log formats reject it.
     if (tableInfo.getTableConfig.getLogFormat == LogFormat.ARROW) {
-      val (predicate, accepted) =
-        SparkPredicateConverter.convertPredicates(tableInfo.getRowType, predicates.toSeq)
-      pushedPredicate = predicate
-      acceptedPredicates = accepted.toArray
+      convertAndStorePredicates(predicates)
     }
-    // Server-side filter is batch-level only; Spark must re-apply for row-exact results.
     predicates
   }
 
   override def pushedPredicates(): Array[Predicate] = acceptedPredicates
+}
+
+/**
+ * Lake reads push to the lake source regardless of log format. Each convertible predicate is
+ * offered to the lake source individually; only the lake-accepted subset is reported back to Spark
+ * and combined into the predicate handed to the scan.
+ */
+trait FlussLakeSupportsPushDownV2Filters extends FlussSupportsPushDownV2Filters {
+
+  def tablePath: TablePath
+
+  override def pushPredicates(predicates: Array[Predicate]): Array[Predicate] = {
+    val pairs =
+      SparkPredicateConverter.convertPerPredicate(tableInfo.getRowType, predicates.toSeq)
+    val (acceptedSpark, acceptedFluss) = if (pairs.isEmpty) {
+      (Seq.empty[Predicate], Seq.empty[FlussPredicate])
+    } else {
+      val lakeSource =
+        FlussLakeUtils.createLakeSource(tableInfo.getProperties.toMap, tablePath)
+      val result = FlussLakeBatch.applyLakeFilters(lakeSource, pairs.map(_._2).asJava)
+      // Identity-match: lake sources are expected to return the same instances they received.
+      val acceptedSet: JSet[FlussPredicate] =
+        Collections.newSetFromMap(new IdentityHashMap())
+      acceptedSet.addAll(result.acceptedPredicates())
+      pairs.collect { case (sp, fp) if acceptedSet.contains(fp) => (sp, fp) }.unzip
+    }
+    pushedPredicate = SparkPredicateConverter.combineAnd(acceptedFluss)
+    acceptedPredicates = acceptedSpark.toArray
+    predicates
+  }
 }
 
 /** Fluss Append Scan Builder. */
@@ -82,14 +120,21 @@ class FlussAppendScanBuilder(
 
 /** Fluss Lake Append Scan Builder. */
 class FlussLakeAppendScanBuilder(
-    tablePath: TablePath,
-    tableInfo: TableInfo,
+    val tablePath: TablePath,
+    val tableInfo: TableInfo,
     options: CaseInsensitiveStringMap,
     flussConfig: FlussConfiguration)
-  extends FlussScanBuilder {
+  extends FlussLakeSupportsPushDownV2Filters {
 
   override def build(): Scan = {
-    FlussLakeAppendScan(tablePath, tableInfo, requiredSchema, options, flussConfig)
+    FlussLakeAppendScan(
+      tablePath,
+      tableInfo,
+      requiredSchema,
+      pushedPredicate,
+      acceptedPredicates.toSeq,
+      options,
+      flussConfig)
   }
 }
 
@@ -108,13 +153,20 @@ class FlussUpsertScanBuilder(
 
 /** Fluss Lake Upsert Scan Builder for lake-enabled primary key tables. */
 class FlussLakeUpsertScanBuilder(
-    tablePath: TablePath,
-    tableInfo: TableInfo,
+    val tablePath: TablePath,
+    val tableInfo: TableInfo,
     options: CaseInsensitiveStringMap,
     flussConfig: FlussConfiguration)
-  extends FlussScanBuilder {
+  extends FlussLakeSupportsPushDownV2Filters {
 
   override def build(): Scan = {
-    FlussLakeUpsertScan(tablePath, tableInfo, requiredSchema, options, flussConfig)
+    FlussLakeUpsertScan(
+      tablePath,
+      tableInfo,
+      requiredSchema,
+      pushedPredicate,
+      acceptedPredicates.toSeq,
+      options,
+      flussConfig)
   }
 }

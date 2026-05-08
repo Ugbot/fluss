@@ -19,12 +19,17 @@ package org.apache.fluss.spark.read.lake
 
 import org.apache.fluss.client.initializer.{BucketOffsetsRetrieverImpl, OffsetsInitializer}
 import org.apache.fluss.config.Configuration
+import org.apache.fluss.lake.source.{LakeSource, LakeSplit}
 import org.apache.fluss.metadata.{TableInfo, TablePath}
+import org.apache.fluss.predicate.{Predicate => FlussPredicate}
 import org.apache.fluss.spark.read._
 
+import org.apache.spark.internal.Logging
 import org.apache.spark.sql.connector.read.InputPartition
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.util.CaseInsensitiveStringMap
+
+import java.util.Collections
 
 import scala.collection.JavaConverters._
 
@@ -61,4 +66,22 @@ abstract class FlussLakeBatch(
       .map(e => (e._1.intValue(), Long2long(e._2)))
       .toMap
   }
+}
+
+object FlussLakeBatch extends Logging {
+
+  def applyLakeFilters(
+      lakeSource: LakeSource[LakeSplit],
+      predicates: java.util.List[FlussPredicate]): LakeSource.FilterPushDownResult = {
+    val result = lakeSource.withFilters(predicates)
+    logInfo(
+      s"Lake source accepted ${result.acceptedPredicates()}, " +
+        s"remaining ${result.remainingPredicates()}")
+    result
+  }
+
+  def applyLakeFilters(
+      lakeSource: LakeSource[LakeSplit],
+      predicate: FlussPredicate): LakeSource.FilterPushDownResult =
+    applyLakeFilters(lakeSource, Collections.singletonList(predicate))
 }
