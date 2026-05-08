@@ -361,9 +361,26 @@ public class FlinkSourceEnumerator
             context.callAsync(
                     () -> {
                         List<SourceSplitBase> splits = generateHybridLakeFlussSplits();
+                        // No lake snapshot exists, fall back to Fluss-only splits
                         if (splits == null) {
-                            throw new UnsupportedOperationException(
-                                    "Currently, Batch mode can only be supported if one lake snapshot exists for the table.");
+                            LOG.info(
+                                    "No lake snapshot found for table {},"
+                                            + " falling back to Fluss-only splits.",
+                                    tablePath);
+                            if (isPartitioned) {
+                                Set<PartitionInfo> partitionInfos = listPartitions();
+                                Collection<Partition> partitions =
+                                        partitionInfos.stream()
+                                                .map(
+                                                        p ->
+                                                                new Partition(
+                                                                        p.getPartitionId(),
+                                                                        p.getPartitionName()))
+                                                .collect(Collectors.toList());
+                                splits = this.initPartitionedSplits(partitions);
+                            } else {
+                                splits = this.initNonPartitionedSplits();
+                            }
                         }
                         return splits;
                     },
