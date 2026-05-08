@@ -267,6 +267,23 @@ public class LogFetchCollectorTest {
     }
 
     @Test
+    void testCollectDrainsDiscardedFetch() throws Exception {
+        TableBucket tb = new TableBucket(DATA1_TABLE_ID, 0);
+        CompletedFetch completedFetch =
+                makeCompletedFetch(
+                        tb,
+                        new FetchLogResultForBucket(tb, genMemoryLogRecordsByObject(DATA1), 10L),
+                        0L);
+        logFetchBuffer.add(completedFetch);
+        logScannerStatus.unassignScanBuckets(Collections.singletonList(tb));
+
+        ScanRecords records = logFetchCollector.collectFetch(logFetchBuffer);
+
+        assertThat(records.buckets()).isEmpty();
+        assertThat(completedFetch.isConsumed()).isTrue();
+    }
+
+    @Test
     void testUpdateBeforeAndAfterNeverSplitAcrossPolls() throws Exception {
         // Create records: INSERT, UPDATE_BEFORE, UPDATE_AFTER, INSERT
         // With maxPollRecords=1, the fix should still return -U/+U together.
