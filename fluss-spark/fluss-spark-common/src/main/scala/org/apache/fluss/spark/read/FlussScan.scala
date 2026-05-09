@@ -41,6 +41,8 @@ trait FlussScan extends Scan {
   /** Spark predicates that the scan reports as pushed down (used in [[description]]). */
   def pushedSparkPredicates: Seq[Predicate] = Seq.empty
 
+  def partitionPredicate: Option[FlussPredicate] = None
+
   protected def scanType: String
 
   override def readSchema(): StructType = {
@@ -49,8 +51,13 @@ trait FlussScan extends Scan {
 
   override def description(): String = {
     val base = s"FlussScan: [$tablePath], Type: [$scanType]"
-    if (pushedSparkPredicates.isEmpty) base
-    else s"$base [PushedPredicates: ${pushedSparkPredicates.mkString("[", ", ", "]")}]"
+    val withPushed =
+      if (pushedSparkPredicates.isEmpty) base
+      else s"$base [PushedPredicates: ${pushedSparkPredicates.mkString("[", ", ", "]")}]"
+    partitionPredicate match {
+      case Some(p) => s"$withPushed [PartitionFilter: $p]"
+      case None => withPushed
+    }
   }
 
   override def supportedCustomMetrics(): Array[CustomMetric] =
@@ -63,6 +70,7 @@ case class FlussAppendScan(
     tableInfo: TableInfo,
     requiredSchema: Option[StructType],
     pushedPredicate: Option[FlussPredicate],
+    override val partitionPredicate: Option[FlussPredicate],
     override val pushedSparkPredicates: Seq[Predicate],
     options: CaseInsensitiveStringMap,
     flussConfig: Configuration)
@@ -71,7 +79,14 @@ case class FlussAppendScan(
   override protected val scanType: String = "Append"
 
   override def toBatch: Batch = {
-    new FlussAppendBatch(tablePath, tableInfo, readSchema, pushedPredicate, options, flussConfig)
+    new FlussAppendBatch(
+      tablePath,
+      tableInfo,
+      readSchema,
+      pushedPredicate,
+      partitionPredicate,
+      options,
+      flussConfig)
   }
 
   override def toMicroBatchStream(checkpointLocation: String): MicroBatchStream = {
@@ -124,6 +139,7 @@ case class FlussUpsertScan(
     tablePath: TablePath,
     tableInfo: TableInfo,
     requiredSchema: Option[StructType],
+    override val partitionPredicate: Option[FlussPredicate],
     options: CaseInsensitiveStringMap,
     flussConfig: Configuration)
   extends FlussScan {
@@ -131,7 +147,7 @@ case class FlussUpsertScan(
   override protected val scanType: String = "Upsert"
 
   override def toBatch: Batch = {
-    new FlussUpsertBatch(tablePath, tableInfo, readSchema, options, flussConfig)
+    new FlussUpsertBatch(tablePath, tableInfo, readSchema, partitionPredicate, options, flussConfig)
   }
 
   override def toMicroBatchStream(checkpointLocation: String): MicroBatchStream = {
