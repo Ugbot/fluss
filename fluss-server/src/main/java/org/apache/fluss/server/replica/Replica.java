@@ -31,6 +31,7 @@ import org.apache.fluss.exception.LogStorageException;
 import org.apache.fluss.exception.NonPrimaryKeyTableException;
 import org.apache.fluss.exception.NotEnoughReplicasException;
 import org.apache.fluss.exception.NotLeaderOrFollowerException;
+import org.apache.fluss.exception.TooManyScannersException;
 import org.apache.fluss.fs.FsPath;
 import org.apache.fluss.metadata.ChangelogImage;
 import org.apache.fluss.metadata.LogFormat;
@@ -61,6 +62,9 @@ import org.apache.fluss.server.kv.KvTablet;
 import org.apache.fluss.server.kv.RemoteLogFetcher;
 import org.apache.fluss.server.kv.autoinc.AutoIncIDRange;
 import org.apache.fluss.server.kv.rocksdb.RocksDBKvBuilder;
+import org.apache.fluss.server.kv.scan.OpenScanResult;
+import org.apache.fluss.server.kv.scan.ScannerContext;
+import org.apache.fluss.server.kv.scan.ScannerManager;
 import org.apache.fluss.server.kv.snapshot.CompletedKvSnapshotCommitter;
 import org.apache.fluss.server.kv.snapshot.CompletedSnapshot;
 import org.apache.fluss.server.kv.snapshot.KvFileHandleAndLocalPath;
@@ -211,6 +215,13 @@ public final class Replica {
     private volatile @Nullable CloseableRegistry closeableRegistryForKv;
     private @Nullable PeriodicSnapshotManager kvSnapshotManager;
 
+    /**
+     * Server-wide {@link ScannerManager}. Active sessions for this bucket are closed in {@link
+     * #dropKv()} under the {@code leaderIsrUpdateLock} write lock; {@link #openScan} registers
+     * under the read lock, so registration cannot race a leadership flip.
+     */
+    private final ScannerManager scannerManager;
+
     // ------- metrics
     private Counter isrShrinks;
     private Counter isrExpands;
@@ -236,7 +247,8 @@ public final class Replica {
             BucketMetricGroup bucketMetricGroup,
             TableInfo tableInfo,
             Clock clock,
-            RemoteLogManager remoteLogManager)
+            RemoteLogManager remoteLogManager,
+            ScannerManager scannerManager)
             throws Exception {
         this.physicalPath = physicalPath;
         this.tableBucket = tableBucket;
@@ -269,6 +281,7 @@ public final class Replica {
         this.logTablet.updateIsDataLakeEnabled(tableConfig.isDataLakeEnabled());
         this.clock = clock;
         this.remoteLogManager = remoteLogManager;
+        this.scannerManager = checkNotNull(scannerManager, "scannerManager");
         registerMetrics();
     }
 
@@ -702,16 +715,16 @@ public final class Replica {
     }
 
     private void dropKv() {
-        // close any closeable registry for kv
+        // Release scanner leases first; otherwise resourceGuard.close() inside kvTablet.close()
+        // blocks waiting for them. Runs under leaderIsrUpdateLock(W), so no concurrent register.
+        scannerManager.closeScannersForBucket(tableBucket);
+
         if (closeableRegistry.unregisterCloseable(closeableRegistryForKv)) {
             IOUtils.closeQuietly(closeableRegistryForKv);
         }
         if (kvTablet != null) {
-            // Unregister RocksDB statistics before dropping KvTablet
-            // This ensures statistics are cleaned up when KvTablet is destroyed
             bucketMetricGroup.unregisterRocksDBStatistics();
 
-            // drop the kv tablet
             checkNotNull(kvManager);
             kvManager.dropKv(tableBucket);
             kvTablet = null;
@@ -1374,6 +1387,52 @@ public final class Replica {
                         LOG.error(errorMsg, e);
                         throw new KvStorageException(errorMsg, e);
                     }
+                });
+    }
+
+    /**
+     * Opens a new full-scan session against this replica's KV store. The leader check, snapshot
+     * open, and {@link ScannerManager#register} all happen under {@code leaderIsrUpdateLock(R)}, so
+     * a leadership flip cannot leave a scanner registered for a non-leader bucket.
+     *
+     * @param limit row-count cap ({@code ≤ 0} means unlimited)
+     * @throws NonPrimaryKeyTableException if this replica is not a primary-key table
+     * @throws NotLeaderOrFollowerException if this replica is not the leader
+     * @throws TooManyScannersException if scanner limits are exceeded
+     * @throws IOException if RocksDB is shutting down
+     */
+    public OpenScanResult openScan(
+            ScannerManager scannerManager, String scannerId, long limit, long initialAccessTimeMs)
+            throws IOException {
+        if (!isKvTable()) {
+            throw new NonPrimaryKeyTableException(
+                    "the primary key table not exists for " + tableBucket);
+        }
+
+        return inReadLock(
+                leaderIsrUpdateLock,
+                () -> {
+                    if (!isLeader()) {
+                        throw new NotLeaderOrFollowerException(
+                                String.format(
+                                        "Leader not local for bucket %s on tabletServer %d",
+                                        tableBucket, localTabletServerId));
+                    }
+                    checkNotNull(
+                            kvTablet, "KvTablet for the replica to open scan shouldn't be null.");
+                    OpenScanResult result =
+                            kvTablet.openScan(scannerId, limit, initialAccessTimeMs);
+                    ScannerContext context = result.getContext();
+                    if (context == null) {
+                        return result;
+                    }
+                    try {
+                        scannerManager.register(context);
+                    } catch (TooManyScannersException e) {
+                        IOUtils.closeQuietly(context);
+                        throw e;
+                    }
+                    return result;
                 });
     }
 

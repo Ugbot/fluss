@@ -33,6 +33,7 @@ import org.apache.fluss.server.coordinator.TestCoordinatorGateway;
 import org.apache.fluss.server.entity.NotifyLeaderAndIsrData;
 import org.apache.fluss.server.entity.NotifyLeaderAndIsrResultForBucket;
 import org.apache.fluss.server.kv.KvManager;
+import org.apache.fluss.server.kv.scan.ScannerManager;
 import org.apache.fluss.server.kv.snapshot.TestingCompletedKvSnapshotCommitter;
 import org.apache.fluss.server.log.LogManager;
 import org.apache.fluss.server.metadata.TabletServerMetadataCache;
@@ -566,6 +567,7 @@ public class ReplicaFetcherThreadTest {
                     NOPErrorHandler.INSTANCE,
                     serverMetricGroup,
                     USER_METRICS,
+                    new ScannerManager(conf, scheduler),
                     clock,
                     ioExecutor);
         }

@@ -79,6 +79,7 @@ import org.apache.fluss.server.entity.StopReplicaResultForBucket;
 import org.apache.fluss.server.entity.UserContext;
 import org.apache.fluss.server.kv.KvManager;
 import org.apache.fluss.server.kv.KvSnapshotResource;
+import org.apache.fluss.server.kv.scan.ScannerManager;
 import org.apache.fluss.server.kv.snapshot.CompletedKvSnapshotCommitter;
 import org.apache.fluss.server.kv.snapshot.DefaultSnapshotContext;
 import org.apache.fluss.server.log.FetchDataInfo;
@@ -209,6 +210,8 @@ public class ReplicaManager implements ServerReconfigurable {
 
     private final Clock clock;
 
+    private final ScannerManager scannerManager;
+
     public ReplicaManager(
             Configuration conf,
             Scheduler scheduler,
@@ -223,6 +226,7 @@ public class ReplicaManager implements ServerReconfigurable {
             FatalErrorHandler fatalErrorHandler,
             TabletServerMetricGroup serverMetricGroup,
             UserMetrics userMetrics,
+            ScannerManager scannerManager,
             Clock clock,
             ExecutorService ioExecutor)
             throws IOException {
@@ -241,6 +245,7 @@ public class ReplicaManager implements ServerReconfigurable {
                 serverMetricGroup,
                 userMetrics,
                 new RemoteLogManager(conf, zkClient, coordinatorGateway, clock, ioExecutor),
+                scannerManager,
                 clock,
                 ioExecutor);
     }
@@ -261,6 +266,7 @@ public class ReplicaManager implements ServerReconfigurable {
             TabletServerMetricGroup serverMetricGroup,
             UserMetrics userMetrics,
             RemoteLogManager remoteLogManager,
+            ScannerManager scannerManager,
             Clock clock,
             ExecutorService ioExecutor)
             throws IOException {
@@ -310,6 +316,7 @@ public class ReplicaManager implements ServerReconfigurable {
         this.clock = clock;
         this.ioExecutor = ioExecutor;
         this.minInSyncReplicas = conf.get(ConfigOptions.LOG_REPLICA_MIN_IN_SYNC_REPLICAS_NUMBER);
+        this.scannerManager = checkNotNull(scannerManager, "scannerManager");
         registerMetrics();
     }
 
@@ -1155,6 +1162,7 @@ public class ReplicaManager implements ServerReconfigurable {
                 Replica replica = getReplicaOrException(data.getTableBucket());
                 if (replica.makeFollower(data)) {
                     replicasBecomeFollower.add(replica);
+                    scannerManager.closeScannersForBucket(tb);
                 }
                 // stop the remote log tiering tasks for followers
                 remoteLogManager.stopLogTiering(replica);
@@ -1833,6 +1841,8 @@ public class ReplicaManager implements ServerReconfigurable {
         // First stop fetchers for this table bucket.
         replicaFetcherManager.removeFetcherForBuckets(Collections.singleton(tb));
 
+        scannerManager.closeScannersForBucket(tb);
+
         HostedReplica replica = getReplica(tb);
         if (replica instanceof OnlineReplica) {
             Replica replicaToDelete = ((OnlineReplica) replica).getReplica();
@@ -1945,7 +1955,8 @@ public class ReplicaManager implements ServerReconfigurable {
                                 bucketMetricGroup,
                                 tableInfo,
                                 clock,
-                                remoteLogManager);
+                                remoteLogManager,
+                                scannerManager);
                 allReplicas.put(tb, new OnlineReplica(replica));
                 replicaOpt = Optional.of(replica);
             } else if (hostedReplica instanceof OnlineReplica) {

@@ -37,6 +37,7 @@ import org.apache.fluss.server.coordinator.MetadataManager;
 import org.apache.fluss.server.coordinator.TestCoordinatorGateway;
 import org.apache.fluss.server.entity.NotifyLeaderAndIsrData;
 import org.apache.fluss.server.kv.KvManager;
+import org.apache.fluss.server.kv.scan.ScannerManager;
 import org.apache.fluss.server.kv.snapshot.CompletedKvSnapshotCommitter;
 import org.apache.fluss.server.kv.snapshot.CompletedSnapshot;
 import org.apache.fluss.server.kv.snapshot.KvSnapshotDataDownloader;
@@ -140,6 +141,7 @@ public class ReplicaTestBase {
     protected LogManager logManager;
     protected KvManager kvManager;
     protected ReplicaManager replicaManager;
+    protected ScannerManager scannerManager;
     protected RpcClient rpcClient;
     protected Configuration conf;
     protected TabletServerMetadataCache serverMetadataCache;
@@ -308,6 +310,9 @@ public class ReplicaTestBase {
 
     protected ReplicaManager buildReplicaManager(CoordinatorGateway coordinatorGateway)
             throws Exception {
+        if (scannerManager == null) {
+            scannerManager = new ScannerManager(conf, scheduler);
+        }
         return new ReplicaManager(
                 conf,
                 scheduler,
@@ -323,6 +328,7 @@ public class ReplicaTestBase {
                 TestingMetricGroups.TABLET_SERVER_METRICS,
                 TestingMetricGroups.USER_METRICS,
                 remoteLogManager,
+                scannerManager,
                 manualClock,
                 ioExecutor);
     }
@@ -349,6 +355,10 @@ public class ReplicaTestBase {
 
         if (replicaManager != null) {
             replicaManager.shutdown();
+        }
+
+        if (scannerManager != null) {
+            scannerManager.close();
         }
 
         if (rpcClient != null) {
@@ -502,7 +512,8 @@ public class ReplicaTestBase {
                 metricGroup,
                 DATA1_TABLE_INFO,
                 manualClock,
-                remoteLogManager);
+                remoteLogManager,
+                scannerManager);
     }
 
     private void initRemoteLogEnv() throws Exception {
