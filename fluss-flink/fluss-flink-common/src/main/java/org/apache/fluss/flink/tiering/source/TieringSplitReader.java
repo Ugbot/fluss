@@ -354,27 +354,27 @@ public class TieringSplitReader<WriteResult>
             ScanRecords scanRecords) throws IOException {
         Map<TableBucket, TableBucketWriteResult<WriteResult>> writeResults = new HashMap<>();
         Map<TableBucket, String> finishedSplitIds = new HashMap<>();
-        LOG.info("for log records to tier table {}.", currentTableId);
 
         for (TableBucket bucket : scanRecords.buckets()) {
-            LOG.info("tiering table bucket {}.", bucket);
             List<ScanRecord> bucketScanRecords = scanRecords.records(bucket);
             if (bucketScanRecords.isEmpty()) {
                 continue;
             }
-            LOG.info("tiering table bucket is not empty {}.", bucket);
             // no any stopping offset, just skip handle the records for the bucket
             Long stoppingOffset = currentTableStoppingOffsets.get(bucket);
             if (stoppingOffset == null) {
                 continue;
             }
-            LOG.info("tiering table bucket stoppingOffset is not empty {}.", bucket);
-            LakeWriter<WriteResult> lakeWriter =
-                    getOrCreateLakeWriter(
-                            bucket, currentTableSplitsByBucket.get(bucket).getPartitionName());
+            LakeWriter<WriteResult> lakeWriter = null;
             for (ScanRecord record : bucketScanRecords) {
                 // if record is less than stopping offset
                 if (record.logOffset() < stoppingOffset) {
+                    if (lakeWriter == null) {
+                        lakeWriter =
+                                getOrCreateLakeWriter(
+                                        bucket,
+                                        currentTableSplitsByBucket.get(bucket).getPartitionName());
+                    }
                     lakeWriter.write(record);
                     if (record.getSizeInBytes() > 0) {
                         tieringMetrics.recordBytesRead(record.getSizeInBytes());
@@ -510,11 +510,14 @@ public class TieringSplitReader<WriteResult>
 
     private TableBucketWriteResultWithSplitIds forSnapshotSplitRecords(
             TableBucket bucket, CloseableIterator<RecordAndPos> recordIterator) throws IOException {
-        LakeWriter<WriteResult> lakeWriter =
-                getOrCreateLakeWriter(
-                        bucket, checkNotNull(currentSnapshotSplit).getPartitionName());
+        LakeWriter<WriteResult> lakeWriter = null;
         while (recordIterator.hasNext()) {
             ScanRecord scanRecord = recordIterator.next().record();
+            if (lakeWriter == null) {
+                lakeWriter =
+                        getOrCreateLakeWriter(
+                                bucket, checkNotNull(currentSnapshotSplit).getPartitionName());
+            }
             lakeWriter.write(scanRecord);
             if (scanRecord.getSizeInBytes() > 0) {
                 tieringMetrics.recordBytesRead(scanRecord.getSizeInBytes());
