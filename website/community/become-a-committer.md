@@ -1,6 +1,6 @@
 ---
-title: How to become a Committer
-sidebar_position: 5
+title: How to Become a Committer
+sidebar_position: 4
 ---
 
 # How to become a committer
