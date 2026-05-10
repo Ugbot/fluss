@@ -106,6 +106,7 @@ import org.apache.fluss.server.replica.delay.DelayedTableBucketKey;
 import org.apache.fluss.server.replica.delay.DelayedWrite;
 import org.apache.fluss.server.replica.fetcher.InitialFetchStatus;
 import org.apache.fluss.server.replica.fetcher.ReplicaFetcherManager;
+import org.apache.fluss.server.storage.LocalDiskManager;
 import org.apache.fluss.server.utils.FatalErrorHandler;
 import org.apache.fluss.server.zk.ZooKeeperClient;
 import org.apache.fluss.server.zk.data.lake.LakeTableSnapshot;
@@ -161,7 +162,8 @@ public class ReplicaManager implements ServerReconfigurable {
     private final ZooKeeperClient zkClient;
     protected final int serverId;
     private final AtomicBoolean highWatermarkCheckPointThreadStarted = new AtomicBoolean(false);
-    private final OffsetCheckpointFile highWatermarkCheckpoint;
+    private final Map<File, OffsetCheckpointFile> highWatermarkCheckpoints;
+    private final LocalDiskManager localDiskManager;
 
     @GuardedBy("replicaStateChangeLock")
     private final Map<TableBucket, HostedReplica> allReplicas = new ConcurrentHashMap<>();
@@ -228,7 +230,8 @@ public class ReplicaManager implements ServerReconfigurable {
             UserMetrics userMetrics,
             ScannerManager scannerManager,
             Clock clock,
-            ExecutorService ioExecutor)
+            ExecutorService ioExecutor,
+            LocalDiskManager localDiskManager)
             throws IOException {
         this(
                 conf,
@@ -244,10 +247,18 @@ public class ReplicaManager implements ServerReconfigurable {
                 fatalErrorHandler,
                 serverMetricGroup,
                 userMetrics,
-                new RemoteLogManager(conf, zkClient, coordinatorGateway, clock, ioExecutor),
+                new RemoteLogManager(
+                        conf,
+                        zkClient,
+                        coordinatorGateway,
+                        localDiskManager,
+                        logManager,
+                        clock,
+                        ioExecutor),
                 scannerManager,
                 clock,
-                ioExecutor);
+                ioExecutor,
+                localDiskManager);
     }
 
     @VisibleForTesting
@@ -268,21 +279,25 @@ public class ReplicaManager implements ServerReconfigurable {
             RemoteLogManager remoteLogManager,
             ScannerManager scannerManager,
             Clock clock,
-            ExecutorService ioExecutor)
+            ExecutorService ioExecutor,
+            LocalDiskManager localDiskManager)
             throws IOException {
         this.conf = conf;
         this.zkClient = zkClient;
         this.scheduler = scheduler;
+        this.localDiskManager = localDiskManager;
         this.logManager = logManager;
         this.kvManager = kvManager;
         this.serverId = serverId;
         this.metadataCache = metadataCache;
 
-        this.highWatermarkCheckpoint =
-                new OffsetCheckpointFile(
-                        new File(
-                                logManager.getDataDir().getAbsolutePath(),
-                                HIGH_WATERMARK_CHECKPOINT_FILE_NAME));
+        this.highWatermarkCheckpoints = new HashMap<>();
+        for (File dataDir : localDiskManager.dataDirs()) {
+            highWatermarkCheckpoints.put(
+                    dataDir,
+                    new OffsetCheckpointFile(
+                            new File(dataDir, HIGH_WATERMARK_CHECKPOINT_FILE_NAME)));
+        }
         this.delayedWriteManager =
                 new DelayedOperationManager<>(
                         "delay write",
@@ -1496,19 +1511,22 @@ public class ReplicaManager implements ServerReconfigurable {
         // of RemoteLogSegment. For client fetcher, it will fetch the log from remote in client.
         // For follower, it can update its local metadata to adjust the next fetch offset.
         else if (canFetchFromRemoteLog(replica, fetchOffset)) {
-            RemoteLogFetchInfo remoteLogFetchInfo = fetchLogFromRemote(replica, fetchOffset);
-            if (remoteLogFetchInfo != null) {
-                return new FetchLogResultForBucket(
-                        tb, remoteLogFetchInfo, replica.getLogHighWatermark());
-            } else {
-                return new FetchLogResultForBucket(
-                        tb,
-                        ApiError.fromThrowable(
-                                new LogOffsetOutOfRangeException(
-                                        String.format(
-                                                "The fetch offset %s is out of range for table bucket %s",
-                                                fetchOffset, tb))));
+            try {
+                RemoteLogFetchInfo remoteLogFetchInfo = fetchLogFromRemote(replica, fetchOffset);
+                if (remoteLogFetchInfo != null) {
+                    return new FetchLogResultForBucket(
+                            tb, remoteLogFetchInfo, replica.getLogHighWatermark());
+                }
+            } catch (Exception ex) {
+                return new FetchLogResultForBucket(tb, ApiError.fromThrowable(ex));
             }
+            return new FetchLogResultForBucket(
+                    tb,
+                    ApiError.fromThrowable(
+                            new LogOffsetOutOfRangeException(
+                                    String.format(
+                                            "The fetch offset %s is out of range for table bucket %s",
+                                            fetchOffset, tb))));
         } else {
             return new FetchLogResultForBucket(tb, ApiError.fromThrowable(e));
         }
@@ -1576,17 +1594,25 @@ public class ReplicaManager implements ServerReconfigurable {
     @VisibleForTesting
     void checkpointHighWatermarks() {
         List<Replica> onlineReplicasList = getOnlineReplicaList();
-        Map<TableBucket, Long> highWatermarks = new HashMap<>();
-        for (Replica replica : onlineReplicasList) {
-            LogTablet logTablet = replica.getLogTablet();
-            highWatermarks.put(logTablet.getTableBucket(), logTablet.getHighWatermark());
+        if (onlineReplicasList.isEmpty()) {
+            return;
         }
 
-        if (!highWatermarks.isEmpty()) {
-            try {
-                highWatermarkCheckpoint.write(highWatermarks);
-            } catch (Exception e) {
-                throw new LogStorageException("Error while writing to high watermark file", e);
+        Map<File, Map<TableBucket, Long>> highWatermarksByDir = new HashMap<>();
+        for (Replica replica : onlineReplicasList) {
+            LogTablet logTablet = replica.getLogTablet();
+            highWatermarksByDir
+                    .computeIfAbsent(logTablet.getDataDir(), ignored -> new HashMap<>())
+                    .put(logTablet.getTableBucket(), logTablet.getHighWatermark());
+        }
+
+        for (Map.Entry<File, Map<TableBucket, Long>> entry : highWatermarksByDir.entrySet()) {
+            if (!entry.getValue().isEmpty()) {
+                try {
+                    highWatermarkCheckpoints.get(entry.getKey()).write(entry.getValue());
+                } catch (Exception e) {
+                    throw new LogStorageException("Error while writing to high watermark file", e);
+                }
             }
         }
     }
@@ -1851,6 +1877,9 @@ public class ReplicaManager implements ServerReconfigurable {
                     serverMetricGroup.removeTableBucketMetricGroup(
                             replicaToDelete.getPhysicalTablePath().getTablePath(), tb);
                     replicaToDelete.delete();
+                    localDiskManager.recordReplicaDelete(
+                            replicaToDelete.getLogTablet().getDataDir(),
+                            replicaToDelete.isKvTable());
                     Path tabletParentDir = replicaToDelete.getTabletParentDir();
                     if (tb.getPartitionId() != null) {
                         deletedPartitionIds.put(tb.getPartitionId(), tabletParentDir);
@@ -1932,11 +1961,20 @@ public class ReplicaManager implements ServerReconfigurable {
                 TableInfo tableInfo = getTableInfo(zkClient, tablePath);
 
                 boolean isKvTable = tableInfo.hasPrimaryKey();
+                Optional<LogTablet> existingLogTabletOpt = logManager.getLog(tb);
+                File dataDir =
+                        existingLogTabletOpt
+                                .map(LogTablet::getDataDir)
+                                .orElseGet(
+                                        () ->
+                                                localDiskManager.selectDataDirForNewBucket(
+                                                        isKvTable));
                 BucketMetricGroup bucketMetricGroup =
                         serverMetricGroup.addTableBucketMetricGroup(
                                 physicalTablePath, tb, isKvTable);
                 Replica replica =
                         new Replica(
+                                dataDir,
                                 physicalTablePath,
                                 tb,
                                 logManager,
@@ -1945,7 +1983,7 @@ public class ReplicaManager implements ServerReconfigurable {
                                 this::getMinInSyncReplicas,
                                 serverId,
                                 new OffsetCheckpointFile.LazyOffsetCheckpoints(
-                                        highWatermarkCheckpoint),
+                                        highWatermarkCheckpoints.get(dataDir)),
                                 delayedWriteManager,
                                 delayedFetchLogManager,
                                 adjustIsrManager,
@@ -1957,6 +1995,9 @@ public class ReplicaManager implements ServerReconfigurable {
                                 clock,
                                 remoteLogManager,
                                 scannerManager);
+                if (!existingLogTabletOpt.isPresent()) {
+                    localDiskManager.recordReplicaLoad(dataDir, isKvTable);
+                }
                 allReplicas.put(tb, new OnlineReplica(replica));
                 replicaOpt = Optional.of(replica);
             } else if (hostedReplica instanceof OnlineReplica) {
