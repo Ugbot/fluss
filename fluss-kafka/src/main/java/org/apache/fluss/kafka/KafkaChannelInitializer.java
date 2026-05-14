@@ -17,12 +17,18 @@
 
 package org.apache.fluss.kafka;
 
+import org.apache.fluss.kafka.auth.KafkaListenerAuthConfig;
+import org.apache.fluss.kafka.metrics.KafkaMetricGroup;
 import org.apache.fluss.rpc.netty.NettyChannelInitializer;
 import org.apache.fluss.rpc.netty.server.RequestChannel;
 import org.apache.fluss.shaded.netty4.io.netty.channel.ChannelInitializer;
 import org.apache.fluss.shaded.netty4.io.netty.channel.socket.SocketChannel;
 import org.apache.fluss.shaded.netty4.io.netty.handler.codec.LengthFieldPrepender;
 import org.apache.fluss.shaded.netty4.io.netty.handler.flow.FlowControlHandler;
+
+import java.util.function.Supplier;
+
+import static org.apache.fluss.utils.Preconditions.checkNotNull;
 
 /**
  * A {@link ChannelInitializer} for initializing {@link SocketChannel} instances that will be used
@@ -31,19 +37,45 @@ import org.apache.fluss.shaded.netty4.io.netty.handler.flow.FlowControlHandler;
 public class KafkaChannelInitializer extends NettyChannelInitializer {
 
     private final RequestChannel[] requestChannels;
+    private final String listenerName;
     private final int maxRequestSize;
     private final LengthFieldPrepender prepender = new LengthFieldPrepender(4);
     private final boolean preferHeap;
+    private final KafkaListenerAuthConfig authConfig;
+    private final Supplier<KafkaMetricGroup> metricsSupplier;
 
     public KafkaChannelInitializer(
             RequestChannel[] requestChannels,
+            String listenerName,
             long maxIdleTimeSeconds,
             int maxRequestSize,
-            boolean preferHeap) {
+            boolean preferHeap,
+            KafkaListenerAuthConfig authConfig) {
+        this(
+                requestChannels,
+                listenerName,
+                maxIdleTimeSeconds,
+                maxRequestSize,
+                preferHeap,
+                authConfig,
+                () -> null);
+    }
+
+    public KafkaChannelInitializer(
+            RequestChannel[] requestChannels,
+            String listenerName,
+            long maxIdleTimeSeconds,
+            int maxRequestSize,
+            boolean preferHeap,
+            KafkaListenerAuthConfig authConfig,
+            Supplier<KafkaMetricGroup> metricsSupplier) {
         super(maxIdleTimeSeconds);
         this.requestChannels = requestChannels;
+        this.listenerName = listenerName;
         this.maxRequestSize = maxRequestSize;
         this.preferHeap = preferHeap;
+        this.authConfig = checkNotNull(authConfig, "authConfig");
+        this.metricsSupplier = checkNotNull(metricsSupplier, "metricsSupplier");
     }
 
     @Override
@@ -53,6 +85,9 @@ public class KafkaChannelInitializer extends NettyChannelInitializer {
         ch.pipeline().addLast(prepender);
         addFrameDecoder(ch, maxRequestSize, 4, preferHeap);
         ch.pipeline().addLast("flowController", new FlowControlHandler());
-        ch.pipeline().addLast(new KafkaCommandDecoder(requestChannels));
+        ch.pipeline()
+                .addLast(
+                        new KafkaCommandDecoder(
+                                requestChannels, listenerName, authConfig, metricsSupplier));
     }
 }
