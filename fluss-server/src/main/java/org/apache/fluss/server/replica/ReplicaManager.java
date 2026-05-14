@@ -2160,6 +2160,15 @@ public class ReplicaManager implements ServerReconfigurable {
     }
 
     /**
+     * Returns the server-wide {@link org.apache.fluss.row.arrow.ArrowWriterProvider} owned by this
+     * tablet server's {@link KvManager}. Used by code paths (e.g. the Kafka bolt-on Produce
+     * transcoder) that build Arrow log batches outside the per-{@code KvTablet} world.
+     */
+    public org.apache.fluss.row.arrow.ArrowWriterProvider getServerArrowWriterProvider() {
+        return kvManager.getServerArrowWriterProvider();
+    }
+
+    /**
      * Interface to represent the state of hosted {@link Replica}. We create a concrete (active)
      * {@link Replica} instance when the TabletServer receives a createLogLeader request or
      * createFollower request from the Coordinator server.

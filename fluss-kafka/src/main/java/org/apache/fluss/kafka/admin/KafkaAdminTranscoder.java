@@ -206,7 +206,8 @@ public final class KafkaAdminTranscoder {
                         compression,
                         topicId,
                         compacted,
-                        extraConfigs);
+                        extraConfigs,
+                        context.kafkaLogFormat());
 
         if (validateOnly) {
             return result.setErrorCode(Errors.NONE.code())

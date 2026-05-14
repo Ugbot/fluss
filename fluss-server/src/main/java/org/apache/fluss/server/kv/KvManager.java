@@ -35,6 +35,8 @@ import org.apache.fluss.metadata.SchemaGetter;
 import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.metadata.TableInfo;
 import org.apache.fluss.metadata.TablePath;
+import org.apache.fluss.row.arrow.ArrowWriterPool;
+import org.apache.fluss.row.arrow.ArrowWriterProvider;
 import org.apache.fluss.server.TabletManagerBase;
 import org.apache.fluss.server.kv.autoinc.AutoIncrementManager;
 import org.apache.fluss.server.kv.autoinc.ZkSequenceGeneratorFactory;
@@ -123,6 +125,17 @@ public final class KvManager extends TabletManagerBase implements ServerReconfig
      */
     private final BufferAllocator arrowBufferAllocator;
 
+    /**
+     * Server-wide {@link ArrowWriterPool} sharing the {@link #arrowBufferAllocator}. Used by code
+     * paths that need to construct Arrow batches outside the per-{@code KvTablet} world — notably
+     * the Kafka bolt-on, whose Produce path writes across many tables in one request and therefore
+     * cannot rely on a per-tablet pool.
+     *
+     * <p>Lazily constructed on first access so test setups that never touch Arrow don't pay the
+     * allocation cost. Closed before {@link #arrowBufferAllocator} during {@link #shutdown()}.
+     */
+    private volatile ArrowWriterPool serverArrowWriterPool;
+
     /** The memory segment pool to allocate memorySegment. */
     private final MemorySegmentPool memorySegmentPool;
 
@@ -200,6 +213,24 @@ public final class KvManager extends TabletManagerBase implements ServerReconfig
         // should do nothing now
     }
 
+    /**
+     * Returns the server-wide {@link ArrowWriterProvider} sharing this manager's Arrow buffer
+     * allocator. Lazily instantiates the underlying {@link ArrowWriterPool} on first call.
+     */
+    public ArrowWriterProvider getServerArrowWriterProvider() {
+        ArrowWriterPool local = serverArrowWriterPool;
+        if (local == null) {
+            synchronized (this) {
+                local = serverArrowWriterPool;
+                if (local == null) {
+                    local = new ArrowWriterPool(arrowBufferAllocator);
+                    serverArrowWriterPool = local;
+                }
+            }
+        }
+        return local;
+    }
+
     public void shutdown() {
         LOG.info("Shutting down KvManager");
         isShutdown = true;
@@ -210,6 +241,9 @@ public final class KvManager extends TabletManagerBase implements ServerReconfig
             } catch (Exception e) {
                 LOG.warn("Exception while closing kv tablet {}.", kvTablet.getTableBucket(), e);
             }
+        }
+        if (serverArrowWriterPool != null) {
+            serverArrowWriterPool.close();
         }
         arrowBufferAllocator.close();
         memorySegmentPool.close();

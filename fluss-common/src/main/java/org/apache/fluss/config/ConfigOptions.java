@@ -2255,6 +2255,28 @@ public class ConfigOptions {
                                     + "once at server start.");
 
     /**
+     * Log format used for new Kafka log (non-PK) topics created via the Kafka API. Defaults to
+     * {@link LogFormat#ARROW} so the on-disk shape matches Fluss-native log tables; operators can
+     * pin {@link LogFormat#INDEXED} per-cluster to retain the pre-existing row-oriented format.
+     *
+     * <p>Existing Kafka topics are unaffected — their format is read from the table descriptor at
+     * produce time, so this config only governs the format stamped on tables created after it takes
+     * effect. PK/compacted Kafka topics always use {@link
+     * org.apache.fluss.metadata.KvFormat#INDEXED} regardless of this setting. Read once at server
+     * start; toggling requires a restart.
+     */
+    public static final ConfigOption<LogFormat> KAFKA_LOG_FORMAT =
+            key("kafka.log-format")
+                    .enumType(LogFormat.class)
+                    .defaultValue(LogFormat.ARROW)
+                    .withDescription(
+                            "Log format used for new Kafka log (non-PK) topics created via the "
+                                    + "Kafka API. Existing topics are unaffected. PK/compacted "
+                                    + "topics always use the INDEXED KV format. Defaults to "
+                                    + "ARROW; pin to INDEXED to revert to the prior row-oriented "
+                                    + "format. Read once at server start.");
+
+    /**
      * Whether the Iceberg REST Catalog HTTP endpoint is started on the coordinator leader. Second
      * projection over the Fluss catalog service, alongside the Kafka Schema Registry. Phase E
      * preview: implements {@code GET /v1/config}, {@code GET /v1/namespaces}, {@code POST

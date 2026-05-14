@@ -21,6 +21,7 @@ import org.apache.fluss.annotation.Internal;
 import org.apache.fluss.kafka.admin.KafkaConfigTier;
 import org.apache.fluss.kafka.admin.KafkaTopicConfigs;
 import org.apache.fluss.kafka.metadata.KafkaDataTable;
+import org.apache.fluss.metadata.LogFormat;
 import org.apache.fluss.metadata.TableDescriptor;
 
 import org.apache.kafka.common.Uuid;
@@ -52,7 +53,8 @@ public final class KafkaTableFactory {
                 compression,
                 topicId,
                 false,
-                Collections.emptyMap());
+                Collections.emptyMap(),
+                LogFormat.ARROW);
     }
 
     public static TableDescriptor buildDescriptor(
@@ -69,7 +71,27 @@ public final class KafkaTableFactory {
                 compression,
                 topicId,
                 compacted,
-                Collections.emptyMap());
+                Collections.emptyMap(),
+                LogFormat.ARROW);
+    }
+
+    public static TableDescriptor buildDescriptor(
+            String topic,
+            int numPartitions,
+            KafkaTopicInfo.TimestampType timestampType,
+            @Nullable KafkaTopicInfo.Compression compression,
+            Uuid topicId,
+            boolean compacted,
+            Map<String, String> kafkaTopicConfigs) {
+        return buildDescriptor(
+                topic,
+                numPartitions,
+                timestampType,
+                compression,
+                topicId,
+                compacted,
+                kafkaTopicConfigs,
+                LogFormat.ARROW);
     }
 
     /**
@@ -82,6 +104,11 @@ public final class KafkaTableFactory {
      * catalogue keys (e.g. {@code retention.ms}) are translated to their Fluss table-property
      * counterparts; STORED and unknown keys land on the {@code customProperties} map so
      * DescribeConfigs round-trips them. Phase K-CFG (plan §28.5).
+     *
+     * <p>{@code logFormat} pins the on-disk log format for non-compacted topics. Sourced from
+     * {@link org.apache.fluss.config.ConfigOptions#KAFKA_LOG_FORMAT} at the call site; defaults to
+     * {@link LogFormat#ARROW}. Ignored for compacted topics — those always use {@link
+     * org.apache.fluss.metadata.KvFormat#INDEXED}.
      */
     public static TableDescriptor buildDescriptor(
             String topic,
@@ -90,7 +117,8 @@ public final class KafkaTableFactory {
             @Nullable KafkaTopicInfo.Compression compression,
             Uuid topicId,
             boolean compacted,
-            Map<String, String> kafkaTopicConfigs) {
+            Map<String, String> kafkaTopicConfigs,
+            LogFormat logFormat) {
         TableDescriptor.Builder builder =
                 TableDescriptor.builder()
                         .schema(KafkaDataTable.schema(compacted))
@@ -103,14 +131,11 @@ public final class KafkaTableFactory {
                         .customProperty(
                                 CustomPropertiesTopicsCatalog.PROP_TOPIC_ID, topicId.toString());
         if (!compacted) {
-            // Log topics: KafkaProduceTranscoder writes records using
-            // MemoryLogRecordsIndexedBuilder, so the on-disk format is INDEXED. Fluss's default
-            // TABLE_LOG_FORMAT is ARROW — pinning INDEXED here matches reality and lets the
-            // fetch transcoder's LogRecordReadContext.createReadContext(TableInfo, ...) pick
-            // the right decoder automatically.
+            // Stamp the log format chosen by the operator (see KAFKA_LOG_FORMAT). The fetch
+            // transcoder's LogRecordReadContext.createReadContext(TableInfo, ...) branches on
+            // this so existing tables stamped with another format keep working.
             builder.property(
-                    org.apache.fluss.config.ConfigOptions.TABLE_LOG_FORMAT.key(),
-                    org.apache.fluss.metadata.LogFormat.INDEXED.name());
+                    org.apache.fluss.config.ConfigOptions.TABLE_LOG_FORMAT.key(), logFormat.name());
         }
         if (compression != null) {
             builder.customProperty(

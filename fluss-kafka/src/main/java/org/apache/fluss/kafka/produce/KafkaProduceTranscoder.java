@@ -88,6 +88,13 @@ public final class KafkaProduceTranscoder {
 
     private static final int INITIAL_SEGMENT_BYTES = 4096;
 
+    /**
+     * Buffer size hint for the per-batch Arrow writer acquired from the server-wide pool. Arrow's
+     * vector capacity auto-expands beyond this; the hint just sizes the initial allocation. 64 KiB
+     * matches the typical Kafka Produce batch.size client default.
+     */
+    private static final int ARROW_WRITER_BUFFER_BYTES = 64 * 1024;
+
     private final KafkaServerContext context;
     private final KafkaTopicsCatalog catalog;
     private final ReplicaManager replicaManager;
@@ -225,6 +232,12 @@ public final class KafkaProduceTranscoder {
         }
 
         boolean compacted = tableInfo.hasPrimaryKey();
+        // Per-table log format: read from the descriptor so existing tables stamped with INDEXED
+        // continue to write INDEXED batches even after the cluster default flips to ARROW. Only
+        // matters for the log path; compacted tables go through the KV builder which is always
+        // INDEXED.
+        org.apache.fluss.metadata.LogFormat logFormat =
+                compacted ? null : tableInfo.getTableConfig().getLogFormat();
         List<CompletableFuture<PartitionProduceResponse>> partitionFutures = new ArrayList<>();
         for (PartitionProduceData partition : topicData.partitionData()) {
             if (compacted) {
@@ -250,7 +263,8 @@ public final class KafkaProduceTranscoder {
                                 partition,
                                 acks,
                                 timeoutMs,
-                                typedBinding));
+                                typedBinding,
+                                logFormat));
             }
         }
         return CompletableFuture.allOf(partitionFutures.toArray(new CompletableFuture[0]))
@@ -272,7 +286,8 @@ public final class KafkaProduceTranscoder {
             PartitionProduceData partition,
             short acks,
             int timeoutMs,
-            @javax.annotation.Nullable TypedProduceBinding typedBinding) {
+            @javax.annotation.Nullable TypedProduceBinding typedBinding,
+            org.apache.fluss.metadata.LogFormat logFormat) {
         int partitionIndex = partition.index();
         PartitionProduceResponse response = new PartitionProduceResponse().setIndex(partitionIndex);
 
@@ -298,7 +313,8 @@ public final class KafkaProduceTranscoder {
                             rowType,
                             valueWriters,
                             info,
-                            typedBinding);
+                            typedBinding,
+                            logFormat);
         } catch (InvalidProduceRecordException invalid) {
             // Per design 0014 §8: Kafka SR frame failures map to per-record codes; we narrow
             // the partition-level error code to the specific Errors enum the validator chose
@@ -585,6 +601,30 @@ public final class KafkaProduceTranscoder {
             RowType rowType,
             BinaryWriter.ValueWriter[] valueWriters,
             KafkaTopicInfo info,
+            @javax.annotation.Nullable TypedProduceBinding typedBinding,
+            org.apache.fluss.metadata.LogFormat logFormat)
+            throws Exception {
+        if (logFormat == org.apache.fluss.metadata.LogFormat.ARROW) {
+            return buildFlussRecordsArrow(
+                    kafkaRecords,
+                    tableId,
+                    partitionIdx,
+                    schemaId,
+                    rowType,
+                    valueWriters,
+                    typedBinding);
+        }
+        return buildFlussRecordsIndexed(
+                kafkaRecords, tableId, partitionIdx, schemaId, rowType, valueWriters, typedBinding);
+    }
+
+    private MemoryLogRecords buildFlussRecordsIndexed(
+            MemoryRecords kafkaRecords,
+            long tableId,
+            int partitionIdx,
+            int schemaId,
+            RowType rowType,
+            BinaryWriter.ValueWriter[] valueWriters,
             @javax.annotation.Nullable TypedProduceBinding typedBinding)
             throws Exception {
         DataType[] fieldTypes = rowType.getChildren().toArray(new DataType[0]);
@@ -619,6 +659,80 @@ public final class KafkaProduceTranscoder {
             }
 
             BytesView built = builder.build();
+            builder.close();
+            builtBatches.add(built);
+        }
+
+        return combineBatches(builtBatches);
+    }
+
+    /**
+     * Arrow variant of {@link #buildFlussRecordsIndexed}. Each Kafka {@link RecordBatch} becomes
+     * its own {@link org.apache.fluss.record.MemoryLogRecordsArrowBuilder} batch; rows are first
+     * built into the same {@link IndexedRowWriter} the passthrough and typed paths already use,
+     * then handed to the Arrow builder as an {@link org.apache.fluss.row.InternalRow} (which {@link
+     * IndexedRow} implements). The Arrow builder transposes row-to-columnar internally, so neither
+     * {@link #writeRow} nor the SR-codec compilers need to change.
+     *
+     * <p>A new {@link org.apache.fluss.row.arrow.ArrowWriter} is acquired from the server-wide pool
+     * per Kafka batch and recycled at the end of the loop. Builder lifecycle ({@code build()} +
+     * {@code close()}) takes care of returning the Arrow writer's VectorSchemaRoot to the pool via
+     * {@link org.apache.fluss.record.MemoryLogRecordsArrowBuilder#recycleArrowWriter()} inside its
+     * {@code build()}; the explicit pool.recycle is therefore unnecessary, but we keep the loop
+     * structure parallel to the INDEXED path.
+     */
+    private MemoryLogRecords buildFlussRecordsArrow(
+            MemoryRecords kafkaRecords,
+            long tableId,
+            int partitionIdx,
+            int schemaId,
+            RowType rowType,
+            BinaryWriter.ValueWriter[] valueWriters,
+            @javax.annotation.Nullable TypedProduceBinding typedBinding)
+            throws Exception {
+        DataType[] fieldTypes = rowType.getChildren().toArray(new DataType[0]);
+        IndexedRowWriter rowWriter = new IndexedRowWriter(rowType);
+        IndexedRow row = new IndexedRow(fieldTypes);
+        KafkaMetricGroup metrics = context.metrics();
+        KafkaWriterSeqCache seqCache = context.writerSeqCache();
+
+        org.apache.fluss.row.arrow.ArrowWriterProvider pool = context.arrowWriterProvider();
+        org.apache.fluss.compression.ArrowCompressionInfo compression =
+                org.apache.fluss.compression.ArrowCompressionInfo.NO_COMPRESSION;
+        List<BytesView> builtBatches = new ArrayList<>();
+
+        for (RecordBatch batch : kafkaRecords.batches()) {
+            UnmanagedPagedOutputView outputView =
+                    new UnmanagedPagedOutputView(INITIAL_SEGMENT_BYTES);
+            org.apache.fluss.row.arrow.ArrowWriter arrowWriter =
+                    pool.getOrCreateWriter(
+                            tableId, schemaId, ARROW_WRITER_BUFFER_BYTES, rowType, compression);
+            org.apache.fluss.record.MemoryLogRecordsArrowBuilder builder =
+                    org.apache.fluss.record.MemoryLogRecordsArrowBuilder.builder(
+                            schemaId,
+                            arrowWriter,
+                            outputView,
+                            /* appendOnly */ true,
+                            /* statisticsCollector */ null);
+
+            for (Record kafkaRecord : batch) {
+                writeRow(kafkaRecord, rowWriter, valueWriters, typedBinding);
+                if (metrics != null && typedBinding != null) {
+                    metrics.onTypedProduce(1);
+                }
+                row.pointTo(rowWriter.segment(), 0, rowWriter.position());
+                builder.append(ChangeType.APPEND_ONLY, row);
+            }
+
+            if (batch.hasProducerId()) {
+                int flussSeq =
+                        seqCache.nextSeq(
+                                batch.producerId(), tableId, partitionIdx, batch.baseSequence());
+                builder.setWriterState(batch.producerId(), flussSeq);
+            }
+
+            BytesView built = builder.build();
+            // close() also recycles the ArrowWriter via MemoryLogRecordsArrowBuilder.build().
             builder.close();
             builtBatches.add(built);
         }

@@ -22,6 +22,8 @@ import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.config.Configuration;
 import org.apache.fluss.kafka.metrics.KafkaMetricGroup;
 import org.apache.fluss.kafka.produce.KafkaWriterSeqCache;
+import org.apache.fluss.metadata.LogFormat;
+import org.apache.fluss.row.arrow.ArrowWriterProvider;
 import org.apache.fluss.rpc.gateway.CoordinatorGateway;
 import org.apache.fluss.server.authorizer.Authorizer;
 import org.apache.fluss.server.coordinator.MetadataManager;
@@ -53,6 +55,7 @@ public final class KafkaServerContext {
     private final String kafkaDatabase;
     private final Configuration serverConf;
     private final boolean typedTablesEnabled;
+    private final LogFormat kafkaLogFormat;
     private final KafkaWriterSeqCache writerSeqCache;
 
     /**
@@ -159,6 +162,11 @@ public final class KafkaServerContext {
         // §7). Toggling requires a server restart; cached as a primitive boolean so the
         // hot-path branch in the Produce/Fetch transcoders is a single field load.
         this.typedTablesEnabled = serverConf.get(ConfigOptions.KAFKA_TYPED_TABLES_ENABLED);
+        // Read the Kafka log-format choice once at server start (mirrors the typed-tables flag
+        // above). KafkaTableFactory uses this to stamp the on-disk log format for new log
+        // topics; existing topics keep whatever format their TableInfo already carries because
+        // the produce path reads it per-table.
+        this.kafkaLogFormat = serverConf.get(ConfigOptions.KAFKA_LOG_FORMAT);
         this.writerSeqCache = new KafkaWriterSeqCache();
     }
 
@@ -273,5 +281,24 @@ public final class KafkaServerContext {
      */
     public KafkaWriterSeqCache writerSeqCache() {
         return writerSeqCache;
+    }
+
+    /**
+     * Log format to stamp on new Kafka log (non-PK) topics. Cached at construction from {@link
+     * ConfigOptions#KAFKA_LOG_FORMAT}; the value never changes for the life of the server.
+     * PK/compacted topics are unaffected — they always use {@code KvFormat.INDEXED}.
+     */
+    public LogFormat kafkaLogFormat() {
+        return kafkaLogFormat;
+    }
+
+    /**
+     * Server-wide Arrow writer pool, sourced from {@link
+     * ReplicaManager#getServerArrowWriterProvider()}. Used by the Produce path to construct {@code
+     * MemoryLogRecordsArrowBuilder} batches for log topics whose table-resolved format is {@link
+     * LogFormat#ARROW}.
+     */
+    public ArrowWriterProvider arrowWriterProvider() {
+        return replicaManager().getServerArrowWriterProvider();
     }
 }
