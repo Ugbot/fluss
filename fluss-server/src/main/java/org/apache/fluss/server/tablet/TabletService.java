@@ -144,6 +144,7 @@ import static org.apache.fluss.server.utils.ServerRpcMessageUtils.toPrefixLookup
 public final class TabletService extends RpcServiceBase implements TabletServerGateway {
 
     private final String serviceName;
+    private final int serverId;
     private final ReplicaManager replicaManager;
     private final TabletServerMetadataCache metadataCache;
     private final TabletServerMetadataProvider metadataFunctionProvider;
@@ -169,11 +170,49 @@ public final class TabletService extends RpcServiceBase implements TabletServerG
                 dynamicConfigManager,
                 ioExecutor);
         this.serviceName = "server-" + serverId;
+        this.serverId = serverId;
         this.replicaManager = replicaManager;
         this.metadataCache = metadataCache;
         this.metadataFunctionProvider =
                 new TabletServerMetadataProvider(zkClient, metadataManager, metadataCache);
         this.scannerManager = scannerManager;
+    }
+
+    /**
+     * Read-only accessors for network-protocol-plugin integration (e.g. the Kafka bolt-on). These
+     * expose state the constructor already receives; no new dependencies are introduced. Plugins
+     * use them via the standard {@code NetworkProtocolPlugin} SPI; non-plugin callers should
+     * continue going through the regular gateway methods.
+     */
+    public int getServerId() {
+        return serverId;
+    }
+
+    public ReplicaManager getReplicaManager() {
+        return replicaManager;
+    }
+
+    public TabletServerMetadataCache getMetadataCache() {
+        return metadataCache;
+    }
+
+    public ZooKeeperClient getZooKeeperClient() {
+        return zkClient;
+    }
+
+    public MetadataManager getMetadataManager() {
+        return metadataManager;
+    }
+
+    /**
+     * Returns the coordinator gateway when one is wired through this tablet service, otherwise
+     * {@code null}. Upstream tablet servers don't currently host a coordinator gateway; protocol
+     * plugins must tolerate {@code null} (e.g. by failing {@code FindCoordinator} routing with a
+     * clean error code) until a follow-up FIP wires one through.
+     */
+    @Nullable
+    public org.apache.fluss.rpc.gateway.CoordinatorGateway getCoordinatorGateway() {
+        return null;
     }
 
     @Override
