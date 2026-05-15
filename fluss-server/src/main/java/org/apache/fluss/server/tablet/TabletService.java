@@ -149,6 +149,7 @@ public final class TabletService extends RpcServiceBase implements TabletServerG
     private final TabletServerMetadataCache metadataCache;
     private final TabletServerMetadataProvider metadataFunctionProvider;
     private final ScannerManager scannerManager;
+    @Nullable private final org.apache.fluss.rpc.gateway.CoordinatorGateway coordinatorGateway;
 
     public TabletService(
             int serverId,
@@ -161,6 +162,38 @@ public final class TabletService extends RpcServiceBase implements TabletServerG
             DynamicConfigManager dynamicConfigManager,
             ExecutorService ioExecutor,
             ScannerManager scannerManager) {
+        this(
+                serverId,
+                remoteFileSystem,
+                zkClient,
+                replicaManager,
+                metadataCache,
+                metadataManager,
+                authorizer,
+                dynamicConfigManager,
+                ioExecutor,
+                scannerManager,
+                /* coordinatorGateway */ null);
+    }
+
+    /**
+     * Constructor variant that wires a {@link org.apache.fluss.rpc.gateway.CoordinatorGateway} into
+     * the service so protocol bolt-ons (e.g. the Kafka bolt-on's {@code CreateTopics} / {@code
+     * DeleteTopics}) can RPC the coordinator without spinning up their own client. Pass {@code
+     * null} when no coordinator routing is needed (current upstream callers).
+     */
+    public TabletService(
+            int serverId,
+            FileSystem remoteFileSystem,
+            ZooKeeperClient zkClient,
+            ReplicaManager replicaManager,
+            TabletServerMetadataCache metadataCache,
+            MetadataManager metadataManager,
+            @Nullable Authorizer authorizer,
+            DynamicConfigManager dynamicConfigManager,
+            ExecutorService ioExecutor,
+            ScannerManager scannerManager,
+            @Nullable org.apache.fluss.rpc.gateway.CoordinatorGateway coordinatorGateway) {
         super(
                 remoteFileSystem,
                 ServerType.TABLET_SERVER,
@@ -176,6 +209,7 @@ public final class TabletService extends RpcServiceBase implements TabletServerG
         this.metadataFunctionProvider =
                 new TabletServerMetadataProvider(zkClient, metadataManager, metadataCache);
         this.scannerManager = scannerManager;
+        this.coordinatorGateway = coordinatorGateway;
     }
 
     /**
@@ -205,14 +239,13 @@ public final class TabletService extends RpcServiceBase implements TabletServerG
     }
 
     /**
-     * Returns the coordinator gateway when one is wired through this tablet service, otherwise
-     * {@code null}. Upstream tablet servers don't currently host a coordinator gateway; protocol
-     * plugins must tolerate {@code null} (e.g. by failing {@code FindCoordinator} routing with a
-     * clean error code) until a follow-up FIP wires one through.
+     * Returns the coordinator gateway when one was wired through the constructor, otherwise {@code
+     * null}. Protocol plugins must tolerate {@code null} (e.g. by failing admin RPCs that need
+     * coordinator routing with a clean error code).
      */
     @Nullable
     public org.apache.fluss.rpc.gateway.CoordinatorGateway getCoordinatorGateway() {
-        return null;
+        return coordinatorGateway;
     }
 
     @Override
