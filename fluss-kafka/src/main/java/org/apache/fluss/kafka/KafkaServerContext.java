@@ -23,6 +23,7 @@ import org.apache.fluss.config.Configuration;
 import org.apache.fluss.kafka.metrics.KafkaMetricGroup;
 import org.apache.fluss.kafka.produce.KafkaWriterSeqCache;
 import org.apache.fluss.metadata.LogFormat;
+import org.apache.fluss.row.arrow.ArrowWriterPool;
 import org.apache.fluss.row.arrow.ArrowWriterProvider;
 import org.apache.fluss.rpc.gateway.CoordinatorGateway;
 import org.apache.fluss.server.authorizer.Authorizer;
@@ -30,6 +31,8 @@ import org.apache.fluss.server.coordinator.MetadataManager;
 import org.apache.fluss.server.metadata.ClusterMetadataProvider;
 import org.apache.fluss.server.replica.ReplicaManager;
 import org.apache.fluss.server.zk.ZooKeeperClient;
+import org.apache.fluss.shaded.arrow.org.apache.arrow.memory.BufferAllocator;
+import org.apache.fluss.shaded.arrow.org.apache.arrow.memory.BufferAllocatorUtil;
 
 import javax.annotation.Nullable;
 
@@ -57,6 +60,17 @@ public final class KafkaServerContext {
     private final boolean typedTablesEnabled;
     private final LogFormat kafkaLogFormat;
     private final KafkaWriterSeqCache writerSeqCache;
+
+    /**
+     * Arrow buffer allocator + writer pool owned by this Kafka bolt-on. Lazy-instantiated on first
+     * {@link #arrowWriterProvider()} call and closed in {@link #close()}. Lives entirely inside the
+     * Kafka bolt-on (no reach into {@code fluss-server} internals).
+     */
+    private volatile BufferAllocator kafkaArrowAllocator;
+
+    private volatile ArrowWriterPool kafkaArrowWriterPool;
+
+    private final Object arrowInitLock = new Object();
 
     /**
      * When this context is attached to a real tablet server, the numeric id of that server. {@link
@@ -292,12 +306,41 @@ public final class KafkaServerContext {
     }
 
     /**
-     * Server-wide Arrow writer pool, sourced from {@link
-     * ReplicaManager#getServerArrowWriterProvider()}. Used by the Produce path to construct {@code
-     * MemoryLogRecordsArrowBuilder} batches for log topics whose table-resolved format is {@link
-     * LogFormat#ARROW}.
+     * Bolt-on-owned {@link ArrowWriterProvider}. Lazy-instantiates a Kafka-private {@link
+     * BufferAllocator} + {@link ArrowWriterPool} on first call. Used by the Produce path to build
+     * {@code MemoryLogRecordsArrowBuilder} batches for log topics whose table-resolved format is
+     * {@link LogFormat#ARROW}. Lifecycle managed inside the bolt-on so {@code fluss-server} stays
+     * unmodified.
      */
     public ArrowWriterProvider arrowWriterProvider() {
-        return replicaManager().getServerArrowWriterProvider();
+        ArrowWriterPool local = kafkaArrowWriterPool;
+        if (local == null) {
+            synchronized (arrowInitLock) {
+                local = kafkaArrowWriterPool;
+                if (local == null) {
+                    kafkaArrowAllocator = BufferAllocatorUtil.createBufferAllocator(null);
+                    local = new ArrowWriterPool(kafkaArrowAllocator);
+                    kafkaArrowWriterPool = local;
+                }
+            }
+        }
+        return local;
+    }
+
+    /**
+     * Release the bolt-on-owned Arrow allocator and writer pool. Idempotent; safe to call on a
+     * context that never allocated. Invoked by the {@code KafkaProtocolPlugin} during shutdown.
+     */
+    public void close() {
+        synchronized (arrowInitLock) {
+            if (kafkaArrowWriterPool != null) {
+                kafkaArrowWriterPool.close();
+                kafkaArrowWriterPool = null;
+            }
+            if (kafkaArrowAllocator != null) {
+                kafkaArrowAllocator.close();
+                kafkaArrowAllocator = null;
+            }
+        }
     }
 }
