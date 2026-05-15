@@ -74,6 +74,28 @@ echo "hi" | docker/kafka-fip/cluster.sh kcat -P -t demo  # produce
 docker/kafka-fip/cluster.sh kcat -C -t demo -e           # consume one batch
 ```
 
+## TickStream `tickbench` conformance
+
+If you have TickStream's [`tickbench`](https://github.com/tickstream/tickstream)
+checkout, drive its Kafka protocol-conformance suite at the running cluster:
+
+```bash
+docker/kafka-fip/cluster.sh up
+TICKBENCH_HOME=~/tickstream/tickbench \
+    docker/kafka-fip/cluster.sh tickbench compliance
+# or pick a tighter category:
+docker/kafka-fip/cluster.sh tickbench functional -verbose
+```
+
+Tickbench runs against `localhost:19092` (the first broker in the host port
+mapping). For categories see the tickbench docs: `functional`, `correctness`,
+`compliance`, `edge_case`, `integration`.
+
+The FIP scope (drop-in surface) expects all `Txn*`, `*Acls`, `*ScramCredentials`,
+`*ClientQuotas`, `CreatePartitions`, `DeleteRecords`, `ElectLeaders`,
+`OffsetForLeaderEpoch`, and `DescribeProducers` requests to come back as
+`UNSUPPORTED_VERSION`. Tickbench tags those as `SKIP` rather than `FAIL`.
+
 ## Out of scope (per FIP-NN)
 
 - Confluent Schema Registry HTTP endpoint (`/subjects`, `/config`, ...)

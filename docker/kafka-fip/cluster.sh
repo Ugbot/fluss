@@ -96,6 +96,25 @@ case "${CMD}" in
         # Print the bootstrap servers; convenient for tooling scripts.
         echo "${BOOTSTRAP}"
         ;;
+    tickbench)
+        # Drive TickStream's tickbench protocol-conformance suite against the running
+        # Fluss cluster. Requires a tickbench checkout at $TICKBENCH_HOME (defaults to
+        # ~/tickstream/tickbench).
+        TICKBENCH_HOME="${TICKBENCH_HOME:-${HOME}/tickstream/tickbench}"
+        if [[ ! -x "${TICKBENCH_HOME}/bin/test_runner" ]]; then
+            echo "error: tickbench/bin/test_runner not found at ${TICKBENCH_HOME}" >&2
+            echo "Set TICKBENCH_HOME or clone TickStream first." >&2
+            exit 2
+        fi
+        SERVER="${BOOTSTRAP%%,*}"
+        CATEGORY="${1:-compliance}"; shift || true
+        echo "Running tickbench: protocol=kafka category=${CATEGORY} server=${SERVER}"
+        "${TICKBENCH_HOME}/bin/test_runner" \
+            -protocol kafka \
+            -category "${CATEGORY}" \
+            -server "${SERVER}" \
+            "$@"
+        ;;
     help|--help|-h|"")
         cat <<EOF
 Fluss + Kafka FIP cluster control (engine=${ENGINE})
@@ -108,6 +127,8 @@ Commands:
   logs [svc]          tail logs (svc=ts0|ts1|ts2|coordinator|zookeeper)
   kcat <args...>      run kcat inside the cluster network with bootstrap pre-wired
   smoke               produce + consume a single record via kcat
+  tickbench [cat]     run TickStream's tickbench protocol-conformance suite
+                      (category defaults to 'compliance'; needs TICKBENCH_HOME)
   bootstrap           print the Kafka bootstrap servers string for the host
   help                this help
 
