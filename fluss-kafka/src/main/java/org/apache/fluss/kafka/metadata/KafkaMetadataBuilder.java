@@ -27,7 +27,7 @@ import org.apache.fluss.metadata.TableInfo;
 import org.apache.fluss.metadata.TablePath;
 import org.apache.fluss.server.coordinator.MetadataManager;
 import org.apache.fluss.server.metadata.BucketMetadata;
-import org.apache.fluss.server.metadata.ClusterMetadataProvider;
+import org.apache.fluss.server.metadata.TabletServerMetadataCache;
 
 import org.apache.kafka.common.Uuid;
 import org.apache.kafka.common.message.DescribeClusterResponseData;
@@ -75,7 +75,7 @@ public final class KafkaMetadataBuilder {
 
     /** Build a {@link MetadataResponseData} for the given request. */
     public MetadataResponseData buildMetadataResponse(MetadataRequest request) {
-        ClusterMetadataProvider cache = context.metadataCache();
+        TabletServerMetadataCache cache = context.metadataCache();
         MetadataManager manager = context.metadataManager();
 
         MetadataResponseData response = new MetadataResponseData();
@@ -98,7 +98,7 @@ public final class KafkaMetadataBuilder {
 
     /** Build a {@link DescribeClusterResponseData} for the given listener name. */
     public DescribeClusterResponseData buildDescribeClusterResponse() {
-        ClusterMetadataProvider cache = context.metadataCache();
+        TabletServerMetadataCache cache = context.metadataCache();
 
         DescribeClusterResponseData response = new DescribeClusterResponseData();
         response.setThrottleTimeMs(0);
@@ -121,7 +121,7 @@ public final class KafkaMetadataBuilder {
     }
 
     private MetadataResponseData.MetadataResponseBrokerCollection buildBrokers(
-            ClusterMetadataProvider cache) {
+            TabletServerMetadataCache cache) {
         MetadataResponseData.MetadataResponseBrokerCollection brokers =
                 new MetadataResponseData.MetadataResponseBrokerCollection();
         for (ServerNode node : cache.getAllAliveTabletServers(kafkaListenerName).values()) {
@@ -135,7 +135,7 @@ public final class KafkaMetadataBuilder {
         return brokers;
     }
 
-    private int resolveControllerId(ClusterMetadataProvider cache) {
+    private int resolveControllerId(TabletServerMetadataCache cache) {
         ServerNode coordinator = cache.getCoordinatorServer(kafkaListenerName);
         if (coordinator != null) {
             return coordinator.id();
@@ -220,7 +220,7 @@ public final class KafkaMetadataBuilder {
     }
 
     private MetadataResponseTopic buildTopic(
-            String topic, ClusterMetadataProvider cache, MetadataManager manager) {
+            String topic, TabletServerMetadataCache cache, MetadataManager manager) {
         MetadataResponseTopic responseTopic =
                 new MetadataResponseTopic()
                         .setName(topic)

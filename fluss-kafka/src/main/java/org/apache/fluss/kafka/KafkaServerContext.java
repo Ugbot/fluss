@@ -28,7 +28,7 @@ import org.apache.fluss.row.arrow.ArrowWriterProvider;
 import org.apache.fluss.rpc.gateway.CoordinatorGateway;
 import org.apache.fluss.server.authorizer.Authorizer;
 import org.apache.fluss.server.coordinator.MetadataManager;
-import org.apache.fluss.server.metadata.ClusterMetadataProvider;
+import org.apache.fluss.server.metadata.TabletServerMetadataCache;
 import org.apache.fluss.server.replica.ReplicaManager;
 import org.apache.fluss.server.zk.ZooKeeperClient;
 import org.apache.fluss.shaded.arrow.org.apache.arrow.memory.BufferAllocator;
@@ -47,7 +47,7 @@ import static org.apache.fluss.utils.Preconditions.checkNotNull;
 @Internal
 public final class KafkaServerContext {
 
-    private final @Nullable ClusterMetadataProvider metadataCache;
+    private final @Nullable TabletServerMetadataCache metadataCache;
     private final @Nullable MetadataManager metadataManager;
     private final @Nullable CoordinatorGateway coordinatorGateway;
     private final @Nullable ReplicaManager replicaManager;
@@ -79,7 +79,7 @@ public final class KafkaServerContext {
     private final int ownServerId;
 
     public KafkaServerContext(
-            @Nullable ClusterMetadataProvider metadataCache,
+            @Nullable TabletServerMetadataCache metadataCache,
             @Nullable MetadataManager metadataManager,
             @Nullable CoordinatorGateway coordinatorGateway,
             @Nullable ReplicaManager replicaManager,
@@ -101,7 +101,7 @@ public final class KafkaServerContext {
     }
 
     public KafkaServerContext(
-            @Nullable ClusterMetadataProvider metadataCache,
+            @Nullable TabletServerMetadataCache metadataCache,
             @Nullable MetadataManager metadataManager,
             @Nullable CoordinatorGateway coordinatorGateway,
             @Nullable ReplicaManager replicaManager,
@@ -125,7 +125,7 @@ public final class KafkaServerContext {
     }
 
     public KafkaServerContext(
-            @Nullable ClusterMetadataProvider metadataCache,
+            @Nullable TabletServerMetadataCache metadataCache,
             @Nullable MetadataManager metadataManager,
             @Nullable CoordinatorGateway coordinatorGateway,
             @Nullable ReplicaManager replicaManager,
@@ -150,7 +150,7 @@ public final class KafkaServerContext {
     }
 
     public KafkaServerContext(
-            @Nullable ClusterMetadataProvider metadataCache,
+            @Nullable TabletServerMetadataCache metadataCache,
             @Nullable MetadataManager metadataManager,
             @Nullable CoordinatorGateway coordinatorGateway,
             @Nullable ReplicaManager replicaManager,
@@ -184,7 +184,7 @@ public final class KafkaServerContext {
         this.writerSeqCache = new KafkaWriterSeqCache();
     }
 
-    public ClusterMetadataProvider metadataCache() {
+    public TabletServerMetadataCache metadataCache() {
         return checkNotNull(
                 metadataCache,
                 "Metadata cache is not available on this server; "

@@ -200,14 +200,10 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
                     ApiKeys.LEAVE_GROUP,
                     ApiKeys.DELETE_GROUPS,
                     ApiKeys.OFFSET_DELETE,
-                    ApiKeys.DELETE_RECORDS,
-                    ApiKeys.OFFSET_FOR_LEADER_EPOCH,
                     ApiKeys.CREATE_PARTITIONS,
                     ApiKeys.DESCRIBE_CONFIGS,
                     ApiKeys.ALTER_CONFIGS,
                     ApiKeys.INCREMENTAL_ALTER_CONFIGS,
-                    ApiKeys.ELECT_LEADERS,
-                    ApiKeys.DESCRIBE_PRODUCERS,
                     ApiKeys.DESCRIBE_CLIENT_QUOTAS,
                     ApiKeys.ALTER_CLIENT_QUOTAS,
                     // SASL APIs are intercepted in KafkaCommandDecoder and never reach the handler,
@@ -300,9 +296,7 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
                     ApiKeys.API_VERSIONS,
                     ApiKeys.CREATE_TOPICS,
                     ApiKeys.DELETE_TOPICS,
-                    ApiKeys.DELETE_RECORDS,
                     ApiKeys.INIT_PRODUCER_ID,
-                    ApiKeys.OFFSET_FOR_LEADER_EPOCH,
                     ApiKeys.DESCRIBE_CONFIGS,
                     ApiKeys.ALTER_CONFIGS,
                     ApiKeys.INCREMENTAL_ALTER_CONFIGS,
@@ -311,8 +305,6 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
                     ApiKeys.DELETE_GROUPS,
                     ApiKeys.OFFSET_DELETE,
                     ApiKeys.DESCRIBE_CLUSTER,
-                    ApiKeys.ELECT_LEADERS,
-                    ApiKeys.DESCRIBE_PRODUCERS,
                     ApiKeys.DESCRIBE_CLIENT_QUOTAS,
                     ApiKeys.ALTER_CLIENT_QUOTAS);
 
@@ -574,12 +566,6 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
             case OFFSET_DELETE:
                 handleOffsetDeleteRequest(request);
                 break;
-            case DELETE_RECORDS:
-                handleDeleteRecordsRequest(request);
-                break;
-            case OFFSET_FOR_LEADER_EPOCH:
-                handleOffsetForLeaderEpochRequest(request);
-                break;
             case CREATE_PARTITIONS:
                 handleCreatePartitionsRequest(request);
                 break;
@@ -591,12 +577,6 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
                 break;
             case INCREMENTAL_ALTER_CONFIGS:
                 handleIncrementalAlterConfigsRequest(request);
-                break;
-            case ELECT_LEADERS:
-                handleElectLeadersRequest(request);
-                break;
-            case DESCRIBE_PRODUCERS:
-                handleDescribeProducersRequest(request);
                 break;
             case DESCRIBE_CLIENT_QUOTAS:
                 handleDescribeClientQuotasRequest(request);
