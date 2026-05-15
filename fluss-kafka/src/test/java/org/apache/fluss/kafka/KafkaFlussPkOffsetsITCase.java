@@ -281,7 +281,7 @@ class KafkaFlussPkOffsetsITCase {
         conf.set(ConfigOptions.KAFKA_ENABLED, true);
         conf.setString(ConfigOptions.KAFKA_LISTENER_NAMES.key(), KAFKA_LISTENER);
         conf.set(ConfigOptions.KAFKA_DATABASE, KAFKA_DATABASE);
-        conf.set(ConfigOptions.KAFKA_OFFSETS_STORE, "fluss_pk_table");
+        conf.set(KafkaConfigOptions.KAFKA_OFFSETS_STORE, "fluss_pk_table");
         return conf;
     }
 }

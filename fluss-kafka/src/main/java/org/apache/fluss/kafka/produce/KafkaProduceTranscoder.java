@@ -21,14 +21,9 @@ import org.apache.fluss.annotation.Internal;
 import org.apache.fluss.kafka.KafkaServerContext;
 import org.apache.fluss.kafka.catalog.KafkaTopicInfo;
 import org.apache.fluss.kafka.catalog.KafkaTopicsCatalog;
-import org.apache.fluss.kafka.fetch.KafkaFetchTranscoder;
-import org.apache.fluss.kafka.fetch.KafkaTopicRoute;
 import org.apache.fluss.kafka.fetch.KafkaTopicRouteResolver;
 import org.apache.fluss.kafka.metadata.KafkaDataTable;
 import org.apache.fluss.kafka.metrics.KafkaMetricGroup;
-import org.apache.fluss.kafka.sr.typed.RecordCodec;
-import org.apache.fluss.kafka.tx.TransactionCoordinator;
-import org.apache.fluss.kafka.tx.TransactionCoordinators;
 import org.apache.fluss.memory.UnmanagedPagedOutputView;
 import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.metadata.TableInfo;
@@ -41,7 +36,6 @@ import org.apache.fluss.row.BinaryString;
 import org.apache.fluss.row.BinaryWriter;
 import org.apache.fluss.row.GenericArray;
 import org.apache.fluss.row.GenericRow;
-import org.apache.fluss.row.InternalRow;
 import org.apache.fluss.row.TimestampLtz;
 import org.apache.fluss.row.indexed.IndexedRow;
 import org.apache.fluss.row.indexed.IndexedRowWriter;
@@ -200,36 +194,10 @@ public final class KafkaProduceTranscoder {
                             fieldTypes[i], BinaryRow.BinaryRowFormat.INDEXED);
         }
 
-        // Resolve the topic's typed-vs-passthrough route once per Produce call. When the
-        // typed-tables feature flag is off the resolver is wired to alwaysPassthrough() so this
-        // is a no-op string compare. Codec resolution is lazy: we only ask for it when the
-        // route is typed AND the first record arrives — avoids loading the catalog entry on
-        // every batch.
-        KafkaTopicRoute route = routeResolver.resolve(topicData.name());
+        // Passthrough only in this FIP scope. Typed produce (SR-framed Avro/JSON/Protobuf into
+        // typed columns) lands in a follow-up FIP; the route resolver is wired to
+        // alwaysPassthrough() so route.isTyped() is unreachable here.
         TypedProduceBinding typedBinding = null;
-        if (route.isTyped() && context.typedTablesEnabled()) {
-            try {
-                KafkaFetchTranscoder.TypedCodecBinding fetchBinding =
-                        KafkaFetchTranscoder.resolveTypedCodec(
-                                route, info, tableInfo, context.metrics());
-                if (fetchBinding == null) {
-                    LOG.warn(
-                            "Typed Produce codec unavailable for topic '{}' (format={});"
-                                    + " falling back to passthrough",
-                            info.topic(),
-                            route.catalogFormat());
-                } else {
-                    typedBinding =
-                            new TypedProduceBinding(fetchBinding.codec, fetchBinding.srSchemaId);
-                }
-            } catch (Throwable t) {
-                LOG.error(
-                        "Typed Produce codec resolution failed for topic '{}'; falling back to"
-                                + " passthrough for this batch",
-                        info.topic(),
-                        t);
-            }
-        }
 
         boolean compacted = tableInfo.hasPrimaryKey();
         // Per-table log format: read from the descriptor so existing tables stamped with INDEXED
@@ -453,35 +421,14 @@ public final class KafkaProduceTranscoder {
     }
 
     /**
-     * Scans the first producer-aware batch in {@code kafkaRecords} and, when a {@link
-     * TransactionCoordinator} is running, checks the epoch against the coordinator's view.
-     *
-     * @return a pre-filled {@link PartitionProduceResponse} with {@code INVALID_PRODUCER_EPOCH} if
-     *     the producer is fenced; {@code null} if the batch is either not producer-aware, no
-     *     coordinator is running, or the epoch is current.
+     * Server-side epoch fencing is a no-op in this FIP scope (transactions are out of scope; the
+     * idempotent-only path doesn't fence). Kept as a stub so {@link #producePartition} and {@link
+     * #producePartitionKv} can call it once per partition without conditional logic; if full
+     * transactional EOS is reintroduced in a follow-up FIP, the body returns again.
      */
     @javax.annotation.Nullable
     private static PartitionProduceResponse checkEpochFencing(
             MemoryRecords kafkaRecords, PartitionProduceResponse response) {
-        for (RecordBatch batch : kafkaRecords.batches()) {
-            if (!batch.hasProducerId()) {
-                continue;
-            }
-            long producerId = batch.producerId();
-            short producerEpoch = batch.producerEpoch();
-            Optional<TransactionCoordinator> coord = TransactionCoordinators.current();
-            if (!coord.isPresent()) {
-                return null;
-            }
-            TransactionCoordinator.EpochCheck check =
-                    coord.get().checkProducerEpoch(producerId, producerEpoch);
-            if (check == TransactionCoordinator.EpochCheck.INVALID_PRODUCER_EPOCH) {
-                return response.setErrorCode(Errors.INVALID_PRODUCER_EPOCH.code())
-                        .setErrorMessage("Fenced producer epoch")
-                        .setBaseOffset(-1);
-            }
-            return null; // only check the first producer-aware batch per partition
-        }
         return null;
     }
 
@@ -763,142 +710,43 @@ public final class KafkaProduceTranscoder {
             IndexedRowWriter rowWriter,
             BinaryWriter.ValueWriter[] valueWriters,
             @javax.annotation.Nullable TypedProduceBinding typedBinding) {
+        // typedBinding is always null in this FIP scope (typed topics land in a follow-up
+        // FIP). The parameter is kept on the signature so the surrounding loop scaffolding
+        // doesn't need to change when typed support returns.
         byte[] valueBytes = kafkaRecord.hasValue() ? byteBufferToBytes(kafkaRecord.value()) : null;
-
-        if (typedBinding != null && valueBytes != null) {
-            // Typed produce path (T.4): decode the SR-encoded body into the N user columns,
-            // then write the full typed row in layout [key, user_col_0..N-1, event_time, headers].
-            byte[] body = stripKafkaSrFrame(valueBytes, typedBinding.srSchemaId);
-            typedBinding.codec.decodeInto(
-                    Unpooled.wrappedBuffer(body), 0, body.length, typedBinding.userColWriter);
-            typedBinding.userColRow.pointTo(
-                    typedBinding.userColWriter.segment(), 0, typedBinding.userColWriter.position());
-
-            int numUserCols = typedBinding.userColGetters.length;
-            rowWriter.reset();
-            valueWriters[0].writeValue(
-                    rowWriter,
-                    0,
-                    kafkaRecord.hasKey() ? byteBufferToBytes(kafkaRecord.key()) : null);
-            for (int i = 0; i < numUserCols; i++) {
-                valueWriters[i + 1].writeValue(
-                        rowWriter,
-                        i + 1,
-                        typedBinding.userColGetters[i].getFieldOrNull(typedBinding.userColRow));
-            }
-            long ts = kafkaRecord.timestamp();
-            if (ts == RecordBatch.NO_TIMESTAMP) {
-                ts = System.currentTimeMillis();
-            }
-            valueWriters[numUserCols + 1].writeValue(
-                    rowWriter, numUserCols + 1, TimestampLtz.fromEpochMillis(ts));
-            Header[] headers = kafkaRecord.headers();
-            if (headers == null || headers.length == 0) {
-                valueWriters[numUserCols + 2].writeValue(rowWriter, numUserCols + 2, null);
-            } else {
-                Object[] rows = new Object[headers.length];
-                for (int i = 0; i < headers.length; i++) {
-                    Header h = headers[i];
-                    rows[i] =
-                            GenericRow.of(
-                                    h.key() == null ? null : BinaryString.fromString(h.key()),
-                                    h.value());
-                }
-                valueWriters[numUserCols + 2].writeValue(
-                        rowWriter, numUserCols + 2, new GenericArray(rows));
-            }
+        // Passthrough: 4-column layout [record_key, value, event_time, headers].
+        rowWriter.reset();
+        valueWriters[0].writeValue(
+                rowWriter, 0, kafkaRecord.hasKey() ? byteBufferToBytes(kafkaRecord.key()) : null);
+        valueWriters[1].writeValue(rowWriter, 1, valueBytes);
+        long ts = kafkaRecord.timestamp();
+        if (ts == RecordBatch.NO_TIMESTAMP) {
+            ts = System.currentTimeMillis();
+        }
+        valueWriters[2].writeValue(rowWriter, 2, TimestampLtz.fromEpochMillis(ts));
+        Header[] headers = kafkaRecord.headers();
+        if (headers == null || headers.length == 0) {
+            valueWriters[3].writeValue(rowWriter, 3, null);
         } else {
-            // Passthrough path: 4-column layout [key, value_bytes, event_time, headers].
-            rowWriter.reset();
-            valueWriters[0].writeValue(
-                    rowWriter,
-                    0,
-                    kafkaRecord.hasKey() ? byteBufferToBytes(kafkaRecord.key()) : null);
-            valueWriters[1].writeValue(rowWriter, 1, valueBytes);
-            long ts = kafkaRecord.timestamp();
-            if (ts == RecordBatch.NO_TIMESTAMP) {
-                ts = System.currentTimeMillis();
+            Object[] rows = new Object[headers.length];
+            for (int i = 0; i < headers.length; i++) {
+                Header h = headers[i];
+                rows[i] =
+                        GenericRow.of(
+                                h.key() == null ? null : BinaryString.fromString(h.key()),
+                                h.value());
             }
-            valueWriters[2].writeValue(rowWriter, 2, TimestampLtz.fromEpochMillis(ts));
-            Header[] headers = kafkaRecord.headers();
-            if (headers == null || headers.length == 0) {
-                valueWriters[3].writeValue(rowWriter, 3, null);
-            } else {
-                Object[] rows = new Object[headers.length];
-                for (int i = 0; i < headers.length; i++) {
-                    Header h = headers[i];
-                    rows[i] =
-                            GenericRow.of(
-                                    h.key() == null ? null : BinaryString.fromString(h.key()),
-                                    h.value());
-                }
-                valueWriters[3].writeValue(rowWriter, 3, new GenericArray(rows));
-            }
+            valueWriters[3].writeValue(rowWriter, 3, new GenericArray(rows));
         }
     }
 
     /**
-     * Strip the 5-byte Kafka SR wire frame ({@code [0x00][int32 schemaId]}) and return the body.
-     * Throws {@link InvalidProduceRecordException} when the frame is malformed (length &lt; 5,
-     * magic byte ≠ 0x00) or when the framed schema id doesn't match the codec the topic was
-     * resolved against — per design 0014 §8 the caller turns these into per-record {@link
-     * Errors#CORRUPT_MESSAGE} / {@link Errors#INVALID_RECORD} responses.
-     *
-     * <p>Note that T.2 strips and validates the frame even when the row format hasn't yet been
-     * altered to typed columns (T.3); the body bytes are written into the payload column. Once T.3
-     * alters the layout the {@code typedBinding.codec.decodeInto(buf, offset, length, rowWriter)}
-     * call replaces the body byte-write — the frame strip + validation logic stays here.
+     * Placeholder marker type for typed-binding parameters threaded through the produce path.
+     * Always {@code null} in this FIP scope; reinstated by a follow-up FIP that adds typed-table
+     * support (Avro/JSON/Protobuf decode into typed user columns).
      */
-    private static byte[] stripKafkaSrFrame(byte[] framed, int expectedSchemaId) {
-        if (framed.length < 5) {
-            throw new InvalidProduceRecordException(
-                    Errors.CORRUPT_MESSAGE,
-                    "Kafka SR frame shorter than 5 bytes: length=" + framed.length);
-        }
-        if (framed[0] != 0x00) {
-            throw new InvalidProduceRecordException(
-                    Errors.INVALID_RECORD,
-                    "Kafka SR magic byte expected 0x00, got 0x"
-                            + String.format("%02X", framed[0] & 0xFF));
-        }
-        int frameId =
-                ((framed[1] & 0xFF) << 24)
-                        | ((framed[2] & 0xFF) << 16)
-                        | ((framed[3] & 0xFF) << 8)
-                        | (framed[4] & 0xFF);
-        if (frameId != expectedSchemaId) {
-            throw new InvalidProduceRecordException(
-                    Errors.INVALID_RECORD,
-                    "Schema id mismatch: framed=" + frameId + " expected=" + expectedSchemaId);
-        }
-        byte[] body = new byte[framed.length - 5];
-        System.arraycopy(framed, 5, body, 0, body.length);
-        return body;
-    }
-
-    /** Codec + Kafka SR schema id pair carried through the produce path for typed topics. */
     static final class TypedProduceBinding {
-        final RecordCodec codec;
-        final int srSchemaId;
-        /** Pre-allocated writer for decoding user columns from the SR-encoded body. */
-        final IndexedRowWriter userColWriter;
-        /** Pre-allocated row view over {@link #userColWriter}'s segment after each decode. */
-        final IndexedRow userColRow;
-        /** Per-column field getters for extracting values from {@link #userColRow}. */
-        final InternalRow.FieldGetter[] userColGetters;
-
-        TypedProduceBinding(RecordCodec codec, int srSchemaId) {
-            this.codec = codec;
-            this.srSchemaId = srSchemaId;
-            RowType userRowType = codec.rowType();
-            this.userColWriter = new IndexedRowWriter(userRowType);
-            this.userColRow = new IndexedRow(userRowType.getChildren().toArray(new DataType[0]));
-            int numUserCols = userRowType.getFieldCount();
-            this.userColGetters = new InternalRow.FieldGetter[numUserCols];
-            for (int i = 0; i < numUserCols; i++) {
-                userColGetters[i] = InternalRow.createFieldGetter(userRowType.getTypeAt(i), i);
-            }
-        }
+        private TypedProduceBinding() {}
     }
 
     /** Per-record produce failure that should map to a Kafka error code (no batch failure). */

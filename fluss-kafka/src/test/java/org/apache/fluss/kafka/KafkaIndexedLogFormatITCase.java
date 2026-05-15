@@ -211,7 +211,7 @@ class KafkaIndexedLogFormatITCase {
         conf.setString(ConfigOptions.KAFKA_LISTENER_NAMES.key(), KAFKA_LISTENER);
         conf.set(ConfigOptions.KAFKA_DATABASE, KAFKA_DATABASE);
         // Pin INDEXED to exercise the rollback path.
-        conf.set(ConfigOptions.KAFKA_LOG_FORMAT, LogFormat.INDEXED);
+        conf.set(KafkaConfigOptions.KAFKA_LOG_FORMAT, LogFormat.INDEXED);
         return conf;
     }
 }

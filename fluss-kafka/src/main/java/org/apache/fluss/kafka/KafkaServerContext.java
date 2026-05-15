@@ -158,15 +158,15 @@ public final class KafkaServerContext {
         this.kafkaDatabase = checkNotNull(kafkaDatabase, "kafkaDatabase");
         this.ownServerId = ownServerId;
         this.serverConf = checkNotNull(serverConf, "serverConf");
-        // Read the typed-tables feature flag exactly once at context construction (design 0014
-        // §7). Toggling requires a server restart; cached as a primitive boolean so the
-        // hot-path branch in the Produce/Fetch transcoders is a single field load.
-        this.typedTablesEnabled = serverConf.get(ConfigOptions.KAFKA_TYPED_TABLES_ENABLED);
+        // Typed-tables support (Avro/JSON/Protobuf decoded into typed user columns) is out of
+        // scope for this FIP — hard-wire the cached flag to false so the route resolver picks
+        // alwaysPassthrough(). Reinstated as a real ConfigOption in the typed-tables follow-up.
+        this.typedTablesEnabled = false;
         // Read the Kafka log-format choice once at server start (mirrors the typed-tables flag
         // above). KafkaTableFactory uses this to stamp the on-disk log format for new log
         // topics; existing topics keep whatever format their TableInfo already carries because
         // the produce path reads it per-table.
-        this.kafkaLogFormat = serverConf.get(ConfigOptions.KAFKA_LOG_FORMAT);
+        this.kafkaLogFormat = serverConf.get(KafkaConfigOptions.KAFKA_LOG_FORMAT);
         this.writerSeqCache = new KafkaWriterSeqCache();
     }
 
@@ -247,8 +247,7 @@ public final class KafkaServerContext {
 
     /**
      * Whether the typed Produce/Fetch hot path is enabled (design 0014). Cached at construction
-     * from {@link ConfigOptions#KAFKA_TYPED_TABLES_ENABLED}; the value never changes for the life
-     * of the server.
+     * hard-wired to {@code false} in this FIP; the value never changes for the life of the server.
      */
     public boolean typedTablesEnabled() {
         return typedTablesEnabled;

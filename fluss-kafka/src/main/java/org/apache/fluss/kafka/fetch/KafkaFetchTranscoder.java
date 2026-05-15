@@ -18,23 +18,12 @@
 package org.apache.fluss.kafka.fetch;
 
 import org.apache.fluss.annotation.Internal;
-import org.apache.fluss.catalog.CatalogService;
-import org.apache.fluss.catalog.CatalogServices;
-import org.apache.fluss.catalog.entities.SchemaVersionEntity;
 import org.apache.fluss.kafka.KafkaServerContext;
 import org.apache.fluss.kafka.catalog.KafkaTopicInfo;
 import org.apache.fluss.kafka.catalog.KafkaTopicsCatalog;
-import org.apache.fluss.kafka.metrics.KafkaMetricGroup;
-import org.apache.fluss.kafka.sr.typed.CompiledCodecCache;
-import org.apache.fluss.kafka.sr.typed.FormatRegistry;
-import org.apache.fluss.kafka.sr.typed.FormatTranslator;
-import org.apache.fluss.kafka.sr.typed.RecordCodec;
 import org.apache.fluss.metadata.Schema;
-import org.apache.fluss.metadata.SchemaGetter;
-import org.apache.fluss.metadata.SchemaInfo;
 import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.metadata.TableInfo;
-import org.apache.fluss.metadata.TablePath;
 import org.apache.fluss.record.ChangeType;
 import org.apache.fluss.record.LogRecord;
 import org.apache.fluss.record.LogRecordBatch;
@@ -43,7 +32,6 @@ import org.apache.fluss.record.LogRecords;
 import org.apache.fluss.row.InternalRow;
 import org.apache.fluss.rpc.entity.FetchLogResultForBucket;
 import org.apache.fluss.rpc.log.ClientFetchRequest;
-import org.apache.fluss.server.coordinator.MetadataManager;
 import org.apache.fluss.server.log.LogTablet;
 import org.apache.fluss.server.replica.ReplicaManager;
 import org.apache.fluss.utils.CloseableIterator;
@@ -72,7 +60,6 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -384,39 +371,13 @@ public final class KafkaFetchTranscoder {
     }
 
     /**
-     * Pick the right {@link KafkaFetchCodec} for {@code route}. Falls back to passthrough on any
-     * resolution failure (codec compile, missing schema row, etc.) — design 0014 §8 says a typed
-     * codec failure during fetch is logged at ERROR and the partition serves passthrough bytes; the
-     * consumer will see SR-framed bytes verbatim because passthrough is byte-copy.
+     * Pick the {@link KafkaFetchCodec} for {@code route}. In this FIP scope every topic serves
+     * passthrough bytes; typed topics (Avro/JSON/Protobuf decoded into typed user columns) land in
+     * a follow-up FIP at which point the typed-codec dispatch returns here.
      */
     private KafkaFetchCodec pickCodec(
             KafkaTopicRoute route, KafkaTopicInfo topicInfo, TableInfo tableInfo) {
-        if (!route.isTyped() || !context.typedTablesEnabled()) {
-            return new PassthroughKafkaFetchCodec(tableInfo);
-        }
-        try {
-            TypedCodecBinding binding =
-                    resolveTypedCodec(route, topicInfo, tableInfo, context.metrics());
-            if (binding == null) {
-                LOG.warn(
-                        "Typed codec unavailable for topic '{}' (format={}); falling back to"
-                                + " passthrough",
-                        topicInfo.topic(),
-                        route.catalogFormat());
-                return new PassthroughKafkaFetchCodec(tableInfo);
-            }
-            SchemaGetter schemaGetter = metadataSchemaGetter(tableInfo);
-            return new TypedKafkaFetchCodec(
-                    tableInfo, binding.codec, binding.srSchemaId, context.metrics(), schemaGetter);
-        } catch (Throwable t) {
-            LOG.error(
-                    "Typed-fetch codec resolution failed for topic '{}' (format={}); serving"
-                            + " passthrough bytes for this batch",
-                    topicInfo.topic(),
-                    route.catalogFormat(),
-                    t);
-            return new PassthroughKafkaFetchCodec(tableInfo);
-        }
+        return new PassthroughKafkaFetchCodec(tableInfo);
     }
 
     private static void assembleResponse(
@@ -587,27 +548,8 @@ public final class KafkaFetchTranscoder {
         long maxTimestamp = RecordBatch.NO_TIMESTAMP;
         long estimatedBytes = 512;
         for (LogRecordBatch batch : flussRecords.batches()) {
-            // Phase J.3 — read-committed filtering.
-            if (readCommitted) {
-                if (batch.isControlBatch()) {
-                    // Marker batches are bookkeeping-only; never surface to consumers.
-                    continue;
-                }
-                if (batch.baseLogOffset() >= ceiling) {
-                    // Past the LSO — exclude. Anything still in-flight stays hidden.
-                    continue;
-                }
-                if (isAborted(batch, abortedTxns)) {
-                    // This batch belongs to an aborted transaction; hide it from consumers.
-                    continue;
-                }
-            } else {
-                // READ_UNCOMMITTED: still skip control batches (they carry no records and would
-                // produce empty Kafka records); show data batches regardless of txn state.
-                if (batch.isControlBatch()) {
-                    continue;
-                }
-            }
+            // Read-committed isolation + transactional control-batch handling is out of scope
+            // for this FIP (transactions/EOS are a follow-up). All batches are surfaced.
             LogRecordReadContext readCtx = codec.readContext(batch.schemaId());
             try (CloseableIterator<LogRecord> iter = batch.records(readCtx)) {
                 while (iter.hasNext()) {
@@ -683,173 +625,6 @@ public final class KafkaFetchTranscoder {
         return false;
     }
 
-    /**
-     * Resolve the typed codec + Kafka SR schema id for a typed-format topic. Returns {@code null}
-     * when the catalog lookup or codec compile fails; the caller falls back to passthrough.
-     */
-    @Nullable
-    public static TypedCodecBinding resolveTypedCodec(
-            KafkaTopicRoute route,
-            KafkaTopicInfo topicInfo,
-            TableInfo tableInfo,
-            @Nullable KafkaMetricGroup metrics) {
-        Optional<CatalogService> maybeCatalog = CatalogServices.current();
-        if (!maybeCatalog.isPresent()) {
-            return null;
-        }
-        CatalogService catalog = maybeCatalog.get();
-        // Pick the latest registered subject version for this topic. T.6 ('s extension to
-        // RecordNameStrategy) is out of scope here; T.2 assumes TopicNameStrategy: one schema
-        // per topic value. The latest subject is the one new producers should be framing
-        // against.
-        SchemaVersionEntity entity;
-        try {
-            List<SchemaVersionEntity> versions =
-                    catalog.listSchemaVersions(extractKafkaDatabase(tableInfo), topicInfo.topic());
-            if (versions.isEmpty()) {
-                return null;
-            }
-            entity = versions.get(versions.size() - 1);
-        } catch (Exception e) {
-            LOG.warn(
-                    "Catalog read failed when resolving typed codec for topic '{}'",
-                    topicInfo.topic(),
-                    e);
-            return null;
-        }
-        FormatTranslator translator = FormatRegistry.instance().translator(entity.format());
-        if (translator == null) {
-            LOG.error(
-                    "No FormatTranslator registered for format '{}' on topic '{}'",
-                    entity.format(),
-                    topicInfo.topic());
-            return null;
-        }
-        try {
-            CompiledCodecCache cache = FormatRegistry.instance().codecCache();
-            int srSchemaId = entity.srSchemaId();
-            String formatId = route.formatId() == null ? entity.format() : route.formatId();
-            RecordCodec codec =
-                    cache.getOrCompile(
-                            tableInfo.getTableId(),
-                            srSchemaId,
-                            () -> compileCodec(formatId, entity, translator, tableInfo, metrics));
-            return new TypedCodecBinding(codec, srSchemaId);
-        } catch (RuntimeException e) {
-            LOG.error(
-                    "Codec compile failed for topic '{}' format='{}'",
-                    topicInfo.topic(),
-                    entity.format(),
-                    e);
-            return null;
-        }
-    }
-
-    /**
-     * Run the format-specific codec compiler. Wired into {@link CompiledCodecCache#getOrCompile} so
-     * a successful compile is cached for the life of the cluster.
-     */
-    private static RecordCodec compileCodec(
-            String formatId,
-            SchemaVersionEntity entity,
-            FormatTranslator translator,
-            TableInfo tableInfo,
-            @Nullable KafkaMetricGroup metrics) {
-        if (metrics != null) {
-            metrics.onCodecCompile();
-            // Keep the gauge supplier pinned to the live cache. Idempotent.
-            metrics.bindCodecCacheSize(() -> FormatRegistry.instance().codecCache().size());
-        }
-        org.apache.fluss.types.RowType rowType = translator.translateTo(entity.schemaText());
-        short version = (short) Math.min(Short.MAX_VALUE, Math.max(0, entity.version()));
-        switch (formatId.toUpperCase(Locale.ROOT)) {
-            case "AVRO":
-                return org.apache.fluss.kafka.sr.typed.AvroCodecCompiler.compile(
-                        new org.apache.avro.Schema.Parser().parse(entity.schemaText()),
-                        rowType,
-                        version);
-            case "JSON":
-                return org.apache.fluss.kafka.sr.typed.JsonCodecCompiler.compile(rowType, version);
-            case "PROTOBUF":
-                return org.apache.fluss.kafka.sr.typed.ProtobufCodecCompiler.compile(
-                        rowType, version);
-            default:
-                throw new IllegalArgumentException(
-                        "Unsupported codec format: "
-                                + formatId
-                                + " (table "
-                                + tableInfo.getTablePath()
-                                + ")");
-        }
-    }
-
-    /** Extract the Kafka database from {@code tableInfo} (the table's namespace/database). */
-    private static String extractKafkaDatabase(TableInfo tableInfo) {
-        return tableInfo.getTablePath().getDatabaseName();
-    }
-
-    /**
-     * Build a {@link SchemaGetter} backed by the coordinator's schema history for {@code
-     * tableInfo}. Used by {@link TypedKafkaFetchCodec} so old-schema batches (written before T.3
-     * additive evolution) are deserialized with their original schema and then projected to the
-     * current layout via {@link org.apache.fluss.row.ProjectedRow}.
-     */
-    private SchemaGetter metadataSchemaGetter(final TableInfo tableInfo) {
-        final MetadataManager mm = context.metadataManager();
-        final TablePath tablePath = tableInfo.getTablePath();
-        final Schema currentSchema = tableInfo.getSchema();
-        final int currentSchemaId = tableInfo.getSchemaId();
-        // Retrieve (or create) the per-topic schema map and seed it with the current schema so
-        // the common case (batch.schemaId == current) never touches ZooKeeper.
-        final ConcurrentHashMap<Integer, Schema> schemaCache =
-                topicSchemaCache.computeIfAbsent(
-                        tablePath.toString(), k -> new ConcurrentHashMap<Integer, Schema>());
-        schemaCache.put(currentSchemaId, currentSchema);
-        return new SchemaGetter() {
-            @Override
-            public Schema getSchema(int schemaId) {
-                Schema cached = schemaCache.get(schemaId);
-                if (cached != null) {
-                    return cached;
-                }
-                try {
-                    Schema s = mm.getSchemaById(tablePath, schemaId).getSchema();
-                    schemaCache.put(schemaId, s);
-                    return s;
-                } catch (Exception e) {
-                    LOG.warn(
-                            "Schema history lookup failed for '{}' schemaId={}; using current",
-                            tablePath,
-                            schemaId,
-                            e);
-                    return currentSchema;
-                }
-            }
-
-            @Override
-            public CompletableFuture<SchemaInfo> getSchemaInfoAsync(int schemaId) {
-                return CompletableFuture.completedFuture(
-                        new SchemaInfo(getSchema(schemaId), schemaId));
-            }
-
-            @Override
-            public SchemaInfo getLatestSchemaInfo() {
-                return new SchemaInfo(currentSchema, currentSchemaId);
-            }
-
-            @Override
-            public void release() {}
-        };
-    }
-
-    /** Pair returned by {@link #resolveTypedCodec}. */
-    public static final class TypedCodecBinding {
-        public final RecordCodec codec;
-        public final int srSchemaId;
-
-        public TypedCodecBinding(RecordCodec codec, int srSchemaId) {
-            this.codec = codec;
-            this.srSchemaId = srSchemaId;
-        }
-    }
+    // Typed-codec resolution (Avro/JSON/Protobuf decode into typed columns) and the per-topic
+    // schema-history getter live in a follow-up FIP. Passthrough fetch is the only path here.
 }

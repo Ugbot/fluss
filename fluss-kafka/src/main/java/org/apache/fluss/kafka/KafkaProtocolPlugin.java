@@ -188,12 +188,46 @@ public class KafkaProtocolPlugin implements NetworkProtocolPlugin {
                             + " per-request metrics will be disabled.");
             return null;
         }
-        int topicCap = conf.get(ConfigOptions.KAFKA_METRICS_PER_TOPIC_MAX_CARDINALITY);
-        int groupCap = conf.get(ConfigOptions.KAFKA_METRICS_PER_GROUP_MAX_CARDINALITY);
-        boolean topicEnabled = conf.getBoolean(ConfigOptions.KAFKA_METRICS_PER_TOPIC_ENABLED);
-        boolean groupEnabled = conf.getBoolean(ConfigOptions.KAFKA_METRICS_PER_GROUP_ENABLED);
+        int topicCap = conf.get(KafkaConfigOptions.KAFKA_METRICS_PER_TOPIC_MAX_CARDINALITY);
+        int groupCap = conf.get(KafkaConfigOptions.KAFKA_METRICS_PER_GROUP_MAX_CARDINALITY);
+        boolean topicEnabled = conf.getBoolean(KafkaConfigOptions.KAFKA_METRICS_PER_TOPIC_ENABLED);
+        boolean groupEnabled = conf.getBoolean(KafkaConfigOptions.KAFKA_METRICS_PER_GROUP_ENABLED);
+        org.apache.fluss.metrics.registry.MetricRegistry registry = extractRegistry(parent);
+        if (registry == null) {
+            LOG.warn(
+                    "Kafka bolt-on could not extract the MetricRegistry off the parent metric"
+                            + " group; per-request metrics will be disabled.");
+            return null;
+        }
         return new KafkaMetricGroup(
-                parent.getMetricRegistry(), parent, topicEnabled, topicCap, groupEnabled, groupCap);
+                registry, parent, topicEnabled, topicCap, groupEnabled, groupCap);
+    }
+
+    /**
+     * Reflect the protected {@code registry} field off {@link AbstractMetricGroup}. Upstream {@code
+     * AbstractMetricGroup} doesn't expose a public getter; adding one would be a fluss-common
+     * change. The reflection stays contained here, mirroring the pattern used in {@link
+     * #extractServerMetricGroup}.
+     */
+    @javax.annotation.Nullable
+    private static org.apache.fluss.metrics.registry.MetricRegistry extractRegistry(
+            AbstractMetricGroup group) {
+        Class<?> c = group.getClass();
+        while (c != null && c != Object.class) {
+            try {
+                Field f = c.getDeclaredField("registry");
+                f.setAccessible(true);
+                Object value = f.get(group);
+                return value instanceof org.apache.fluss.metrics.registry.MetricRegistry
+                        ? (org.apache.fluss.metrics.registry.MetricRegistry) value
+                        : null;
+            } catch (NoSuchFieldException e) {
+                c = c.getSuperclass();
+            } catch (IllegalAccessException e) {
+                return null;
+            }
+        }
+        return null;
     }
 
     /**
