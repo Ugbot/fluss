@@ -152,6 +152,14 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
     /** Cap at v11 because Fluss does not yet implement TopicId-based Metadata (v12+). */
     private static final short MAX_METADATA_VERSION = 11;
 
+    /**
+     * Cap for {@code ListOffsets}. v7 added {@code max_timestamp} on the response, v8 added {@code
+     * MAX_TIMESTAMP_LSO} lookup mode (transactional). Both depend on transaction state we don't yet
+     * track; clamp to v5 (the last pre-transactional version that supports the {@code -2 / -1}
+     * earliest/latest sentinels).
+     */
+    private static final short MAX_LIST_OFFSETS_VERSION = 5;
+
     /** Cap at v12 because Fluss does not yet implement TopicId-based Fetch (v13+). */
     private static final short MAX_FETCH_VERSION = 12;
 
@@ -639,6 +647,8 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
                 maxVersion = (short) Math.min(maxVersion, MAX_METADATA_VERSION);
             } else if (apiKey == ApiKeys.FETCH) {
                 maxVersion = (short) Math.min(maxVersion, MAX_FETCH_VERSION);
+            } else if (apiKey == ApiKeys.LIST_OFFSETS) {
+                maxVersion = (short) Math.min(maxVersion, MAX_LIST_OFFSETS_VERSION);
             }
             data.apiKeys()
                     .add(

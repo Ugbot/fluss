@@ -54,6 +54,23 @@ case "${CMD}" in
         BUILD_CTX="${ROOT_DIR}/docker/fluss"
         rm -rf "${BUILD_CTX}/build-target"
         cp -r "${DIST_DIR}" "${BUILD_CTX}/build-target"
+        # Add the Kafka bolt-on. The upstream fluss-dist assembly doesn't include
+        # fluss-kafka or its kafka-clients deps; drop them into lib/ so the
+        # ServiceLoader picks up KafkaProtocolPlugin and kafka-clients is on the
+        # classpath for the request decoder.
+        KAFKA_JAR="${ROOT_DIR}/fluss-kafka/target/fluss-kafka-1.0-SNAPSHOT.jar"
+        if [[ ! -f "${KAFKA_JAR}" ]]; then
+            ( cd "${ROOT_DIR}" && JAVA_HOME=${JAVA_HOME:-} mvn -pl fluss-kafka -am -DskipTests -Drat.skip=true package )
+        fi
+        cp "${KAFKA_JAR}" "${BUILD_CTX}/build-target/lib/"
+        cp "${HOME}/.m2/repository/org/apache/kafka/kafka-clients/3.9.2/kafka-clients-3.9.2.jar" "${BUILD_CTX}/build-target/lib/"
+        cp "${HOME}/.m2/repository/com/github/luben/zstd-jni/1.5.6-4/zstd-jni-1.5.6-4.jar" "${BUILD_CTX}/build-target/lib/"
+        cp "${HOME}/.m2/repository/at/yawk/lz4/lz4-java/1.10.1/lz4-java-1.10.1.jar" "${BUILD_CTX}/build-target/lib/"
+        cp "${HOME}/.m2/repository/org/xerial/snappy/snappy-java/1.1.10.4/snappy-java-1.1.10.4.jar" "${BUILD_CTX}/build-target/lib/"
+        # fluss-kafka also references CatalogService + ConnectionFactory — bundle the
+        # fluss-catalog and fluss-client jars so all referenced types resolve.
+        cp "${HOME}/.m2/repository/org/apache/fluss/fluss-catalog/1.0-SNAPSHOT/fluss-catalog-1.0-SNAPSHOT.jar" "${BUILD_CTX}/build-target/lib/"
+        cp "${HOME}/.m2/repository/org/apache/fluss/fluss-client/1.0-SNAPSHOT/fluss-client-1.0-SNAPSHOT.jar" "${BUILD_CTX}/build-target/lib/"
         ( cd "${BUILD_CTX}" && "${ENGINE}" build -t "${IMAGE_TAG}" . )
         rm -rf "${BUILD_CTX}/build-target"
         ;;
@@ -107,7 +124,10 @@ case "${CMD}" in
             exit 2
         fi
         SERVER="${BOOTSTRAP%%,*}"
-        CATEGORY="${1:-compliance}"; shift || true
+        # Default to 'functional': tickbench's Kafka 'compliance' selector covers EOS +
+        # ACL/SCRAM/quotas admin which this FIP deliberately doesn't ship. 'functional'
+        # exercises the drop-in surface (Produce/Fetch/groups/admin).
+        CATEGORY="${1:-functional}"; shift || true
         echo "Running tickbench: protocol=kafka category=${CATEGORY} server=${SERVER}"
         "${TICKBENCH_HOME}/bin/test_runner" \
             -protocol kafka \

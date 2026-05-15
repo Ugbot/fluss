@@ -43,7 +43,8 @@ services:
         bind.listeners: FLUSS://coordinator:9123
         internal.listener.name: FLUSS
         remote.data.dir: /tmp/fluss-remote
-        kafka.enabled: false
+        kafka.enabled: true
+        kafka.database: kafka
     command: ["coordinatorServer"]
     volumes:
       - fluss-remote:/tmp/fluss-remote
@@ -59,10 +60,9 @@ services:
     environment:
       FLUSS_PROPERTIES: |
         zookeeper.address: zookeeper:2181
-        bind.listeners: FLUSS://ts0:9123,KAFKA://0.0.0.0:9092
+        bind.listeners: FLUSS://ts0:9123,KAFKA://ts0:9092
         internal.listener.name: FLUSS
         tablet-server.id: 0
-        tablet-server.host: ts0
         data.dir: /tmp/fluss-data
         remote.data.dir: /tmp/fluss-remote
         kafka.enabled: true
@@ -88,10 +88,9 @@ services:
     environment:
       FLUSS_PROPERTIES: |
         zookeeper.address: zookeeper:2181
-        bind.listeners: FLUSS://ts1:9123,KAFKA://0.0.0.0:9092
+        bind.listeners: FLUSS://ts1:9123,KAFKA://ts1:9092
         internal.listener.name: FLUSS
         tablet-server.id: 1
-        tablet-server.host: ts1
         data.dir: /tmp/fluss-data
         remote.data.dir: /tmp/fluss-remote
         kafka.enabled: true
@@ -117,10 +116,9 @@ services:
     environment:
       FLUSS_PROPERTIES: |
         zookeeper.address: zookeeper:2181
-        bind.listeners: FLUSS://ts2:9123,KAFKA://0.0.0.0:9092
+        bind.listeners: FLUSS://ts2:9123,KAFKA://ts2:9092
         internal.listener.name: FLUSS
         tablet-server.id: 2
-        tablet-server.host: ts2
         data.dir: /tmp/fluss-data
         remote.data.dir: /tmp/fluss-remote
         kafka.enabled: true
