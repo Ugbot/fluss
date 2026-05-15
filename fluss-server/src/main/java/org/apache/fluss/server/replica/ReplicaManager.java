@@ -646,6 +646,47 @@ public class ReplicaManager implements ServerReconfigurable {
     }
 
     /**
+     * Client-style fetch entry point used by protocol bolt-ons (Kafka, etc.) so they don't reach
+     * into the internal {@link FetchParams} / {@link FetchReqInfo} mutable structs. The {@code
+     * replicaId} is hard-wired to {@code -1} (client semantics — no follower replication).
+     */
+    public void fetchLogRecordsForClient(
+            org.apache.fluss.rpc.log.ClientFetchRequest request,
+            Consumer<Map<TableBucket, FetchLogResultForBucket>> responseCallback) {
+        FetchParams params = new FetchParams(-1, request.maxFetchBytes());
+        Map<TableBucket, FetchReqInfo> bucketFetchInfo = new java.util.HashMap<>();
+        for (Map.Entry<TableBucket, org.apache.fluss.rpc.log.ClientFetchRequest.BucketRead> e :
+                request.buckets().entrySet()) {
+            org.apache.fluss.rpc.log.ClientFetchRequest.BucketRead read = e.getValue();
+            bucketFetchInfo.put(
+                    e.getKey(),
+                    new FetchReqInfo(read.tableId(), read.fetchOffset(), read.maxBytes()));
+        }
+        fetchLogRecords(params, bucketFetchInfo, /* userContext */ null, responseCallback);
+    }
+
+    /**
+     * Stable, read-only view of a replica's log metadata — the subset protocol bolt-ons (Kafka's
+     * {@code LIST_OFFSETS}, {@code METADATA}) need. Returns {@link java.util.Optional#empty()} when
+     * the bucket is not hosted locally.
+     */
+    public java.util.Optional<org.apache.fluss.rpc.replica.ReplicaSnapshot> getReplicaSnapshot(
+            TableBucket tableBucket) {
+        HostedReplica hosted = getReplica(tableBucket);
+        if (!(hosted instanceof OnlineReplica)) {
+            return java.util.Optional.empty();
+        }
+        Replica replica = ((OnlineReplica) hosted).getReplica();
+        return java.util.Optional.of(
+                new org.apache.fluss.rpc.replica.ReplicaSnapshot(
+                        replica.getLogStartOffset(),
+                        replica.getLocalLogEndOffset(),
+                        replica.getLogHighWatermark(),
+                        replica.getLeaderEpoch(),
+                        replica.isLeader()));
+    }
+
+    /**
      * Put kv records to leader replicas of the buckets, the kv data will write to kv tablet and the
      * response callback need to wait for the cdc log to be replicated to other replicas if needed.
      *

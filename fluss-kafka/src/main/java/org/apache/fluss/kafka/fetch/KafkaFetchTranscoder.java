@@ -32,7 +32,6 @@ import org.apache.fluss.record.LogRecords;
 import org.apache.fluss.row.InternalRow;
 import org.apache.fluss.rpc.entity.FetchLogResultForBucket;
 import org.apache.fluss.rpc.log.ClientFetchRequest;
-import org.apache.fluss.server.log.LogTablet;
 import org.apache.fluss.server.replica.ReplicaManager;
 import org.apache.fluss.utils.CloseableIterator;
 import org.apache.fluss.utils.concurrent.ExecutorThreadFactory;
@@ -233,11 +232,11 @@ public final class KafkaFetchTranscoder {
         FetchResponseData response = new FetchResponseData();
         response.setThrottleTimeMs(0).setErrorCode(Errors.NONE.code());
 
-        // Phase J.3 — honour isolation_level. Kafka encodes the byte as 0=READ_UNCOMMITTED,
-        // 1=READ_COMMITTED. When the caller asks for READ_COMMITTED we clamp the response at
-        // min(highWatermark, lastStableOffset) and filter aborted batches in the assembled
-        // records. UNCOMMITTED retains the existing HWM-clamped behaviour.
-        boolean readCommitted = request.isolationLevel() == (byte) 1;
+        // Read-committed isolation is out of scope for this FIP (transactions/EOS deferred).
+        // Always serve UNCOMMITTED bytes regardless of what the client requested — the
+        // kafka-clients consumer treats READ_UNCOMMITTED responses as a degraded-mode fetch
+        // without raising an error.
+        boolean readCommitted = false;
 
         // First pass: resolve topics + partitions and assemble the Fluss fetch map. We keep a
         // side-map of (TableBucket -> per-partition response shell) so the Fluss callback can
@@ -316,26 +315,7 @@ public final class KafkaFetchTranscoder {
             bucketReads.put(e.getKey(), e.getValue().bucketRead);
         }
 
-        // For read_committed fetches, snapshot the aborted-transaction ranges up front (before the
-        // async fetch starts). The callback runs on the Netty I/O thread and must not acquire any
-        // LogTablet lock, so we do the synchronized snapshot here on the caller's thread and pass
-        // the result in. The snapshot uses Long.MAX_VALUE as the upper bound so we capture all
-        // currently-known aborted txns; the encode() path filters to the actual LSO ceiling.
-        if (readCommitted) {
-            for (Map.Entry<TableBucket, PartitionContext> e : requested.entrySet()) {
-                long fo = e.getValue().fetchOffset;
-                try {
-                    List<LogTablet.AbortedTxn> txns =
-                            replicaManager
-                                    .getReplicaOrException(e.getKey())
-                                    .getLogTablet()
-                                    .abortedTxnsInRange(fo, Long.MAX_VALUE);
-                    e.getValue().setAbortedTxns(txns);
-                } catch (Exception ignored) {
-                    // Not the leader or bucket unknown; abortedTxns will remain empty.
-                }
-            }
-        }
+        // Aborted-txn snapshot would happen here for read_committed; omitted in this FIP.
 
         CompletableFuture<FetchResponseData> done = new CompletableFuture<>();
         if (bucketReads.isEmpty()) {
@@ -418,12 +398,10 @@ public final class KafkaFetchTranscoder {
         private final TimestampType timestampType;
         private final long fetchOffset;
         private final @Nullable KafkaFetchCodec codec;
-        /** Phase J.3 — clamp the response at LSO + filter aborted batches when set. */
         private final boolean readCommitted;
 
         private ClientFetchRequest.BucketRead bucketRead;
         private FetchLogResultForBucket result;
-        private List<LogTablet.AbortedTxn> abortedTxns = new ArrayList<>();
         private short errorCode = Errors.NONE.code();
         private String errorMessage;
 
@@ -453,10 +431,6 @@ public final class KafkaFetchTranscoder {
             }
         }
 
-        void setAbortedTxns(List<LogTablet.AbortedTxn> txns) {
-            this.abortedTxns = txns;
-        }
-
         void failWith(Errors err, String msg) {
             this.errorCode = err.code();
             this.errorMessage = msg;
@@ -464,16 +438,12 @@ public final class KafkaFetchTranscoder {
 
         PartitionData toPartitionData() {
             long highWatermark = result != null ? result.getHighWatermark() : -1L;
-            long lastStableOffset =
-                    result != null && result.getLastStableOffset() >= 0
-                            ? result.getLastStableOffset()
-                            : highWatermark;
             PartitionData pd =
                     new PartitionData()
                             .setPartitionIndex(partitionIndex)
                             .setErrorCode(errorCode)
                             .setHighWatermark(highWatermark)
-                            .setLastStableOffset(lastStableOffset)
+                            .setLastStableOffset(highWatermark)
                             .setLogStartOffset(-1L)
                             .setPreferredReadReplica(-1);
             if (errorCode != Errors.NONE.code()) {
@@ -484,24 +454,7 @@ public final class KafkaFetchTranscoder {
                 pd.setRecords(MemoryRecords.EMPTY);
                 return pd;
             }
-            if (readCommitted && !abortedTxns.isEmpty()) {
-                List<FetchResponseData.AbortedTransaction> kafkaAborted =
-                        new ArrayList<>(abortedTxns.size());
-                for (LogTablet.AbortedTxn txn : abortedTxns) {
-                    kafkaAborted.add(
-                            new FetchResponseData.AbortedTransaction()
-                                    .setProducerId(txn.writerId())
-                                    .setFirstOffset(txn.firstOffset()));
-                }
-                pd.setAbortedTransactions(kafkaAborted);
-            }
             try {
-                long ceiling =
-                        readCommitted
-                                ? Math.min(
-                                        highWatermark < 0 ? Long.MAX_VALUE : highWatermark,
-                                        lastStableOffset < 0 ? Long.MAX_VALUE : lastStableOffset)
-                                : highWatermark;
                 pd.setRecords(
                         encode(
                                 result.records(),
@@ -509,8 +462,8 @@ public final class KafkaFetchTranscoder {
                                 timestampType,
                                 codec,
                                 readCommitted,
-                                ceiling,
-                                abortedTxns));
+                                highWatermark,
+                                java.util.Collections.emptyList()));
             } catch (Exception e) {
                 LOG.error(
                         "Fetch transcode failed for topic '{}' partition {}",
@@ -529,10 +482,9 @@ public final class KafkaFetchTranscoder {
      * from the Fluss {@link LogRecord#logOffset()} so consumer offset math matches the producer's
      * base offset.
      *
-     * <p>When {@code readCommitted} is true, batches whose first offset is at-or-after {@code
-     * ceiling} are dropped; control batches (commit / abort markers) are also dropped. Data batches
-     * whose writer-id falls in an aborted range (from {@code abortedTxns}) are also dropped so
-     * aborted records never reach the consumer.
+     * <p>The {@code readCommitted}, {@code ceiling}, and aborted-txn list parameters are unused in
+     * this FIP (read-committed isolation is a follow-up); kept on the signature so the encode call
+     * site stays stable when transactions are reintroduced.
      */
     private static MemoryRecords encode(
             LogRecords flussRecords,
@@ -541,7 +493,7 @@ public final class KafkaFetchTranscoder {
             KafkaFetchCodec codec,
             boolean readCommitted,
             long ceiling,
-            List<LogTablet.AbortedTxn> abortedTxns) {
+            List<Object> abortedTxns) {
         // Walk once to count bytes; we'll allocate a single buffer slightly larger than needed.
         List<KafkaRecordView> views = new ArrayList<>();
         long firstOffset = -1L;
@@ -609,21 +561,7 @@ public final class KafkaFetchTranscoder {
         }
     }
 
-    private static boolean isAborted(LogRecordBatch batch, List<LogTablet.AbortedTxn> abortedTxns) {
-        if (abortedTxns.isEmpty() || !batch.hasWriterId()) {
-            return false;
-        }
-        long writerId = batch.writerId();
-        long batchOffset = batch.baseLogOffset();
-        for (LogTablet.AbortedTxn txn : abortedTxns) {
-            if (txn.writerId() == writerId
-                    && batchOffset >= txn.firstOffset()
-                    && batchOffset < txn.lastOffsetExclusive()) {
-                return true;
-            }
-        }
-        return false;
-    }
+    // isAborted() removed — read-committed isolation is out of scope for this FIP.
 
     // Typed-codec resolution (Avro/JSON/Protobuf decode into typed columns) and the per-topic
     // schema-history getter live in a follow-up FIP. Passthrough fetch is the only path here.

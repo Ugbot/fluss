@@ -26,15 +26,11 @@ import org.apache.fluss.kafka.admin.KafkaAdminTranscoder;
 import org.apache.fluss.kafka.admin.KafkaClientQuotasTranscoder;
 import org.apache.fluss.kafka.admin.KafkaConfigsTranscoder;
 import org.apache.fluss.kafka.admin.KafkaCreatePartitionsTranscoder;
-import org.apache.fluss.kafka.admin.KafkaDeleteRecordsTranscoder;
-import org.apache.fluss.kafka.admin.KafkaDescribeProducersTranscoder;
-import org.apache.fluss.kafka.admin.KafkaElectLeadersTranscoder;
 import org.apache.fluss.kafka.auth.AuthzHelper;
 import org.apache.fluss.kafka.catalog.CustomPropertiesTopicsCatalog;
 import org.apache.fluss.kafka.catalog.KafkaTopicsCatalog;
 import org.apache.fluss.kafka.fetch.KafkaFetchTranscoder;
 import org.apache.fluss.kafka.fetch.KafkaListOffsetsTranscoder;
-import org.apache.fluss.kafka.fetch.KafkaOffsetForLeaderEpochTranscoder;
 import org.apache.fluss.kafka.group.FlussPkOffsetStore;
 import org.apache.fluss.kafka.group.InMemoryOffsetStore;
 import org.apache.fluss.kafka.group.KafkaGroupRegistry;
@@ -61,8 +57,6 @@ import org.apache.kafka.common.message.CreatePartitionsResponseData;
 import org.apache.kafka.common.message.CreateTopicsRequestData;
 import org.apache.kafka.common.message.CreateTopicsResponseData;
 import org.apache.kafka.common.message.DeleteGroupsResponseData;
-import org.apache.kafka.common.message.DeleteRecordsRequestData;
-import org.apache.kafka.common.message.DeleteRecordsResponseData;
 import org.apache.kafka.common.message.DeleteTopicsRequestData;
 import org.apache.kafka.common.message.DeleteTopicsResponseData;
 import org.apache.kafka.common.message.DescribeClientQuotasResponseData;
@@ -70,9 +64,6 @@ import org.apache.kafka.common.message.DescribeClusterResponseData;
 import org.apache.kafka.common.message.DescribeConfigsRequestData;
 import org.apache.kafka.common.message.DescribeConfigsResponseData;
 import org.apache.kafka.common.message.DescribeGroupsResponseData;
-import org.apache.kafka.common.message.DescribeProducersRequestData;
-import org.apache.kafka.common.message.DescribeProducersResponseData;
-import org.apache.kafka.common.message.ElectLeadersResponseData;
 import org.apache.kafka.common.message.FetchRequestData;
 import org.apache.kafka.common.message.FindCoordinatorResponseData;
 import org.apache.kafka.common.message.HeartbeatResponseData;
@@ -87,8 +78,6 @@ import org.apache.kafka.common.message.MetadataResponseData;
 import org.apache.kafka.common.message.OffsetCommitResponseData;
 import org.apache.kafka.common.message.OffsetDeleteResponseData;
 import org.apache.kafka.common.message.OffsetFetchResponseData;
-import org.apache.kafka.common.message.OffsetForLeaderEpochRequestData;
-import org.apache.kafka.common.message.OffsetForLeaderEpochResponseData;
 import org.apache.kafka.common.message.ProduceRequestData;
 import org.apache.kafka.common.message.ProduceResponseData;
 import org.apache.kafka.common.protocol.ApiKeys;
@@ -107,8 +96,6 @@ import org.apache.kafka.common.requests.CreateTopicsRequest;
 import org.apache.kafka.common.requests.CreateTopicsResponse;
 import org.apache.kafka.common.requests.DeleteGroupsRequest;
 import org.apache.kafka.common.requests.DeleteGroupsResponse;
-import org.apache.kafka.common.requests.DeleteRecordsRequest;
-import org.apache.kafka.common.requests.DeleteRecordsResponse;
 import org.apache.kafka.common.requests.DeleteTopicsRequest;
 import org.apache.kafka.common.requests.DeleteTopicsResponse;
 import org.apache.kafka.common.requests.DescribeClientQuotasRequest;
@@ -118,10 +105,6 @@ import org.apache.kafka.common.requests.DescribeConfigsRequest;
 import org.apache.kafka.common.requests.DescribeConfigsResponse;
 import org.apache.kafka.common.requests.DescribeGroupsRequest;
 import org.apache.kafka.common.requests.DescribeGroupsResponse;
-import org.apache.kafka.common.requests.DescribeProducersRequest;
-import org.apache.kafka.common.requests.DescribeProducersResponse;
-import org.apache.kafka.common.requests.ElectLeadersRequest;
-import org.apache.kafka.common.requests.ElectLeadersResponse;
 import org.apache.kafka.common.requests.FetchRequest;
 import org.apache.kafka.common.requests.FetchResponse;
 import org.apache.kafka.common.requests.FindCoordinatorRequest;
@@ -147,8 +130,6 @@ import org.apache.kafka.common.requests.OffsetDeleteRequest;
 import org.apache.kafka.common.requests.OffsetDeleteResponse;
 import org.apache.kafka.common.requests.OffsetFetchRequest;
 import org.apache.kafka.common.requests.OffsetFetchResponse;
-import org.apache.kafka.common.requests.OffsetsForLeaderEpochRequest;
-import org.apache.kafka.common.requests.OffsetsForLeaderEpochResponse;
 import org.apache.kafka.common.requests.ProduceRequest;
 import org.apache.kafka.common.requests.ProduceResponse;
 import org.apache.kafka.common.requests.SyncGroupRequest;
@@ -395,7 +376,7 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
         return RequestType.KAFKA;
     }
 
-    @Override
+    /** Bolt-on shutdown — not on the {@code RequestHandler} interface but called by the plugin. */
     public void close() {
         // Stop the reaper first so it doesn't touch the Connection during shutdown.
         sessionReaper.shutdownNow();
@@ -1379,62 +1360,6 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
         }
     }
 
-    void handleOffsetForLeaderEpochRequest(KafkaRequest request) {
-        if (!context.hasServerState() || !context.hasReplicaManager()) {
-            request.fail(
-                    Errors.BROKER_NOT_AVAILABLE.exception(
-                            "Kafka OffsetForLeaderEpoch requires a tablet server; the plugin is"
-                                    + " not wired."));
-            return;
-        }
-        try {
-            OffsetsForLeaderEpochRequest req = request.request();
-            OffsetForLeaderEpochRequestData data = req.data();
-            java.util.List<String> topics = new java.util.ArrayList<>();
-            for (OffsetForLeaderEpochRequestData.OffsetForLeaderTopic t : data.topics()) {
-                topics.add(t.topic());
-            }
-            Map<String, Boolean> allowed =
-                    AuthzHelper.authorizeTopicBatch(
-                            context.authorizer(),
-                            AuthzHelper.sessionOf(request),
-                            OperationType.DESCRIBE,
-                            topics,
-                            context.kafkaDatabase());
-            OffsetForLeaderEpochRequestData filtered = data.duplicate();
-            filtered.topics().clear();
-            for (OffsetForLeaderEpochRequestData.OffsetForLeaderTopic t : data.topics()) {
-                if (allowed.getOrDefault(t.topic(), Boolean.TRUE)) {
-                    filtered.topics().add(t.duplicate());
-                }
-            }
-            KafkaOffsetForLeaderEpochTranscoder transcoder =
-                    new KafkaOffsetForLeaderEpochTranscoder(newCatalog(), context.replicaManager());
-            OffsetForLeaderEpochResponseData result = transcoder.offsetForLeaderEpoch(filtered);
-            short authzErr = Errors.TOPIC_AUTHORIZATION_FAILED.code();
-            for (OffsetForLeaderEpochRequestData.OffsetForLeaderTopic t : data.topics()) {
-                if (allowed.getOrDefault(t.topic(), Boolean.TRUE)) {
-                    continue;
-                }
-                OffsetForLeaderEpochResponseData.OffsetForLeaderTopicResult topic =
-                        new OffsetForLeaderEpochResponseData.OffsetForLeaderTopicResult()
-                                .setTopic(t.topic());
-                for (OffsetForLeaderEpochRequestData.OffsetForLeaderPartition p : t.partitions()) {
-                    topic.partitions()
-                            .add(
-                                    new OffsetForLeaderEpochResponseData.EpochEndOffset()
-                                            .setPartition(p.partition())
-                                            .setErrorCode(authzErr));
-                }
-                result.topics().add(topic);
-            }
-            request.complete(new OffsetsForLeaderEpochResponse(result));
-        } catch (Throwable t) {
-            LOG.error("OffsetForLeaderEpoch handler threw", t);
-            request.fail(t);
-        }
-    }
-
     void handleCreatePartitionsRequest(KafkaRequest request) {
         if (!context.hasServerState()) {
             request.fail(
@@ -1481,60 +1406,6 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
             request.complete(new CreatePartitionsResponse(result));
         } catch (Throwable t) {
             LOG.error("CreatePartitions handler threw", t);
-            request.fail(t);
-        }
-    }
-
-    void handleDeleteRecordsRequest(KafkaRequest request) {
-        if (!context.hasServerState() || !context.hasReplicaManager()) {
-            request.fail(
-                    Errors.BROKER_NOT_AVAILABLE.exception(
-                            "Kafka DeleteRecords requires a tablet server; the plugin is not wired."));
-            return;
-        }
-        try {
-            DeleteRecordsRequest req = request.request();
-            DeleteRecordsRequestData data = req.data();
-            java.util.List<String> topics = new java.util.ArrayList<>();
-            for (DeleteRecordsRequestData.DeleteRecordsTopic t : data.topics()) {
-                topics.add(t.name());
-            }
-            Map<String, Boolean> allowed =
-                    AuthzHelper.authorizeTopicBatch(
-                            context.authorizer(),
-                            AuthzHelper.sessionOf(request),
-                            OperationType.DROP,
-                            topics,
-                            context.kafkaDatabase());
-            DeleteRecordsRequestData filtered = data.duplicate();
-            filtered.topics().clear();
-            for (DeleteRecordsRequestData.DeleteRecordsTopic t : data.topics()) {
-                if (allowed.getOrDefault(t.name(), Boolean.TRUE)) {
-                    filtered.topics().add(t.duplicate());
-                }
-            }
-            KafkaDeleteRecordsTranscoder transcoder =
-                    new KafkaDeleteRecordsTranscoder(newCatalog(), context.replicaManager());
-            DeleteRecordsResponseData result = transcoder.deleteRecords(filtered);
-            short authzErr = Errors.TOPIC_AUTHORIZATION_FAILED.code();
-            for (DeleteRecordsRequestData.DeleteRecordsTopic t : data.topics()) {
-                if (allowed.getOrDefault(t.name(), Boolean.TRUE)) {
-                    continue;
-                }
-                DeleteRecordsResponseData.DeleteRecordsTopicResult topic =
-                        new DeleteRecordsResponseData.DeleteRecordsTopicResult().setName(t.name());
-                for (DeleteRecordsRequestData.DeleteRecordsPartition p : t.partitions()) {
-                    topic.partitions()
-                            .add(
-                                    new DeleteRecordsResponseData.DeleteRecordsPartitionResult()
-                                            .setPartitionIndex(p.partitionIndex())
-                                            .setErrorCode(authzErr));
-                }
-                result.topics().add(topic);
-            }
-            request.complete(new DeleteRecordsResponse(result));
-        } catch (Throwable t) {
-            LOG.error("DeleteRecords handler threw", t);
             request.fail(t);
         }
     }
@@ -1724,38 +1595,6 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
                 context.ownServerId().orElse(0));
     }
 
-    void handleElectLeadersRequest(KafkaRequest request) {
-        if (!context.hasServerState()) {
-            request.fail(
-                    Errors.BROKER_NOT_AVAILABLE.exception(
-                            "Kafka ElectLeaders requires a running server; the plugin is not"
-                                    + " wired."));
-            return;
-        }
-        try {
-            AuthzHelper.authorizeOrThrow(
-                    context.authorizer(),
-                    AuthzHelper.sessionOf(request),
-                    OperationType.ALTER,
-                    Resource.cluster());
-        } catch (AuthorizationException denied) {
-            ElectLeadersResponseData data = new ElectLeadersResponseData();
-            data.setErrorCode(Errors.CLUSTER_AUTHORIZATION_FAILED.code());
-            request.complete(new ElectLeadersResponse(data));
-            return;
-        }
-        try {
-            ElectLeadersRequest req = request.request();
-            KafkaElectLeadersTranscoder transcoder =
-                    new KafkaElectLeadersTranscoder(newCatalog(), context.metadataCache());
-            ElectLeadersResponseData data = transcoder.electLeaders(req.data());
-            request.complete(new ElectLeadersResponse(data));
-        } catch (Throwable t) {
-            LOG.error("ElectLeaders handler threw", t);
-            request.fail(t);
-        }
-    }
-
     void handleDescribeClientQuotasRequest(KafkaRequest request) {
         if (!context.hasServerState()) {
             request.fail(
@@ -1872,62 +1711,6 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
             }
             kafkaClientQuotasCatalog = new FlussCatalogService(conn);
             return kafkaClientQuotasCatalog;
-        }
-    }
-
-    void handleDescribeProducersRequest(KafkaRequest request) {
-        if (!context.hasServerState() || !context.hasReplicaManager()) {
-            request.fail(
-                    Errors.BROKER_NOT_AVAILABLE.exception(
-                            "Kafka DescribeProducers requires a tablet server; the plugin is not"
-                                    + " wired."));
-            return;
-        }
-        try {
-            DescribeProducersRequest req = request.request();
-            DescribeProducersRequestData data = req.data();
-            java.util.List<String> topics = new java.util.ArrayList<>();
-            for (DescribeProducersRequestData.TopicRequest t : data.topics()) {
-                topics.add(t.name());
-            }
-            Map<String, Boolean> allowed =
-                    AuthzHelper.authorizeTopicBatch(
-                            context.authorizer(),
-                            AuthzHelper.sessionOf(request),
-                            OperationType.READ,
-                            topics,
-                            context.kafkaDatabase(),
-                            context.metrics());
-            DescribeProducersRequestData filtered = data.duplicate();
-            filtered.topics().clear();
-            for (DescribeProducersRequestData.TopicRequest t : data.topics()) {
-                if (allowed.getOrDefault(t.name(), Boolean.TRUE)) {
-                    filtered.topics().add(t.duplicate());
-                }
-            }
-            KafkaDescribeProducersTranscoder transcoder =
-                    new KafkaDescribeProducersTranscoder(newCatalog(), context.replicaManager());
-            DescribeProducersResponseData result = transcoder.describeProducers(filtered);
-            short authzErr = Errors.TOPIC_AUTHORIZATION_FAILED.code();
-            for (DescribeProducersRequestData.TopicRequest t : data.topics()) {
-                if (allowed.getOrDefault(t.name(), Boolean.TRUE)) {
-                    continue;
-                }
-                DescribeProducersResponseData.TopicResponse topic =
-                        new DescribeProducersResponseData.TopicResponse().setName(t.name());
-                for (Integer partIdx : t.partitionIndexes()) {
-                    topic.partitions()
-                            .add(
-                                    new DescribeProducersResponseData.PartitionResponse()
-                                            .setPartitionIndex(partIdx)
-                                            .setErrorCode(authzErr));
-                }
-                result.topics().add(topic);
-            }
-            request.complete(new DescribeProducersResponse(result));
-        } catch (Throwable t) {
-            LOG.error("DescribeProducers handler threw", t);
-            request.fail(t);
         }
     }
 

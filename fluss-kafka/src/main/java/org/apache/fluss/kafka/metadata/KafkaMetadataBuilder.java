@@ -195,7 +195,7 @@ public final class KafkaMetadataBuilder {
             if (table.isPartitioned()) {
                 Map<String, Long> partitions;
                 try {
-                    partitions = manager.listPartitionIds(path);
+                    partitions = listPartitionIds(manager, path);
                 } catch (TableNotExistException removed) {
                     continue;
                 }
@@ -284,7 +284,7 @@ public final class KafkaMetadataBuilder {
     private Long resolvePartitionId(
             MetadataManager manager, KafkaTopicMapping.ResolvedTopic resolved) {
         try {
-            return manager.listPartitionIds(resolved.tablePath()).get(resolved.partitionName());
+            return listPartitionIds(manager, resolved.tablePath()).get(resolved.partitionName());
         } catch (TableNotExistException removed) {
             return null;
         }
@@ -336,5 +336,23 @@ public final class KafkaMetadataBuilder {
             map.put(meta.getBucketId(), meta);
         }
         return map;
+    }
+
+    /**
+     * Bridge to upstream {@code MetadataManager.listPartitions(TablePath)} which returns {@code
+     * Map<String, PartitionRegistration>}. The Kafka metadata builder only needs the {@code (name
+     * -> partitionId)} projection.
+     */
+    private static Map<String, Long> listPartitionIds(
+            org.apache.fluss.server.coordinator.MetadataManager manager,
+            org.apache.fluss.metadata.TablePath path) {
+        Map<String, org.apache.fluss.server.zk.data.PartitionRegistration> raw =
+                manager.listPartitions(path);
+        Map<String, Long> out = new java.util.LinkedHashMap<>(raw.size());
+        for (Map.Entry<String, org.apache.fluss.server.zk.data.PartitionRegistration> e :
+                raw.entrySet()) {
+            out.put(e.getKey(), e.getValue().getPartitionId());
+        }
+        return out;
     }
 }
