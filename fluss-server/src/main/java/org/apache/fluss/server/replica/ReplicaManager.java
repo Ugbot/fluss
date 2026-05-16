@@ -646,6 +646,108 @@ public class ReplicaManager implements ServerReconfigurable {
     }
 
     /**
+     * Client-style fetch entry point used by protocol bolt-ons (Kafka, etc.) so they don't reach
+     * into the internal {@link FetchParams} / {@link FetchReqInfo} mutable structs. The {@code
+     * replicaId} is hard-wired to {@code -1} (client semantics — no follower replication).
+     */
+    public void fetchLogRecordsForClient(
+            org.apache.fluss.rpc.log.ClientFetchRequest request,
+            Consumer<Map<TableBucket, FetchLogResultForBucket>> responseCallback) {
+        FetchParams params = new FetchParams(-1, request.maxFetchBytes());
+        Map<TableBucket, FetchReqInfo> bucketFetchInfo = new java.util.HashMap<>();
+        for (Map.Entry<TableBucket, org.apache.fluss.rpc.log.ClientFetchRequest.BucketRead> e :
+                request.buckets().entrySet()) {
+            org.apache.fluss.rpc.log.ClientFetchRequest.BucketRead read = e.getValue();
+            bucketFetchInfo.put(
+                    e.getKey(),
+                    new FetchReqInfo(read.tableId(), read.fetchOffset(), read.maxBytes()));
+        }
+        fetchLogRecords(params, bucketFetchInfo, /* userContext */ null, responseCallback);
+    }
+
+    /**
+     * Increase the bucket's log-start offset (Kafka's "DeleteRecords" op). Upstream Fluss doesn't
+     * yet expose a public {@code maybeIncreaseLogStartOffset} hook on {@code Replica}; in the FIP
+     * scope we treat the operation as a no-op and return the current low-watermark so the client
+     * sees a syntactically valid {@code DeleteRecordsResponse} with the existing log start. Real
+     * truncation semantics ship with the follow-up that adds the underlying replica API.
+     */
+    public long deleteRecords(TableBucket tableBucket, long newStartOffset) {
+        HostedReplica hosted = getReplica(tableBucket);
+        if (!(hosted instanceof OnlineReplica)) {
+            return -1L;
+        }
+        return ((OnlineReplica) hosted).getReplica().getLogStartOffset();
+    }
+
+    /**
+     * Snapshot of every active idempotent-producer ({@code writer}) entry for this bucket. Consumed
+     * by Kafka's {@code DESCRIBE_PRODUCERS} bolt-on.
+     */
+    public java.util.Optional<java.util.List<org.apache.fluss.rpc.replica.ProducerStateSnapshot>>
+            getProducerStates(TableBucket tableBucket) {
+        HostedReplica hosted = getReplica(tableBucket);
+        if (!(hosted instanceof OnlineReplica)) {
+            return java.util.Optional.empty();
+        }
+        Replica replica = ((OnlineReplica) hosted).getReplica();
+        org.apache.fluss.server.log.LogTablet logTablet;
+        try {
+            logTablet = replica.getLogTablet();
+        } catch (Throwable t) {
+            return java.util.Optional.of(java.util.Collections.emptyList());
+        }
+        if (logTablet == null) {
+            return java.util.Optional.of(java.util.Collections.emptyList());
+        }
+        java.util.Map<Long, org.apache.fluss.server.log.WriterStateEntry> active;
+        try {
+            active = logTablet.activeWriters();
+        } catch (Throwable t) {
+            return java.util.Optional.of(java.util.Collections.emptyList());
+        }
+        if (active == null || active.isEmpty()) {
+            return java.util.Optional.of(java.util.Collections.emptyList());
+        }
+        java.util.List<org.apache.fluss.rpc.replica.ProducerStateSnapshot> out =
+                new java.util.ArrayList<>(active.size());
+        for (java.util.Map.Entry<Long, org.apache.fluss.server.log.WriterStateEntry> e :
+                active.entrySet()) {
+            org.apache.fluss.server.log.WriterStateEntry entry = e.getValue();
+            out.add(
+                    new org.apache.fluss.rpc.replica.ProducerStateSnapshot(
+                            e.getKey(),
+                            0,
+                            entry.lastBatchSequence(),
+                            entry.lastBatchTimestamp(),
+                            -1,
+                            -1L));
+        }
+        return java.util.Optional.of(out);
+    }
+
+    /**
+     * Stable, read-only view of a replica's log metadata — the subset protocol bolt-ons (Kafka's
+     * {@code LIST_OFFSETS}, {@code METADATA}) need. Returns {@link java.util.Optional#empty()} when
+     * the bucket is not hosted locally.
+     */
+    public java.util.Optional<org.apache.fluss.rpc.replica.ReplicaSnapshot> getReplicaSnapshot(
+            TableBucket tableBucket) {
+        HostedReplica hosted = getReplica(tableBucket);
+        if (!(hosted instanceof OnlineReplica)) {
+            return java.util.Optional.empty();
+        }
+        Replica replica = ((OnlineReplica) hosted).getReplica();
+        return java.util.Optional.of(
+                new org.apache.fluss.rpc.replica.ReplicaSnapshot(
+                        replica.getLogStartOffset(),
+                        replica.getLocalLogEndOffset(),
+                        replica.getLogHighWatermark(),
+                        replica.getLeaderEpoch(),
+                        replica.isLeader()));
+    }
+
+    /**
      * Put kv records to leader replicas of the buckets, the kv data will write to kv tablet and the
      * response callback need to wait for the cdc log to be replicated to other replicas if needed.
      *

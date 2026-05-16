@@ -144,10 +144,12 @@ import static org.apache.fluss.server.utils.ServerRpcMessageUtils.toPrefixLookup
 public final class TabletService extends RpcServiceBase implements TabletServerGateway {
 
     private final String serviceName;
+    private final int serverId;
     private final ReplicaManager replicaManager;
     private final TabletServerMetadataCache metadataCache;
     private final TabletServerMetadataProvider metadataFunctionProvider;
     private final ScannerManager scannerManager;
+    @Nullable private final org.apache.fluss.rpc.gateway.CoordinatorGateway coordinatorGateway;
 
     public TabletService(
             int serverId,
@@ -160,6 +162,38 @@ public final class TabletService extends RpcServiceBase implements TabletServerG
             DynamicConfigManager dynamicConfigManager,
             ExecutorService ioExecutor,
             ScannerManager scannerManager) {
+        this(
+                serverId,
+                remoteFileSystem,
+                zkClient,
+                replicaManager,
+                metadataCache,
+                metadataManager,
+                authorizer,
+                dynamicConfigManager,
+                ioExecutor,
+                scannerManager,
+                /* coordinatorGateway */ null);
+    }
+
+    /**
+     * Constructor variant that wires a {@link org.apache.fluss.rpc.gateway.CoordinatorGateway} into
+     * the service so protocol bolt-ons (e.g. the Kafka bolt-on's {@code CreateTopics} / {@code
+     * DeleteTopics}) can RPC the coordinator without spinning up their own client. Pass {@code
+     * null} when no coordinator routing is needed (current upstream callers).
+     */
+    public TabletService(
+            int serverId,
+            FileSystem remoteFileSystem,
+            ZooKeeperClient zkClient,
+            ReplicaManager replicaManager,
+            TabletServerMetadataCache metadataCache,
+            MetadataManager metadataManager,
+            @Nullable Authorizer authorizer,
+            DynamicConfigManager dynamicConfigManager,
+            ExecutorService ioExecutor,
+            ScannerManager scannerManager,
+            @Nullable org.apache.fluss.rpc.gateway.CoordinatorGateway coordinatorGateway) {
         super(
                 remoteFileSystem,
                 ServerType.TABLET_SERVER,
@@ -169,11 +203,49 @@ public final class TabletService extends RpcServiceBase implements TabletServerG
                 dynamicConfigManager,
                 ioExecutor);
         this.serviceName = "server-" + serverId;
+        this.serverId = serverId;
         this.replicaManager = replicaManager;
         this.metadataCache = metadataCache;
         this.metadataFunctionProvider =
                 new TabletServerMetadataProvider(zkClient, metadataManager, metadataCache);
         this.scannerManager = scannerManager;
+        this.coordinatorGateway = coordinatorGateway;
+    }
+
+    /**
+     * Read-only accessors for network-protocol-plugin integration (e.g. the Kafka bolt-on). These
+     * expose state the constructor already receives; no new dependencies are introduced. Plugins
+     * use them via the standard {@code NetworkProtocolPlugin} SPI; non-plugin callers should
+     * continue going through the regular gateway methods.
+     */
+    public int getServerId() {
+        return serverId;
+    }
+
+    public ReplicaManager getReplicaManager() {
+        return replicaManager;
+    }
+
+    public TabletServerMetadataCache getMetadataCache() {
+        return metadataCache;
+    }
+
+    public ZooKeeperClient getZooKeeperClient() {
+        return zkClient;
+    }
+
+    public MetadataManager getMetadataManager() {
+        return metadataManager;
+    }
+
+    /**
+     * Returns the coordinator gateway when one was wired through the constructor, otherwise {@code
+     * null}. Protocol plugins must tolerate {@code null} (e.g. by failing admin RPCs that need
+     * coordinator routing with a clean error code).
+     */
+    @Nullable
+    public org.apache.fluss.rpc.gateway.CoordinatorGateway getCoordinatorGateway() {
+        return coordinatorGateway;
     }
 
     @Override
