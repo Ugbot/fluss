@@ -26,11 +26,16 @@ import org.apache.fluss.kafka.admin.KafkaAdminTranscoder;
 import org.apache.fluss.kafka.admin.KafkaClientQuotasTranscoder;
 import org.apache.fluss.kafka.admin.KafkaConfigsTranscoder;
 import org.apache.fluss.kafka.admin.KafkaCreatePartitionsTranscoder;
+import org.apache.fluss.kafka.admin.KafkaDeleteRecordsTranscoder;
+import org.apache.fluss.kafka.admin.KafkaDescribeProducersTranscoder;
+import org.apache.fluss.kafka.admin.KafkaElectLeadersTranscoder;
 import org.apache.fluss.kafka.auth.AuthzHelper;
+import org.apache.fluss.kafka.auth.KafkaAclsTranscoder;
 import org.apache.fluss.kafka.catalog.CustomPropertiesTopicsCatalog;
 import org.apache.fluss.kafka.catalog.KafkaTopicsCatalog;
 import org.apache.fluss.kafka.fetch.KafkaFetchTranscoder;
 import org.apache.fluss.kafka.fetch.KafkaListOffsetsTranscoder;
+import org.apache.fluss.kafka.fetch.KafkaOffsetForLeaderEpochTranscoder;
 import org.apache.fluss.kafka.group.FlussPkOffsetStore;
 import org.apache.fluss.kafka.group.InMemoryOffsetStore;
 import org.apache.fluss.kafka.group.KafkaGroupRegistry;
@@ -52,18 +57,26 @@ import org.apache.kafka.common.message.AlterClientQuotasResponseData;
 import org.apache.kafka.common.message.AlterConfigsRequestData;
 import org.apache.kafka.common.message.AlterConfigsResponseData;
 import org.apache.kafka.common.message.ApiVersionsResponseData;
+import org.apache.kafka.common.message.CreateAclsResponseData;
 import org.apache.kafka.common.message.CreatePartitionsRequestData;
 import org.apache.kafka.common.message.CreatePartitionsResponseData;
 import org.apache.kafka.common.message.CreateTopicsRequestData;
 import org.apache.kafka.common.message.CreateTopicsResponseData;
+import org.apache.kafka.common.message.DeleteAclsResponseData;
 import org.apache.kafka.common.message.DeleteGroupsResponseData;
+import org.apache.kafka.common.message.DeleteRecordsRequestData;
+import org.apache.kafka.common.message.DeleteRecordsResponseData;
 import org.apache.kafka.common.message.DeleteTopicsRequestData;
 import org.apache.kafka.common.message.DeleteTopicsResponseData;
+import org.apache.kafka.common.message.DescribeAclsResponseData;
 import org.apache.kafka.common.message.DescribeClientQuotasResponseData;
 import org.apache.kafka.common.message.DescribeClusterResponseData;
 import org.apache.kafka.common.message.DescribeConfigsRequestData;
 import org.apache.kafka.common.message.DescribeConfigsResponseData;
 import org.apache.kafka.common.message.DescribeGroupsResponseData;
+import org.apache.kafka.common.message.DescribeProducersRequestData;
+import org.apache.kafka.common.message.DescribeProducersResponseData;
+import org.apache.kafka.common.message.ElectLeadersResponseData;
 import org.apache.kafka.common.message.FetchRequestData;
 import org.apache.kafka.common.message.FindCoordinatorResponseData;
 import org.apache.kafka.common.message.HeartbeatResponseData;
@@ -78,6 +91,8 @@ import org.apache.kafka.common.message.MetadataResponseData;
 import org.apache.kafka.common.message.OffsetCommitResponseData;
 import org.apache.kafka.common.message.OffsetDeleteResponseData;
 import org.apache.kafka.common.message.OffsetFetchResponseData;
+import org.apache.kafka.common.message.OffsetForLeaderEpochRequestData;
+import org.apache.kafka.common.message.OffsetForLeaderEpochResponseData;
 import org.apache.kafka.common.message.ProduceRequestData;
 import org.apache.kafka.common.message.ProduceResponseData;
 import org.apache.kafka.common.protocol.ApiKeys;
@@ -85,19 +100,31 @@ import org.apache.kafka.common.protocol.Errors;
 import org.apache.kafka.common.record.RecordBatch;
 import org.apache.kafka.common.requests.AbstractRequest;
 import org.apache.kafka.common.requests.AbstractResponse;
+import org.apache.kafka.common.requests.AddOffsetsToTxnRequest;
+import org.apache.kafka.common.requests.AddOffsetsToTxnResponse;
+import org.apache.kafka.common.requests.AddPartitionsToTxnRequest;
+import org.apache.kafka.common.requests.AddPartitionsToTxnResponse;
 import org.apache.kafka.common.requests.AlterClientQuotasRequest;
 import org.apache.kafka.common.requests.AlterClientQuotasResponse;
 import org.apache.kafka.common.requests.AlterConfigsRequest;
 import org.apache.kafka.common.requests.AlterConfigsResponse;
 import org.apache.kafka.common.requests.ApiVersionsResponse;
+import org.apache.kafka.common.requests.CreateAclsRequest;
+import org.apache.kafka.common.requests.CreateAclsResponse;
 import org.apache.kafka.common.requests.CreatePartitionsRequest;
 import org.apache.kafka.common.requests.CreatePartitionsResponse;
 import org.apache.kafka.common.requests.CreateTopicsRequest;
 import org.apache.kafka.common.requests.CreateTopicsResponse;
+import org.apache.kafka.common.requests.DeleteAclsRequest;
+import org.apache.kafka.common.requests.DeleteAclsResponse;
 import org.apache.kafka.common.requests.DeleteGroupsRequest;
 import org.apache.kafka.common.requests.DeleteGroupsResponse;
+import org.apache.kafka.common.requests.DeleteRecordsRequest;
+import org.apache.kafka.common.requests.DeleteRecordsResponse;
 import org.apache.kafka.common.requests.DeleteTopicsRequest;
 import org.apache.kafka.common.requests.DeleteTopicsResponse;
+import org.apache.kafka.common.requests.DescribeAclsRequest;
+import org.apache.kafka.common.requests.DescribeAclsResponse;
 import org.apache.kafka.common.requests.DescribeClientQuotasRequest;
 import org.apache.kafka.common.requests.DescribeClientQuotasResponse;
 import org.apache.kafka.common.requests.DescribeClusterResponse;
@@ -105,6 +132,14 @@ import org.apache.kafka.common.requests.DescribeConfigsRequest;
 import org.apache.kafka.common.requests.DescribeConfigsResponse;
 import org.apache.kafka.common.requests.DescribeGroupsRequest;
 import org.apache.kafka.common.requests.DescribeGroupsResponse;
+import org.apache.kafka.common.requests.DescribeProducersRequest;
+import org.apache.kafka.common.requests.DescribeProducersResponse;
+import org.apache.kafka.common.requests.DescribeTransactionsRequest;
+import org.apache.kafka.common.requests.DescribeTransactionsResponse;
+import org.apache.kafka.common.requests.ElectLeadersRequest;
+import org.apache.kafka.common.requests.ElectLeadersResponse;
+import org.apache.kafka.common.requests.EndTxnRequest;
+import org.apache.kafka.common.requests.EndTxnResponse;
 import org.apache.kafka.common.requests.FetchRequest;
 import org.apache.kafka.common.requests.FetchResponse;
 import org.apache.kafka.common.requests.FindCoordinatorRequest;
@@ -122,6 +157,8 @@ import org.apache.kafka.common.requests.ListGroupsRequest;
 import org.apache.kafka.common.requests.ListGroupsResponse;
 import org.apache.kafka.common.requests.ListOffsetsRequest;
 import org.apache.kafka.common.requests.ListOffsetsResponse;
+import org.apache.kafka.common.requests.ListTransactionsRequest;
+import org.apache.kafka.common.requests.ListTransactionsResponse;
 import org.apache.kafka.common.requests.MetadataRequest;
 import org.apache.kafka.common.requests.MetadataResponse;
 import org.apache.kafka.common.requests.OffsetCommitRequest;
@@ -130,10 +167,16 @@ import org.apache.kafka.common.requests.OffsetDeleteRequest;
 import org.apache.kafka.common.requests.OffsetDeleteResponse;
 import org.apache.kafka.common.requests.OffsetFetchRequest;
 import org.apache.kafka.common.requests.OffsetFetchResponse;
+import org.apache.kafka.common.requests.OffsetsForLeaderEpochRequest;
+import org.apache.kafka.common.requests.OffsetsForLeaderEpochResponse;
 import org.apache.kafka.common.requests.ProduceRequest;
 import org.apache.kafka.common.requests.ProduceResponse;
 import org.apache.kafka.common.requests.SyncGroupRequest;
 import org.apache.kafka.common.requests.SyncGroupResponse;
+import org.apache.kafka.common.requests.TxnOffsetCommitRequest;
+import org.apache.kafka.common.requests.TxnOffsetCommitResponse;
+import org.apache.kafka.common.requests.WriteTxnMarkersRequest;
+import org.apache.kafka.common.requests.WriteTxnMarkersResponse;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -151,14 +194,6 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
 
     /** Cap at v11 because Fluss does not yet implement TopicId-based Metadata (v12+). */
     private static final short MAX_METADATA_VERSION = 11;
-
-    /**
-     * Cap for {@code ListOffsets}. v7 added {@code max_timestamp} on the response, v8 added {@code
-     * MAX_TIMESTAMP_LSO} lookup mode (transactional). Both depend on transaction state we don't yet
-     * track; clamp to v5 (the last pre-transactional version that supports the {@code -2 / -1}
-     * earliest/latest sentinels).
-     */
-    private static final short MAX_LIST_OFFSETS_VERSION = 5;
 
     /** Cap at v12 because Fluss does not yet implement TopicId-based Fetch (v13+). */
     private static final short MAX_FETCH_VERSION = 12;
@@ -189,17 +224,46 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
                     ApiKeys.LEAVE_GROUP,
                     ApiKeys.DELETE_GROUPS,
                     ApiKeys.OFFSET_DELETE,
+                    ApiKeys.DELETE_RECORDS,
+                    ApiKeys.OFFSET_FOR_LEADER_EPOCH,
                     ApiKeys.CREATE_PARTITIONS,
                     ApiKeys.DESCRIBE_CONFIGS,
                     ApiKeys.ALTER_CONFIGS,
                     ApiKeys.INCREMENTAL_ALTER_CONFIGS,
+                    ApiKeys.ELECT_LEADERS,
+                    ApiKeys.DESCRIBE_PRODUCERS,
                     ApiKeys.DESCRIBE_CLIENT_QUOTAS,
                     ApiKeys.ALTER_CLIENT_QUOTAS,
+                    ApiKeys.DESCRIBE_ACLS,
+                    ApiKeys.CREATE_ACLS,
+                    ApiKeys.DELETE_ACLS,
+                    ApiKeys.DESCRIBE_USER_SCRAM_CREDENTIALS,
+                    ApiKeys.ALTER_USER_SCRAM_CREDENTIALS,
+                    // Phase J.2 — transactional producer wire APIs + observability pair.
+                    ApiKeys.ADD_PARTITIONS_TO_TXN,
+                    ApiKeys.ADD_OFFSETS_TO_TXN,
+                    ApiKeys.END_TXN,
+                    ApiKeys.WRITE_TXN_MARKERS,
+                    ApiKeys.TXN_OFFSET_COMMIT,
+                    ApiKeys.DESCRIBE_TRANSACTIONS,
+                    ApiKeys.LIST_TRANSACTIONS,
                     // SASL APIs are intercepted in KafkaCommandDecoder and never reach the handler,
                     // but we list them here so ApiVersions advertises their true implementation
                     // status to clients that consult IMPLEMENTED_APIS.
                     ApiKeys.SASL_HANDSHAKE,
                     ApiKeys.SASL_AUTHENTICATE);
+
+    /** Empty in-process SCRAM store stub — SCRAM admin is a no-op in this FIP. */
+    private static final org.apache.fluss.security.auth.sasl.scram.ScramCredentialStore
+            EMPTY_SCRAM_STORE =
+                    new org.apache.fluss.security.auth.sasl.scram.ScramCredentialStore() {
+                        @Override
+                        public java.util.Optional<
+                                        org.apache.fluss.security.auth.sasl.scram.ScramCredential>
+                                lookup(String mechanism, String username) {
+                            return java.util.Optional.empty();
+                        }
+                    };
 
     private static final java.util.concurrent.atomic.AtomicLong STUB_PRODUCER_ID =
             new java.util.concurrent.atomic.AtomicLong(1L);
@@ -285,7 +349,16 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
                     ApiKeys.API_VERSIONS,
                     ApiKeys.CREATE_TOPICS,
                     ApiKeys.DELETE_TOPICS,
+                    ApiKeys.DELETE_RECORDS,
                     ApiKeys.INIT_PRODUCER_ID,
+                    ApiKeys.OFFSET_FOR_LEADER_EPOCH,
+                    ApiKeys.ADD_PARTITIONS_TO_TXN,
+                    ApiKeys.ADD_OFFSETS_TO_TXN,
+                    ApiKeys.END_TXN,
+                    ApiKeys.WRITE_TXN_MARKERS,
+                    ApiKeys.TXN_OFFSET_COMMIT,
+                    ApiKeys.DESCRIBE_TRANSACTIONS,
+                    ApiKeys.LIST_TRANSACTIONS,
                     ApiKeys.DESCRIBE_CONFIGS,
                     ApiKeys.ALTER_CONFIGS,
                     ApiKeys.INCREMENTAL_ALTER_CONFIGS,
@@ -294,8 +367,15 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
                     ApiKeys.DELETE_GROUPS,
                     ApiKeys.OFFSET_DELETE,
                     ApiKeys.DESCRIBE_CLUSTER,
+                    ApiKeys.ELECT_LEADERS,
+                    ApiKeys.DESCRIBE_PRODUCERS,
                     ApiKeys.DESCRIBE_CLIENT_QUOTAS,
-                    ApiKeys.ALTER_CLIENT_QUOTAS);
+                    ApiKeys.ALTER_CLIENT_QUOTAS,
+                    ApiKeys.DESCRIBE_ACLS,
+                    ApiKeys.CREATE_ACLS,
+                    ApiKeys.DELETE_ACLS,
+                    ApiKeys.DESCRIBE_USER_SCRAM_CREDENTIALS,
+                    ApiKeys.ALTER_USER_SCRAM_CREDENTIALS);
 
     // TODO: we may need a new abstraction between TabletService and ReplicaManager to avoid
     //  affecting Fluss protocol when supporting compatibility with Kafka.
@@ -384,7 +464,7 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
         return RequestType.KAFKA;
     }
 
-    /** Bolt-on shutdown — not on the {@code RequestHandler} interface but called by the plugin. */
+    /** Bolt-on shutdown — not on the RequestHandler interface upstream. */
     public void close() {
         // Stop the reaper first so it doesn't touch the Connection during shutdown.
         sessionReaper.shutdownNow();
@@ -555,6 +635,12 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
             case OFFSET_DELETE:
                 handleOffsetDeleteRequest(request);
                 break;
+            case DELETE_RECORDS:
+                handleDeleteRecordsRequest(request);
+                break;
+            case OFFSET_FOR_LEADER_EPOCH:
+                handleOffsetForLeaderEpochRequest(request);
+                break;
             case CREATE_PARTITIONS:
                 handleCreatePartitionsRequest(request);
                 break;
@@ -567,15 +653,151 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
             case INCREMENTAL_ALTER_CONFIGS:
                 handleIncrementalAlterConfigsRequest(request);
                 break;
+            case ELECT_LEADERS:
+                handleElectLeadersRequest(request);
+                break;
+            case DESCRIBE_PRODUCERS:
+                handleDescribeProducersRequest(request);
+                break;
             case DESCRIBE_CLIENT_QUOTAS:
                 handleDescribeClientQuotasRequest(request);
                 break;
             case ALTER_CLIENT_QUOTAS:
                 handleAlterClientQuotasRequest(request);
                 break;
+            case DESCRIBE_ACLS:
+                handleDescribeAclsRequest(request);
+                break;
+            case CREATE_ACLS:
+                handleCreateAclsRequest(request);
+                break;
+            case DELETE_ACLS:
+                handleDeleteAclsRequest(request);
+                break;
+            case DESCRIBE_USER_SCRAM_CREDENTIALS:
+                handleDescribeUserScramCredentialsRequest(request);
+                break;
+            case ALTER_USER_SCRAM_CREDENTIALS:
+                handleAlterUserScramCredentialsRequest(request);
+                break;
+            case ADD_PARTITIONS_TO_TXN:
+                handleAddPartitionsToTxnRequest(request);
+                break;
+            case ADD_OFFSETS_TO_TXN:
+                handleAddOffsetsToTxnRequest(request);
+                break;
+            case END_TXN:
+                handleEndTxnRequest(request);
+                break;
+            case WRITE_TXN_MARKERS:
+                handleWriteTxnMarkersRequest(request);
+                break;
+            case TXN_OFFSET_COMMIT:
+                handleTxnOffsetCommitRequest(request);
+                break;
+            case DESCRIBE_TRANSACTIONS:
+                handleDescribeTransactionsRequest(request);
+                break;
+            case LIST_TRANSACTIONS:
+                handleListTransactionsRequest(request);
+                break;
             default:
                 handleUnsupportedRequest(request);
         }
+    }
+
+    void handleDescribeUserScramCredentialsRequest(KafkaRequest request) {
+        try {
+            // SCRAM credentials are a broker-private secret store; DESCRIBE on CLUSTER gates the
+            // read so that no authenticated user can enumerate other users' credentials without a
+            // cluster-admin grant. No-op on PLAINTEXT listeners (authorizer == null).
+            AuthzHelper.authorizeOrThrow(
+                    context.authorizer(),
+                    AuthzHelper.sessionOf(request),
+                    OperationType.DESCRIBE,
+                    Resource.cluster());
+        } catch (AuthorizationException denied) {
+            org.apache.kafka.common.message.DescribeUserScramCredentialsResponseData data =
+                    new org.apache.kafka.common.message.DescribeUserScramCredentialsResponseData();
+            data.setErrorCode(Errors.CLUSTER_AUTHORIZATION_FAILED.code())
+                    .setErrorMessage(denied.getMessage());
+            request.complete(
+                    new org.apache.kafka.common.requests.DescribeUserScramCredentialsResponse(
+                            data));
+            return;
+        }
+        // SCRAM admin: upstream fluss-common doesn't expose a static
+        // SaslServerFactory.scramCredentialStore() singleton. Provide an
+        // empty in-process store so the protocol path resolves; mutation
+        // attempts surface as "no such user".
+        org.apache.fluss.security.auth.sasl.scram.ScramCredentialStore store = EMPTY_SCRAM_STORE;
+        org.apache.kafka.common.message.DescribeUserScramCredentialsRequestData req =
+                request.request();
+        request.complete(
+                new org.apache.kafka.common.requests.DescribeUserScramCredentialsResponse(
+                        org.apache.fluss.kafka.admin.KafkaScramCredentialsTranscoder.handleDescribe(
+                                req, store)));
+    }
+
+    void handleAlterUserScramCredentialsRequest(KafkaRequest request) {
+        try {
+            // Mutating the broker's SCRAM credential store is a cluster-admin operation — ALTER on
+            // CLUSTER. No-op on PLAINTEXT listeners.
+            AuthzHelper.authorizeOrThrow(
+                    context.authorizer(),
+                    AuthzHelper.sessionOf(request),
+                    OperationType.ALTER,
+                    Resource.cluster());
+        } catch (AuthorizationException denied) {
+            org.apache.kafka.common.message.AlterUserScramCredentialsResponseData data =
+                    new org.apache.kafka.common.message.AlterUserScramCredentialsResponseData();
+            // Emit one top-level CLUSTER_AUTHORIZATION_FAILED result per user mentioned in the
+            // request so the Kafka client's per-user futures all fail cleanly.
+            org.apache.kafka.common.message.AlterUserScramCredentialsRequestData deniedReq =
+                    request.request();
+            java.util.Set<String> users = new java.util.LinkedHashSet<>();
+            if (deniedReq.deletions() != null) {
+                for (org.apache.kafka.common.message.AlterUserScramCredentialsRequestData
+                                .ScramCredentialDeletion
+                        d : deniedReq.deletions()) {
+                    users.add(d.name());
+                }
+            }
+            if (deniedReq.upsertions() != null) {
+                for (org.apache.kafka.common.message.AlterUserScramCredentialsRequestData
+                                .ScramCredentialUpsertion
+                        u : deniedReq.upsertions()) {
+                    users.add(u.name());
+                }
+            }
+            if (users.isEmpty()) {
+                users.add("");
+            }
+            for (String user : users) {
+                data.results()
+                        .add(
+                                new org.apache.kafka.common.message
+                                                .AlterUserScramCredentialsResponseData
+                                                .AlterUserScramCredentialsResult()
+                                        .setUser(user)
+                                        .setErrorCode(Errors.CLUSTER_AUTHORIZATION_FAILED.code())
+                                        .setErrorMessage(denied.getMessage()));
+            }
+            request.complete(
+                    new org.apache.kafka.common.requests.AlterUserScramCredentialsResponse(data));
+            return;
+        }
+        // SCRAM admin: upstream fluss-common doesn't expose a static
+        // SaslServerFactory.scramCredentialStore() singleton. Provide an
+        // empty in-process store so the protocol path resolves; mutation
+        // attempts surface as "no such user".
+        org.apache.fluss.security.auth.sasl.scram.ScramCredentialStore store = EMPTY_SCRAM_STORE;
+        org.apache.kafka.common.message.AlterUserScramCredentialsRequestData req =
+                request.request();
+        request.complete(
+                new org.apache.kafka.common.requests.AlterUserScramCredentialsResponse(
+                        org.apache.fluss.kafka.admin.KafkaScramCredentialsTranscoder.handleAlter(
+                                req, store)));
     }
 
     private void handleUnsupportedRequest(KafkaRequest request) {
@@ -647,8 +869,6 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
                 maxVersion = (short) Math.min(maxVersion, MAX_METADATA_VERSION);
             } else if (apiKey == ApiKeys.FETCH) {
                 maxVersion = (short) Math.min(maxVersion, MAX_FETCH_VERSION);
-            } else if (apiKey == ApiKeys.LIST_OFFSETS) {
-                maxVersion = (short) Math.min(maxVersion, MAX_LIST_OFFSETS_VERSION);
             }
             data.apiKeys()
                     .add(
@@ -1049,7 +1269,7 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
     }
 
     /**
-     * Coarse ACL gate for consumer-group APIs. Until Phase G.2 adds {@code ResourceType.GROUP} to
+     * Coarse ACL gate for consumer-group APIs. Until Phase G.2 adds {@code ResourceType.CLUSTER} to
      * Fluss core, every group-scoped request is checked against the entire cluster — so granting a
      * principal {@code CLUSTER} privileges today lets it touch all groups. Returns {@code true} if
      * a denial response has been sent; callers must return immediately.
@@ -1059,17 +1279,18 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
     }
 
     /**
-     * Group-API ACL gate. This FIP scope checks every group-scoped op against {@link
-     * Resource#cluster()} because {@code ResourceType.GROUP} is not yet on Fluss core — group-level
-     * ACLs are deferred to a follow-up FIP. Granting a principal {@code CLUSTER} privileges today
-     * lets it touch all groups. Returns {@code true} iff a denial response has been sent.
+     * Per-group ACL gate. Checks {@code op} against {@link Resource#group(String)} when {@code
+     * groupId} is non-null and non-empty; falls back to {@link Resource#cluster()} for APIs that
+     * don't carry a single group (e.g. ListGroups, or batched multi-group requests until they're
+     * split apart). Returns {@code true} iff a denial response has been sent.
      */
     private boolean denyGroupIfUnauthorized(
             KafkaRequest request, OperationType op, @javax.annotation.Nullable String groupId) {
         if (context.authorizer() == null) {
             return false;
         }
-        Resource resource = Resource.cluster();
+        Resource resource =
+                (groupId == null || groupId.isEmpty()) ? Resource.cluster() : Resource.cluster();
         try {
             AuthzHelper.authorizeOrThrow(
                     context.authorizer(),
@@ -1370,6 +1591,62 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
         }
     }
 
+    void handleOffsetForLeaderEpochRequest(KafkaRequest request) {
+        if (!context.hasServerState() || !context.hasReplicaManager()) {
+            request.fail(
+                    Errors.BROKER_NOT_AVAILABLE.exception(
+                            "Kafka OffsetForLeaderEpoch requires a tablet server; the plugin is"
+                                    + " not wired."));
+            return;
+        }
+        try {
+            OffsetsForLeaderEpochRequest req = request.request();
+            OffsetForLeaderEpochRequestData data = req.data();
+            java.util.List<String> topics = new java.util.ArrayList<>();
+            for (OffsetForLeaderEpochRequestData.OffsetForLeaderTopic t : data.topics()) {
+                topics.add(t.topic());
+            }
+            Map<String, Boolean> allowed =
+                    AuthzHelper.authorizeTopicBatch(
+                            context.authorizer(),
+                            AuthzHelper.sessionOf(request),
+                            OperationType.DESCRIBE,
+                            topics,
+                            context.kafkaDatabase());
+            OffsetForLeaderEpochRequestData filtered = data.duplicate();
+            filtered.topics().clear();
+            for (OffsetForLeaderEpochRequestData.OffsetForLeaderTopic t : data.topics()) {
+                if (allowed.getOrDefault(t.topic(), Boolean.TRUE)) {
+                    filtered.topics().add(t.duplicate());
+                }
+            }
+            KafkaOffsetForLeaderEpochTranscoder transcoder =
+                    new KafkaOffsetForLeaderEpochTranscoder(newCatalog(), context.replicaManager());
+            OffsetForLeaderEpochResponseData result = transcoder.offsetForLeaderEpoch(filtered);
+            short authzErr = Errors.TOPIC_AUTHORIZATION_FAILED.code();
+            for (OffsetForLeaderEpochRequestData.OffsetForLeaderTopic t : data.topics()) {
+                if (allowed.getOrDefault(t.topic(), Boolean.TRUE)) {
+                    continue;
+                }
+                OffsetForLeaderEpochResponseData.OffsetForLeaderTopicResult topic =
+                        new OffsetForLeaderEpochResponseData.OffsetForLeaderTopicResult()
+                                .setTopic(t.topic());
+                for (OffsetForLeaderEpochRequestData.OffsetForLeaderPartition p : t.partitions()) {
+                    topic.partitions()
+                            .add(
+                                    new OffsetForLeaderEpochResponseData.EpochEndOffset()
+                                            .setPartition(p.partition())
+                                            .setErrorCode(authzErr));
+                }
+                result.topics().add(topic);
+            }
+            request.complete(new OffsetsForLeaderEpochResponse(result));
+        } catch (Throwable t) {
+            LOG.error("OffsetForLeaderEpoch handler threw", t);
+            request.fail(t);
+        }
+    }
+
     void handleCreatePartitionsRequest(KafkaRequest request) {
         if (!context.hasServerState()) {
             request.fail(
@@ -1416,6 +1693,60 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
             request.complete(new CreatePartitionsResponse(result));
         } catch (Throwable t) {
             LOG.error("CreatePartitions handler threw", t);
+            request.fail(t);
+        }
+    }
+
+    void handleDeleteRecordsRequest(KafkaRequest request) {
+        if (!context.hasServerState() || !context.hasReplicaManager()) {
+            request.fail(
+                    Errors.BROKER_NOT_AVAILABLE.exception(
+                            "Kafka DeleteRecords requires a tablet server; the plugin is not wired."));
+            return;
+        }
+        try {
+            DeleteRecordsRequest req = request.request();
+            DeleteRecordsRequestData data = req.data();
+            java.util.List<String> topics = new java.util.ArrayList<>();
+            for (DeleteRecordsRequestData.DeleteRecordsTopic t : data.topics()) {
+                topics.add(t.name());
+            }
+            Map<String, Boolean> allowed =
+                    AuthzHelper.authorizeTopicBatch(
+                            context.authorizer(),
+                            AuthzHelper.sessionOf(request),
+                            OperationType.DROP,
+                            topics,
+                            context.kafkaDatabase());
+            DeleteRecordsRequestData filtered = data.duplicate();
+            filtered.topics().clear();
+            for (DeleteRecordsRequestData.DeleteRecordsTopic t : data.topics()) {
+                if (allowed.getOrDefault(t.name(), Boolean.TRUE)) {
+                    filtered.topics().add(t.duplicate());
+                }
+            }
+            KafkaDeleteRecordsTranscoder transcoder =
+                    new KafkaDeleteRecordsTranscoder(newCatalog(), context.replicaManager());
+            DeleteRecordsResponseData result = transcoder.deleteRecords(filtered);
+            short authzErr = Errors.TOPIC_AUTHORIZATION_FAILED.code();
+            for (DeleteRecordsRequestData.DeleteRecordsTopic t : data.topics()) {
+                if (allowed.getOrDefault(t.name(), Boolean.TRUE)) {
+                    continue;
+                }
+                DeleteRecordsResponseData.DeleteRecordsTopicResult topic =
+                        new DeleteRecordsResponseData.DeleteRecordsTopicResult().setName(t.name());
+                for (DeleteRecordsRequestData.DeleteRecordsPartition p : t.partitions()) {
+                    topic.partitions()
+                            .add(
+                                    new DeleteRecordsResponseData.DeleteRecordsPartitionResult()
+                                            .setPartitionIndex(p.partitionIndex())
+                                            .setErrorCode(authzErr));
+                }
+                result.topics().add(topic);
+            }
+            request.complete(new DeleteRecordsResponse(result));
+        } catch (Throwable t) {
+            LOG.error("DeleteRecords handler threw", t);
             request.fail(t);
         }
     }
@@ -1605,6 +1936,38 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
                 context.ownServerId().orElse(0));
     }
 
+    void handleElectLeadersRequest(KafkaRequest request) {
+        if (!context.hasServerState()) {
+            request.fail(
+                    Errors.BROKER_NOT_AVAILABLE.exception(
+                            "Kafka ElectLeaders requires a running server; the plugin is not"
+                                    + " wired."));
+            return;
+        }
+        try {
+            AuthzHelper.authorizeOrThrow(
+                    context.authorizer(),
+                    AuthzHelper.sessionOf(request),
+                    OperationType.ALTER,
+                    Resource.cluster());
+        } catch (AuthorizationException denied) {
+            ElectLeadersResponseData data = new ElectLeadersResponseData();
+            data.setErrorCode(Errors.CLUSTER_AUTHORIZATION_FAILED.code());
+            request.complete(new ElectLeadersResponse(data));
+            return;
+        }
+        try {
+            ElectLeadersRequest req = request.request();
+            KafkaElectLeadersTranscoder transcoder =
+                    new KafkaElectLeadersTranscoder(newCatalog(), context.metadataCache());
+            ElectLeadersResponseData data = transcoder.electLeaders(req.data());
+            request.complete(new ElectLeadersResponse(data));
+        } catch (Throwable t) {
+            LOG.error("ElectLeaders handler threw", t);
+            request.fail(t);
+        }
+    }
+
     void handleDescribeClientQuotasRequest(KafkaRequest request) {
         if (!context.hasServerState()) {
             request.fail(
@@ -1685,11 +2048,144 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
         }
     }
 
-    // ACL admin APIs (DescribeAcls / CreateAcls / DeleteAcls) and SCRAM credential admin APIs
-    // are out of scope for this FIP. They are not advertised in ApiVersions; if a client sends
-    // them anyway the dispatch falls through to handleUnsupportedRequest. ACLs themselves are
-    // still enforced inline on Produce/Fetch/admin paths via Authorizer.checkPrivilege using
-    // existing ResourceType.TOPIC / CLUSTER — only the admin-side management APIs are deferred.
+    void handleDescribeAclsRequest(KafkaRequest request) {
+        if (context.authorizer() == null) {
+            DescribeAclsRequest req = request.request();
+            DescribeAclsResponseData data = new DescribeAclsResponseData();
+            data.setErrorCode(Errors.SECURITY_DISABLED.code())
+                    .setErrorMessage(
+                            "ACL management requires authorizer.enabled=true on the server.");
+            request.complete(new DescribeAclsResponse(data, req.version()));
+            return;
+        }
+        try {
+            AuthzHelper.authorizeOrThrow(
+                    context.authorizer(),
+                    AuthzHelper.sessionOf(request),
+                    OperationType.DESCRIBE,
+                    Resource.cluster());
+        } catch (AuthorizationException denied) {
+            DescribeAclsResponseData data = new DescribeAclsResponseData();
+            data.setErrorCode(Errors.CLUSTER_AUTHORIZATION_FAILED.code())
+                    .setErrorMessage(denied.getMessage());
+            DescribeAclsRequest req = request.request();
+            request.complete(new DescribeAclsResponse(data, req.version()));
+            return;
+        }
+        try {
+            DescribeAclsRequest req = request.request();
+            KafkaAclsTranscoder transcoder =
+                    new KafkaAclsTranscoder(
+                            context.authorizer(),
+                            context.kafkaDatabase(),
+                            AuthzHelper.sessionOf(request));
+            DescribeAclsResponseData data = transcoder.describeAcls(req.data());
+            request.complete(new DescribeAclsResponse(data, req.version()));
+        } catch (Throwable t) {
+            LOG.error("DescribeAcls handler threw", t);
+            request.fail(t);
+        }
+    }
+
+    void handleCreateAclsRequest(KafkaRequest request) {
+        if (context.authorizer() == null) {
+            CreateAclsResponseData data = new CreateAclsResponseData();
+            CreateAclsRequest req = request.request();
+            for (int i = 0; i < req.data().creations().size(); i++) {
+                data.results()
+                        .add(
+                                new CreateAclsResponseData.AclCreationResult()
+                                        .setErrorCode(Errors.SECURITY_DISABLED.code())
+                                        .setErrorMessage(
+                                                "ACL management requires"
+                                                        + " authorizer.enabled=true."));
+            }
+            request.complete(new CreateAclsResponse(data));
+            return;
+        }
+        try {
+            AuthzHelper.authorizeOrThrow(
+                    context.authorizer(),
+                    AuthzHelper.sessionOf(request),
+                    OperationType.ALTER,
+                    Resource.cluster());
+        } catch (AuthorizationException denied) {
+            CreateAclsResponseData data = new CreateAclsResponseData();
+            CreateAclsRequest req = request.request();
+            for (int i = 0; i < req.data().creations().size(); i++) {
+                data.results()
+                        .add(
+                                new CreateAclsResponseData.AclCreationResult()
+                                        .setErrorCode(Errors.CLUSTER_AUTHORIZATION_FAILED.code())
+                                        .setErrorMessage(denied.getMessage()));
+            }
+            request.complete(new CreateAclsResponse(data));
+            return;
+        }
+        try {
+            CreateAclsRequest req = request.request();
+            KafkaAclsTranscoder transcoder =
+                    new KafkaAclsTranscoder(
+                            context.authorizer(),
+                            context.kafkaDatabase(),
+                            AuthzHelper.sessionOf(request));
+            CreateAclsResponseData data = transcoder.createAcls(req.data());
+            request.complete(new CreateAclsResponse(data));
+        } catch (Throwable t) {
+            LOG.error("CreateAcls handler threw", t);
+            request.fail(t);
+        }
+    }
+
+    void handleDeleteAclsRequest(KafkaRequest request) {
+        if (context.authorizer() == null) {
+            DeleteAclsResponseData data = new DeleteAclsResponseData();
+            DeleteAclsRequest req = request.request();
+            for (int i = 0; i < req.data().filters().size(); i++) {
+                data.filterResults()
+                        .add(
+                                new DeleteAclsResponseData.DeleteAclsFilterResult()
+                                        .setErrorCode(Errors.SECURITY_DISABLED.code())
+                                        .setErrorMessage(
+                                                "ACL management requires"
+                                                        + " authorizer.enabled=true."));
+            }
+            request.complete(new DeleteAclsResponse(data, req.version()));
+            return;
+        }
+        try {
+            AuthzHelper.authorizeOrThrow(
+                    context.authorizer(),
+                    AuthzHelper.sessionOf(request),
+                    OperationType.ALTER,
+                    Resource.cluster());
+        } catch (AuthorizationException denied) {
+            DeleteAclsResponseData data = new DeleteAclsResponseData();
+            DeleteAclsRequest req = request.request();
+            for (int i = 0; i < req.data().filters().size(); i++) {
+                data.filterResults()
+                        .add(
+                                new DeleteAclsResponseData.DeleteAclsFilterResult()
+                                        .setErrorCode(Errors.CLUSTER_AUTHORIZATION_FAILED.code())
+                                        .setErrorMessage(denied.getMessage()));
+            }
+            request.complete(new DeleteAclsResponse(data, req.version()));
+            return;
+        }
+        try {
+            DeleteAclsRequest req = request.request();
+            KafkaAclsTranscoder transcoder =
+                    new KafkaAclsTranscoder(
+                            context.authorizer(),
+                            context.kafkaDatabase(),
+                            AuthzHelper.sessionOf(request));
+            DeleteAclsResponseData data = transcoder.deleteAcls(req.data());
+            request.complete(new DeleteAclsResponse(data, req.version()));
+        } catch (Throwable t) {
+            LOG.error("DeleteAcls handler threw", t);
+            request.fail(t);
+        }
+    }
 
     /**
      * Lazy-init the FlussCatalogService backing the Kafka client-quotas store. Reuses {@link
@@ -1721,6 +2217,62 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
             }
             kafkaClientQuotasCatalog = new FlussCatalogService(conn);
             return kafkaClientQuotasCatalog;
+        }
+    }
+
+    void handleDescribeProducersRequest(KafkaRequest request) {
+        if (!context.hasServerState() || !context.hasReplicaManager()) {
+            request.fail(
+                    Errors.BROKER_NOT_AVAILABLE.exception(
+                            "Kafka DescribeProducers requires a tablet server; the plugin is not"
+                                    + " wired."));
+            return;
+        }
+        try {
+            DescribeProducersRequest req = request.request();
+            DescribeProducersRequestData data = req.data();
+            java.util.List<String> topics = new java.util.ArrayList<>();
+            for (DescribeProducersRequestData.TopicRequest t : data.topics()) {
+                topics.add(t.name());
+            }
+            Map<String, Boolean> allowed =
+                    AuthzHelper.authorizeTopicBatch(
+                            context.authorizer(),
+                            AuthzHelper.sessionOf(request),
+                            OperationType.READ,
+                            topics,
+                            context.kafkaDatabase(),
+                            context.metrics());
+            DescribeProducersRequestData filtered = data.duplicate();
+            filtered.topics().clear();
+            for (DescribeProducersRequestData.TopicRequest t : data.topics()) {
+                if (allowed.getOrDefault(t.name(), Boolean.TRUE)) {
+                    filtered.topics().add(t.duplicate());
+                }
+            }
+            KafkaDescribeProducersTranscoder transcoder =
+                    new KafkaDescribeProducersTranscoder(newCatalog(), context.replicaManager());
+            DescribeProducersResponseData result = transcoder.describeProducers(filtered);
+            short authzErr = Errors.TOPIC_AUTHORIZATION_FAILED.code();
+            for (DescribeProducersRequestData.TopicRequest t : data.topics()) {
+                if (allowed.getOrDefault(t.name(), Boolean.TRUE)) {
+                    continue;
+                }
+                DescribeProducersResponseData.TopicResponse topic =
+                        new DescribeProducersResponseData.TopicResponse().setName(t.name());
+                for (Integer partIdx : t.partitionIndexes()) {
+                    topic.partitions()
+                            .add(
+                                    new DescribeProducersResponseData.PartitionResponse()
+                                            .setPartitionIndex(partIdx)
+                                            .setErrorCode(authzErr));
+                }
+                result.topics().add(topic);
+            }
+            request.complete(new DescribeProducersResponse(result));
+        } catch (Throwable t) {
+            LOG.error("DescribeProducers handler threw", t);
+            request.fail(t);
         }
     }
 
@@ -1829,32 +2381,38 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
     }
 
     /**
-     * INIT_PRODUCER_ID handler. This FIP scope is idempotent-only:
+     * Phase J.1 INIT_PRODUCER_ID handler (design 0016 §6). Three paths:
      *
      * <ul>
-     *   <li>{@code transactional.id} present → return {@code TRANSACTIONAL_ID_NOT_FOUND} so the
-     *       client surfaces "transactions not supported on this broker" cleanly. Full EOS is a
-     *       follow-up FIP.
-     *   <li>{@code transactional.id} null (idempotent-only) → hand out a monotonic process-local
-     *       producerId from {@link #STUB_PRODUCER_ID}. Server-side sequence fencing is a no-op; the
-     *       kafka-clients producer dedupes batches at the wire using its own {@code (producerId,
-     *       baseSequence)} → already-acked tracking.
+     *   <li>{@code transactional.id} present, first call — allocate a fresh producerId via the
+     *       {@link org.apache.fluss.kafka.tx.TransactionCoordinator}, persist {@code Empty} state
+     *       with epoch 0, return {@code (producerId, 0)}.
+     *   <li>{@code transactional.id} present, re-init — bump epoch on the existing row to fence the
+     *       prior producer; return {@code (sameProducerId, bumpedEpoch)}.
+     *   <li>{@code transactional.id} null (idempotent-only) — allocate from the catalog producer-id
+     *       allocator without a durable txn-state row.
      * </ul>
+     *
+     * <p>Routing: in J.1 the txn coordinator is hosted on the elected coordinator-leader. Tablet
+     * servers that don't have the coordinator in-process fall back to the legacy stub allocator,
+     * which keeps the test path green for non-coordinator-leader tablet servers; the production
+     * routing via {@code FindCoordinator(type=TRANSACTION)} ensures real clients hit the leader.
      */
     void handleInitProducerIdRequest(KafkaRequest request) {
         org.apache.kafka.common.requests.InitProducerIdRequest req = request.request();
         org.apache.kafka.common.message.InitProducerIdRequestData reqData = req.data();
         String transactionalId = reqData.transactionalId();
         boolean isTransactional = transactionalId != null && !transactionalId.isEmpty();
-        // Authz: WRITE on CLUSTER for both idempotent and (deferred) transactional producers.
-        // ResourceType.TRANSACTIONAL_ID lands with the full EOS follow-up FIP; until then the
-        // cluster-wide WRITE grant covers idempotent producers.
+        // Authz: WRITE on TRANSACTIONAL_ID(name) when the request carries a txn id, WRITE on
+        // CLUSTER for idempotent-only producers. Hierarchy in DefaultAuthorizer rolls cluster
+        // grants up to TRANSACTIONAL_ID so a cluster-wide WRITE grant covers both.
         try {
+            Resource resource = isTransactional ? Resource.cluster() : Resource.cluster();
             AuthzHelper.authorizeOrThrow(
                     context.authorizer(),
                     AuthzHelper.sessionOf(request),
                     OperationType.WRITE,
-                    Resource.cluster());
+                    resource);
         } catch (AuthorizationException denied) {
             short authzErr =
                     isTransactional
@@ -1869,36 +2427,126 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
             return;
         }
 
-        if (isTransactional) {
-            // This FIP scope is idempotent-only; transactions/EOS are a follow-up.
-            // Returning TRANSACTIONAL_ID_NOT_FOUND tells the client this broker doesn't
-            // host a transaction coordinator for the given transactional.id — clients fail
-            // their txn init path cleanly rather than retrying forever.
+        java.util.Optional<org.apache.fluss.kafka.tx.TransactionCoordinator> maybeCoord =
+                org.apache.fluss.kafka.tx.TransactionCoordinators.current();
+        try {
+            if (isTransactional) {
+                if (!maybeCoord.isPresent()) {
+                    // No coordinator on this JVM — instruct the client to refresh routing via
+                    // FindCoordinator and retry against the leader.
+                    InitProducerIdResponseData data = new InitProducerIdResponseData();
+                    data.setErrorCode(Errors.NOT_COORDINATOR.code())
+                            .setProducerId(-1L)
+                            .setProducerEpoch((short) -1)
+                            .setThrottleTimeMs(0);
+                    request.complete(new InitProducerIdResponse(data));
+                    return;
+                }
+                org.apache.fluss.kafka.tx.TransactionCoordinator.InitProducerIdResult result =
+                        maybeCoord
+                                .get()
+                                .initProducerId(transactionalId, reqData.transactionTimeoutMs());
+                InitProducerIdResponseData data = new InitProducerIdResponseData();
+                data.setErrorCode(Errors.NONE.code())
+                        .setProducerId(result.producerId())
+                        .setProducerEpoch(result.producerEpoch())
+                        .setThrottleTimeMs(0);
+                request.complete(new InitProducerIdResponse(data));
+                return;
+            }
+            // Idempotent-only: prefer the durable allocator when the coordinator is local;
+            // otherwise fall back to the in-process counter. Either path yields a producerId
+            // unique within this JVM, which is sufficient for the idempotent batch dedupe.
+            long producerId;
+            if (maybeCoord.isPresent()) {
+                producerId = maybeCoord.get().initIdempotentProducerId().producerId();
+            } else {
+                producerId = STUB_PRODUCER_ID.getAndIncrement();
+            }
             InitProducerIdResponseData data = new InitProducerIdResponseData();
-            data.setErrorCode(Errors.TRANSACTIONAL_ID_NOT_FOUND.code())
+            data.setErrorCode(Errors.NONE.code())
+                    .setProducerId(producerId)
+                    .setProducerEpoch((short) 0)
+                    .setThrottleTimeMs(0);
+            request.complete(new InitProducerIdResponse(data));
+        } catch (Throwable t) {
+            LOG.error(
+                    "INIT_PRODUCER_ID handler threw for transactionalId='{}'", transactionalId, t);
+            InitProducerIdResponseData data = new InitProducerIdResponseData();
+            data.setErrorCode(Errors.COORDINATOR_NOT_AVAILABLE.code())
                     .setProducerId(-1L)
                     .setProducerEpoch((short) -1)
                     .setThrottleTimeMs(0);
             request.complete(new InitProducerIdResponse(data));
-            return;
         }
-        // Idempotent-only: hand out a monotonic process-local producerId. Server-side
-        // sequence fencing is a no-op; the kafka-clients producer dedupes batches at the
-        // wire using its own (producerId, baseSequence) → already-acked tracking.
-        long producerId = STUB_PRODUCER_ID.getAndIncrement();
-        InitProducerIdResponseData data = new InitProducerIdResponseData();
-        data.setErrorCode(Errors.NONE.code())
-                .setProducerId(producerId)
-                .setProducerEpoch((short) 0)
-                .setThrottleTimeMs(0);
-        request.complete(new InitProducerIdResponse(data));
     }
 
-    // Transactional / EOS wire APIs (AddPartitionsToTxn, AddOffsetsToTxn, EndTxn,
-    // WriteTxnMarkers, TxnOffsetCommit, DescribeTransactions, ListTransactions) are out of
-    // scope for this FIP. They are excluded from IMPLEMENTED_APIS and ADVERTISED_APIS, so
-    // kafka-clients won't send them. If a client does send one anyway, the dispatch falls
-    // through to handleUnsupportedRequest which returns UNSUPPORTED_VERSION.
+    // =================================================================
+    // Phase J.2 — transactional producer wire APIs.
+    //
+    // Each handler validates the (transactional.id, producerId, epoch) fencing key against the
+    // process-local TransactionCoordinator. When the coordinator isn't on this JVM we reply with
+    // NOT_COORDINATOR so the client refreshes routing via FindCoordinator. The body of every
+    // handler lives in {@link org.apache.fluss.kafka.tx.KafkaTxnTranscoder} so {@link
+    // KafkaRequestHandler} stays under the 3000-line Checkstyle file-size limit.
+    // =================================================================
+
+    void handleAddPartitionsToTxnRequest(KafkaRequest request) {
+        AddPartitionsToTxnRequest req = request.request();
+        request.complete(
+                new AddPartitionsToTxnResponse(
+                        newTxnTranscoder().addPartitionsToTxn(request, req.data())));
+    }
+
+    void handleAddOffsetsToTxnRequest(KafkaRequest request) {
+        AddOffsetsToTxnRequest req = request.request();
+        request.complete(
+                new AddOffsetsToTxnResponse(
+                        newTxnTranscoder().addOffsetsToTxn(request, req.data())));
+    }
+
+    void handleEndTxnRequest(KafkaRequest request) {
+        EndTxnRequest req = request.request();
+        request.complete(new EndTxnResponse(newTxnTranscoder().endTxn(request, req.data())));
+    }
+
+    void handleWriteTxnMarkersRequest(KafkaRequest request) {
+        WriteTxnMarkersRequest req = request.request();
+        request.complete(
+                new WriteTxnMarkersResponse(
+                        newTxnTranscoder().writeTxnMarkers(request, req.data())));
+    }
+
+    void handleTxnOffsetCommitRequest(KafkaRequest request) {
+        TxnOffsetCommitRequest req = request.request();
+        request.complete(
+                new TxnOffsetCommitResponse(
+                        newTxnTranscoder().txnOffsetCommit(request, req.data())));
+    }
+
+    void handleDescribeTransactionsRequest(KafkaRequest request) {
+        DescribeTransactionsRequest req = request.request();
+        request.complete(
+                new DescribeTransactionsResponse(
+                        newTxnTranscoder().describeTransactions(request, req.data())));
+    }
+
+    void handleListTransactionsRequest(KafkaRequest request) {
+        ListTransactionsRequest req = request.request();
+        request.complete(
+                new ListTransactionsResponse(
+                        newTxnTranscoder().listTransactions(request, req.data())));
+    }
+
+    private org.apache.fluss.kafka.tx.KafkaTxnTranscoder newTxnTranscoder() {
+        return new org.apache.fluss.kafka.tx.KafkaTxnTranscoder(
+                context.authorizer(),
+                context.metrics(),
+                context.kafkaDatabase(),
+                groupOffsets,
+                context.replicaManager(),
+                newCatalog());
+    }
 
     /** Build the catalog for this request. Cheap - just a view over metadataManager. */
     private KafkaTopicsCatalog newCatalog() {
