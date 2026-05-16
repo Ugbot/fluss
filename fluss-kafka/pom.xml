@@ -31,6 +31,19 @@
 
     <properties>
         <kafka.version>3.9.2</kafka.version>
+        <!--
+            Apache Avro: used by the Schema Registry compatibility checker
+            (org.apache.avro.SchemaCompatibility, Phase SR-X.2) and by the typed-table translator
+            + JMH baseline (Phase T.1). Direct non-shaded dep; shading can follow with Phase T.4.
+        -->
+        <avro.version>1.11.4</avro.version>
+        <!-- Janino: runtime Java compiler used by AvroCodecCompiler (Phase T.1) to emit
+             per-schema specialised RecordCodec implementations. -->
+        <janino.version>3.1.12</janino.version>
+        <!-- Protobuf: descriptor model + well-known types for the Protobuf SR translator
+             (Phase T-MF.3). We parse .proto text with a hand-rolled parser (no Wire/Kotlin
+             transitive) and use protobuf-java only for DescriptorProtos / wire-format types. -->
+        <protobuf.version>3.25.5</protobuf.version>
     </properties>
 
     <dependencies>
@@ -63,6 +76,65 @@
             <version>${project.version}</version>
         </dependency>
 
+        <!--
+            Used by FlussPkOffsetStore to persist consumer offsets to the Fluss PK table
+            kafka.__consumer_offsets__ via the public client API (Connection / UpsertWriter /
+            Lookuper). fluss-server already transitively depends on fluss-rpc and fluss-common,
+            so adding fluss-client here does not introduce a cycle.
+        -->
+        <dependency>
+            <groupId>${project.groupId}</groupId>
+            <artifactId>fluss-client</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <!--
+            Kafka SR is a projection over the Fluss catalog when the catalog service is enabled.
+            fluss-kafka → fluss-catalog is the intended dependency direction (catalog below,
+            bolt-on above). Falls back to Phase-A1 custom-property storage when the catalog is
+            not running.
+        -->
+        <dependency>
+            <groupId>${project.groupId}</groupId>
+            <artifactId>fluss-catalog</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <!--
+            Apache Avro — used by SchemaRegistry's compatibility checker (Phase SR-X.2) and by the
+            typed-table translator + codec compiler (Phase T.1). Exclude slf4j-api to avoid binding
+            drift. Keep it tight: avro-core only, no ipc/compiler/reflect.
+        -->
+        <dependency>
+            <groupId>org.apache.avro</groupId>
+            <artifactId>avro</artifactId>
+            <version>${avro.version}</version>
+            <exclusions>
+                <exclusion>
+                    <groupId>org.slf4j</groupId>
+                    <artifactId>slf4j-api</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+
+        <!-- Janino runtime compiler — used by AvroCodecCompiler (Phase T.1) to emit
+             per-schema specialised RecordCodec implementations. -->
+        <dependency>
+            <groupId>org.codehaus.janino</groupId>
+            <artifactId>janino</artifactId>
+            <version>${janino.version}</version>
+        </dependency>
+
+        <!-- Protobuf (Phase T-MF.3): used by ProtobufFormatTranslator's compat checker for
+             descriptor-level comparison; also provides the well-known-type descriptors
+             (google.protobuf.Timestamp, Duration, etc.) we map to Fluss logical types. Parsing
+             of .proto text is hand-rolled in ProtobufProtoParser — no Wire/Kotlin dep. -->
+        <dependency>
+            <groupId>com.google.protobuf</groupId>
+            <artifactId>protobuf-java</artifactId>
+            <version>${protobuf.version}</version>
+        </dependency>
+
         <!-- test dependency -->
         <dependency>
             <groupId>org.apache.fluss</groupId>
@@ -89,6 +161,77 @@
             <artifactId>fluss-rpc</artifactId>
             <version>${project.version}</version>
             <type>test-jar</type>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- Needed for FlussClusterExtension which spins up an embedded ZooKeeper. -->
+        <dependency>
+            <groupId>org.apache.curator</groupId>
+            <artifactId>curator-test</artifactId>
+            <version>${curator.version}</version>
+            <scope>test</scope>
+        </dependency>
+
+        <!--
+            Kafka Connect + Kafka Streams test-scope dependencies that power the in-JVM
+            EmbeddedConnectCluster / EmbeddedStreamsApp harnesses (see
+            dev-docs/design/0017-kafka-connect-and-streams-test-harness.md). All are strictly
+            test-scope and never leak into the distribution jar. connect-runtime pulls in Jetty,
+            Jackson, and the reflections library — acceptable in tests only.
+        -->
+        <dependency>
+            <groupId>org.apache.kafka</groupId>
+            <artifactId>connect-api</artifactId>
+            <version>${kafka.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.kafka</groupId>
+            <artifactId>connect-runtime</artifactId>
+            <version>${kafka.version}</version>
+            <scope>test</scope>
+            <exclusions>
+                <!--
+                    connect-runtime 3.9.x ships a transitive reload4j binding; the top-level
+                    enforcer (forbid-log4j-1) bans it in favour of the log4j-1.2-api bridge. The
+                    Connect runtime talks to SLF4J only, so log routing is unaffected.
+                -->
+                <exclusion>
+                    <groupId>ch.qos.reload4j</groupId>
+                    <artifactId>reload4j</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>org.slf4j</groupId>
+                    <artifactId>slf4j-reload4j</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>log4j</groupId>
+                    <artifactId>log4j</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.kafka</groupId>
+            <artifactId>connect-json</artifactId>
+            <version>${kafka.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.kafka</groupId>
+            <artifactId>connect-file</artifactId>
+            <version>${kafka.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.kafka</groupId>
+            <artifactId>kafka-streams</artifactId>
+            <version>${kafka.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.kafka</groupId>
+            <artifactId>kafka-streams-test-utils</artifactId>
+            <version>${kafka.version}</version>
             <scope>test</scope>
         </dependency>
     </dependencies>
