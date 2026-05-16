@@ -1,0 +1,155 @@
+################################################################################
+# Multi-node Fluss cluster with the Kafka bolt-on enabled.
+#
+# 1 zookeeper, 1 coordinator, 3 tablet servers — each tablet server binds both a
+# FLUSS listener (for inter-server traffic) and a KAFKA listener (for external
+# Kafka clients).
+#
+# Usage with podman (preferred per CLAUDE.md) or docker:
+#
+#     podman compose -f docker/kafka-fip/compose.yaml up -d
+#     # Kafka bootstrap is host:port mapping below: 19092, 29092, 39092
+#     KAFKA_BOOTSTRAP=localhost:19092,localhost:29092,localhost:39092
+#     podman compose -f docker/kafka-fip/compose.yaml down -v
+#
+# Or use docker/kafka-fip/cluster.sh — wraps up/down/status/logs/topics-list.
+################################################################################
+
+services:
+  zookeeper:
+    image: zookeeper:3.9
+    container_name: fluss-fip-zk
+    environment:
+      ZOO_MY_ID: 1
+      ZOO_4LW_COMMANDS_WHITELIST: "*"
+      ZOO_STANDALONE_ENABLED: "true"
+    healthcheck:
+      test: ["CMD-SHELL", "echo ruok | nc -w 2 localhost 2181 | grep imok"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks:
+      - fluss
+
+  coordinator:
+    image: fluss/fluss:1.0-SNAPSHOT
+    container_name: fluss-fip-coordinator
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    environment:
+      FLUSS_PROPERTIES: |
+        zookeeper.address: zookeeper:2181
+        bind.listeners: FLUSS://coordinator:9123
+        internal.listener.name: FLUSS
+        remote.data.dir: /tmp/fluss-remote
+        kafka.enabled: true
+        kafka.database: kafka
+    command: ["coordinatorServer"]
+    volumes:
+      - fluss-remote:/tmp/fluss-remote
+    networks:
+      - fluss
+
+  ts0:
+    image: fluss/fluss:1.0-SNAPSHOT
+    container_name: fluss-fip-ts0
+    depends_on:
+      coordinator:
+        condition: service_started
+    environment:
+      FLUSS_PROPERTIES: |
+        zookeeper.address: zookeeper:2181
+        bind.listeners: FLUSS://ts0:9123,KAFKA://ts0:9092
+        internal.listener.name: FLUSS
+        tablet-server.id: 0
+        data.dir: /tmp/fluss-data
+        remote.data.dir: /tmp/fluss-remote
+        kafka.enabled: true
+        kafka.listener-names: KAFKA
+        kafka.database: kafka
+        kafka.offsets.store: fluss_pk_table
+        kafka.log-format: ARROW
+    command: ["tabletServer"]
+    ports:
+      - "19092:9092"
+    volumes:
+      - fluss-ts0:/tmp/fluss-data
+      - fluss-remote:/tmp/fluss-remote
+    networks:
+      - fluss
+
+  ts1:
+    image: fluss/fluss:1.0-SNAPSHOT
+    container_name: fluss-fip-ts1
+    depends_on:
+      coordinator:
+        condition: service_started
+    environment:
+      FLUSS_PROPERTIES: |
+        zookeeper.address: zookeeper:2181
+        bind.listeners: FLUSS://ts1:9123,KAFKA://ts1:9092
+        internal.listener.name: FLUSS
+        tablet-server.id: 1
+        data.dir: /tmp/fluss-data
+        remote.data.dir: /tmp/fluss-remote
+        kafka.enabled: true
+        kafka.listener-names: KAFKA
+        kafka.database: kafka
+        kafka.offsets.store: fluss_pk_table
+        kafka.log-format: ARROW
+    command: ["tabletServer"]
+    ports:
+      - "29092:9092"
+    volumes:
+      - fluss-ts1:/tmp/fluss-data
+      - fluss-remote:/tmp/fluss-remote
+    networks:
+      - fluss
+
+  ts2:
+    image: fluss/fluss:1.0-SNAPSHOT
+    container_name: fluss-fip-ts2
+    depends_on:
+      coordinator:
+        condition: service_started
+    environment:
+      FLUSS_PROPERTIES: |
+        zookeeper.address: zookeeper:2181
+        bind.listeners: FLUSS://ts2:9123,KAFKA://ts2:9092
+        internal.listener.name: FLUSS
+        tablet-server.id: 2
+        data.dir: /tmp/fluss-data
+        remote.data.dir: /tmp/fluss-remote
+        kafka.enabled: true
+        kafka.listener-names: KAFKA
+        kafka.database: kafka
+        kafka.offsets.store: fluss_pk_table
+        kafka.log-format: ARROW
+    command: ["tabletServer"]
+    ports:
+      - "39092:9092"
+    volumes:
+      - fluss-ts2:/tmp/fluss-data
+      - fluss-remote:/tmp/fluss-remote
+    networks:
+      - fluss
+
+  # Optional: kcat smoke shell. `podman compose run --rm kcat -L -b ts0:9092`.
+  kcat:
+    image: edenhill/kcat:1.7.1
+    container_name: fluss-fip-kcat
+    profiles: ["tools"]
+    networks:
+      - fluss
+    entrypoint: ["sleep", "infinity"]
+
+networks:
+  fluss:
+    name: fluss-fip-net
+
+volumes:
+  fluss-ts0:
+  fluss-ts1:
+  fluss-ts2:
+  fluss-remote:
