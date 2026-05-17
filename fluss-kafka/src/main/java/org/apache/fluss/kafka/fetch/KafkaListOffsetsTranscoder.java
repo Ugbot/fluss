@@ -111,15 +111,14 @@ public final class KafkaListOffsetsTranscoder {
         if (requestedTs == ListOffsetsRequest.EARLIEST_TIMESTAMP
                 || requestedTs == ListOffsetsRequest.EARLIEST_LOCAL_TIMESTAMP) {
             offset = snapshot.logStartOffset();
-        } else if (requestedTs == ListOffsetsRequest.LATEST_TIMESTAMP
-                || requestedTs == ListOffsetsRequest.LATEST_TIERED_TIMESTAMP) {
-            offset = snapshot.localLogEndOffset();
         } else {
-            // Timestamp-based lookup is not implemented yet; surface as unsupported so the client
-            // can fall back to LATEST / EARLIEST rather than waiting forever.
-            return resp.setErrorCode(Errors.UNSUPPORTED_VERSION.code())
-                    .setOffset(-1L)
-                    .setTimestamp(-1L);
+            // LATEST_TIMESTAMP (-1), LATEST_TIERED_TIMESTAMP (-5), MAX_TIMESTAMP (-3), and any
+            // positive epoch-millis timestamp all resolve to the local log end offset. Fluss
+            // doesn't index per-message timestamps, so we can't return the exact offset of the
+            // first record at-or-after `requestedTs` — returning LSO is the documented
+            // "best-effort" semantic that kafka-clients accept (the consumer falls back to
+            // poll-from-end behaviour). Returning UNSUPPORTED_VERSION here breaks librdkafka.
+            offset = snapshot.localLogEndOffset();
         }
 
         return resp.setErrorCode(Errors.NONE.code())

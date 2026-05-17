@@ -199,6 +199,14 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
     private static final short MAX_FETCH_VERSION = 12;
 
     /**
+     * Cap for {@code ListOffsets}. Our transcoder handles up to v5 (the last pre-transactional
+     * version); v7+ added {@code max_timestamp}/{@code current_leader_epoch}/{@code
+     * isolation_level} fields the transcoder doesn't surface back to clients. librdkafka asks for
+     * whatever we advertise as max, so we cap at v5 here rather than risk a parse mismatch.
+     */
+    private static final short MAX_LIST_OFFSETS_VERSION = 5;
+
+    /**
      * APIs the broker implements end-to-end in this phase. Other advertised APIs dispatch to {@link
      * #handleUnsupportedRequest} at request time and return {@link Errors#UNSUPPORTED_VERSION}.
      */
@@ -869,6 +877,8 @@ public class KafkaRequestHandler implements RequestHandler<KafkaRequest> {
                 maxVersion = (short) Math.min(maxVersion, MAX_METADATA_VERSION);
             } else if (apiKey == ApiKeys.FETCH) {
                 maxVersion = (short) Math.min(maxVersion, MAX_FETCH_VERSION);
+            } else if (apiKey == ApiKeys.LIST_OFFSETS) {
+                maxVersion = (short) Math.min(maxVersion, MAX_LIST_OFFSETS_VERSION);
             }
             data.apiKeys()
                     .add(
