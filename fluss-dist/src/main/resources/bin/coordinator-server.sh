@@ -42,6 +42,16 @@ bin=`cd "$bin"; pwd`
 SERVICE=coordinator-server
 
 if [[ $STARTSTOP == "start" ]] || [[ $STARTSTOP == "start-foreground" ]]; then
+    # If the operator has not supplied their own JVM options (neither the shared
+    # env.java.opts.all nor the coordinator-server specific
+    # env.java.opts.coordinator-server), apply the Fluss defaults: Generational ZGC
+    # plus a derived -XX:MaxDirectMemorySize. To switch back to G1 (or any other
+    # GC), set env.java.opts.all / env.java.opts.coordinator-server in
+    # conf/server.yaml; those options take full precedence over these defaults.
+    if [ "${FLUSS_ENV_JAVA_OPTS_USER_SET}" != "true" ] && [ -z "${FLUSS_ENV_JAVA_OPTS_CS}" ]; then
+        export JVM_ARGS="$JVM_ARGS $(constructDefaultJavaOpts "${FLUSS_ENV_JAVA_OPTS_CS}")"
+    fi
+
     # Add coordinator-specific JVM options
     export FLUSS_ENV_JAVA_OPTS="${FLUSS_ENV_JAVA_OPTS} ${FLUSS_ENV_JAVA_OPTS_CS}"
 
