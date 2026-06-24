@@ -324,6 +324,13 @@ public class FileLogProjection {
         LogRecordBatchFormat.clearStatisticsFromHeader(logHeaderBuffer, magic);
 
         logHeaderBuffer.rewind();
+        // NOTE: this byte[] cannot be replaced by a reusable instance scratch buffer. The array is
+        // wrapped zero-copy via Unpooled.wrappedBuffer() inside builder.addBytes(byte[]) and is
+        // read lazily when the resulting BytesView is serialized into the fetch response. A single
+        // project() call appends the headers of multiple batches into one builder, so all of those
+        // arrays must coexist intact until serialization; a shared scratch buffer would corrupt
+        // earlier batches' headers. The real allocation win is pooling FileLogProjection instances
+        // (and the BytesView lifecycle), not pooling this per-batch header array.
         byte[] logHeader = new byte[recordBatchHeaderSize];
         logHeaderBuffer.get(logHeader);
 
