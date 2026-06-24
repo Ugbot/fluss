@@ -68,6 +68,7 @@ final class LogTabletLastStableOffsetTest extends LogTestBase {
         scheduler.startup();
         logTablet =
                 LogTablet.create(
+                        tempDir,
                         PhysicalTablePath.of(DATA1_TABLE_PATH),
                         logDir,
                         conf,

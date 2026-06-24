@@ -323,7 +323,11 @@ public final class TypedTableEvolver {
         for (int attempt = 0; attempt < 8; attempt++) {
             try {
                 metadataManager.createTable(
-                        path, descriptor, assignment, /* ignoreIfExists */ false);
+                        path,
+                        /* remoteDataDir */ null,
+                        descriptor,
+                        assignment,
+                        /* ignoreIfExists */ false);
                 return;
             } catch (Exception e) {
                 String msg = e.getMessage();
