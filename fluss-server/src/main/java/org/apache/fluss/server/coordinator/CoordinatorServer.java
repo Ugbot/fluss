@@ -530,18 +530,21 @@ public class CoordinatorServer extends ServerBase {
     private void registerToZookeeperWithRetry(String description, ThrowingRunnable registration)
             throws Exception {
         long startTime = System.currentTimeMillis();
-        while (true) {
+        // Bounded by both wall-clock time and an explicit attempt count (clock-skew safe).
+        for (int attempt = 1; attempt <= ZOOKEEPER_REGISTER_MAX_ATTEMPTS; attempt++) {
             try {
                 registration.run();
-                break;
+                return;
             } catch (KeeperException.NodeExistsException nodeExistsException) {
                 long elapsedTime = System.currentTimeMillis() - startTime;
-                if (elapsedTime >= ZOOKEEPER_REGISTER_TOTAL_WAIT_TIME_MS) {
+                if (elapsedTime >= ZOOKEEPER_REGISTER_TOTAL_WAIT_TIME_MS
+                        || attempt == ZOOKEEPER_REGISTER_MAX_ATTEMPTS) {
                     LOG.error(
-                            "Registering {} to Zookeeper exceeded total retry time of {} ms. "
-                                    + "Aborting registration attempts.",
+                            "Registering {} to Zookeeper exceeded total retry time of {} ms "
+                                    + "or {} attempts. Aborting registration attempts.",
                             description,
-                            ZOOKEEPER_REGISTER_TOTAL_WAIT_TIME_MS);
+                            ZOOKEEPER_REGISTER_TOTAL_WAIT_TIME_MS,
+                            ZOOKEEPER_REGISTER_MAX_ATTEMPTS);
                     throw nodeExistsException;
                 }
 
@@ -554,7 +557,7 @@ public class CoordinatorServer extends ServerBase {
                     Thread.sleep(ZOOKEEPER_REGISTER_RETRY_INTERVAL_MS);
                 } catch (InterruptedException interruptedException) {
                     Thread.currentThread().interrupt();
-                    break;
+                    return;
                 }
             }
         }

@@ -72,6 +72,15 @@ public abstract class ServerBase implements AutoCloseableAsync, FatalErrorHandle
     protected static final long ZOOKEEPER_REGISTER_TOTAL_WAIT_TIME_MS = 60 * 1000L;
     protected static final long ZOOKEEPER_REGISTER_RETRY_INTERVAL_MS = 3 * 1000L;
 
+    /**
+     * Explicit upper bound on ZooKeeper registration retries, in addition to the wall-clock bound
+     * above. Guarantees the retry loop terminates even if the system clock moves backwards (so the
+     * elapsed-time check can never trip). Derived from the time budget plus a small buffer.
+     */
+    protected static final int ZOOKEEPER_REGISTER_MAX_ATTEMPTS =
+            (int) (ZOOKEEPER_REGISTER_TOTAL_WAIT_TIME_MS / ZOOKEEPER_REGISTER_RETRY_INTERVAL_MS)
+                    + 2;
+
     protected final Configuration conf;
 
     protected FileSystem remoteFileSystem;
