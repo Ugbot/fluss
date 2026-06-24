@@ -91,17 +91,22 @@ public class KvSnapshotResource {
                         conf.getInt(ConfigOptions.KV_SNAPSHOT_SCHEDULER_THREAD_NUM),
                         new ExecutorThreadFactory("periodic-snapshot-scheduler-" + serverId));
 
-        // the parameter to create thread pool is from Flink. todo: may adjust according Fluss's
-        // workload
-        // create a thread pool for the async part of kv snapshot
+        // Create a thread pool for the async part of kv snapshot. The work queue is bounded so a
+        // burst of snapshots cannot grow the backlog without limit; when the bound is reached the
+        // CallerRunsPolicy makes the submitting (scheduler) thread run the operation, which both
+        // applies backpressure to snapshot scheduling and avoids dropping work. The caller is the
+        // snapshot scheduler, never a pool worker, so this cannot self-deadlock.
+        int asyncOperationMaxPending =
+                conf.getInt(ConfigOptions.KV_SNAPSHOT_ASYNC_OPERATION_MAX_PENDING);
         ExecutorService asyncOperationsThreadPool =
                 new ThreadPoolExecutor(
                         0,
                         3,
                         60L,
                         TimeUnit.SECONDS,
-                        new LinkedBlockingQueue<>(),
-                        new ExecutorThreadFactory("fluss-kv-snapshot-async-operations"));
+                        new LinkedBlockingQueue<>(asyncOperationMaxPending),
+                        new ExecutorThreadFactory("fluss-kv-snapshot-async-operations"),
+                        new ThreadPoolExecutor.CallerRunsPolicy());
         return new KvSnapshotResource(
                 kvSnapshotScheduler,
                 kvSnapshotDataUploader,

@@ -208,7 +208,11 @@ public class CoordinatorEventProcessor implements EventProcessor {
         this.serverMetadataCache = serverMetadataCache;
         this.coordinatorChannelManager = coordinatorChannelManager;
         this.coordinatorContext = coordinatorContext;
-        this.coordinatorEventManager = new CoordinatorEventManager(this, coordinatorMetricGroup);
+        this.coordinatorEventManager =
+                new CoordinatorEventManager(
+                        this,
+                        coordinatorMetricGroup,
+                        conf.getInt(ConfigOptions.COORDINATOR_EVENT_QUEUE_WARN_THRESHOLD));
         this.replicaStateMachine =
                 new ReplicaStateMachine(
                         coordinatorContext,

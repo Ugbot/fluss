@@ -451,6 +451,19 @@ public class ConfigOptions {
                                     + "The default value is 10. "
                                     + "This option is deprecated. Please use server.io-pool.size instead.");
 
+    public static final ConfigOption<Integer> COORDINATOR_EVENT_QUEUE_WARN_THRESHOLD =
+            key("coordinator.event-queue.warn-threshold")
+                    .intType()
+                    .defaultValue(1000)
+                    .withDescription(
+                            "Log a (rate-limited) warning when the coordinator event queue grows "
+                                    + "beyond this many pending events. The event queue is "
+                                    + "intentionally unbounded -- the single coordinator event "
+                                    + "thread re-enqueues events while processing, so a bounded "
+                                    + "blocking queue could self-deadlock -- so this threshold "
+                                    + "provides early visibility into runaway growth instead. The "
+                                    + "current size is also exposed via the eventQueueSize metric.");
+
     /**
      * The TTL (time-to-live) for producer offsets. Producer offsets older than this TTL will be
      * automatically cleaned up by the coordinator server.
@@ -1772,6 +1785,17 @@ public class ConfigOptions {
                     .defaultValue(1)
                     .withDescription(
                             "The number of threads that the server uses to schedule snapshot kv data for all the replicas in the server.");
+
+    public static final ConfigOption<Integer> KV_SNAPSHOT_ASYNC_OPERATION_MAX_PENDING =
+            key("kv.snapshot.async-operation.max-pending")
+                    .intType()
+                    .defaultValue(1024)
+                    .withDescription(
+                            "The maximum number of pending async snapshot operations (upload/cleanup) "
+                                    + "queued per tablet server. The queue is bounded to prevent unbounded "
+                                    + "memory growth when snapshots are produced faster than they can be "
+                                    + "uploaded; once the bound is reached, the submitting (scheduler) "
+                                    + "thread runs the operation itself, applying natural backpressure.");
 
     /**
      * @deprecated This option is deprecated. Please use {@link ConfigOptions#SERVER_IO_POOL_SIZE}

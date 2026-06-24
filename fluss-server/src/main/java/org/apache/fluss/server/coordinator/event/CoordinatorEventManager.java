@@ -18,6 +18,7 @@
 package org.apache.fluss.server.coordinator.event;
 
 import org.apache.fluss.annotation.Internal;
+import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.metadata.TableBucketReplica;
 import org.apache.fluss.metadata.TablePartition;
 import org.apache.fluss.metrics.DescriptiveStatisticsHistogram;
@@ -55,10 +56,25 @@ public final class CoordinatorEventManager implements EventManager {
     private final EventProcessor eventProcessor;
     private final CoordinatorMetricGroup coordinatorMetricGroup;
 
+    /**
+     * The coordinator event queue. Intentionally <b>unbounded</b>: the single {@link
+     * CoordinatorEventThread} re-enqueues events onto this queue while processing (e.g. retries and
+     * follow-up events), so a bounded blocking queue could self-deadlock when full. Instead of a
+     * hard bound we expose {@link MetricNames#EVENT_QUEUE_SIZE} and log a rate-limited warning once
+     * the backlog exceeds {@link #eventQueueWarnThreshold}, giving early visibility into runaway
+     * growth without risking deadlock or dropped control-plane events.
+     */
     private final LinkedBlockingQueue<QueuedEvent> queue = new LinkedBlockingQueue<>();
+
     private final CoordinatorEventThread thread =
             new CoordinatorEventThread(COORDINATOR_EVENT_THREAD_NAME);
     private final Lock putLock = new ReentrantLock();
+
+    /** Warn (rate-limited) when the event backlog exceeds this size. */
+    private final int eventQueueWarnThreshold;
+
+    private static final long QUEUE_WARN_INTERVAL_MS = 30_000;
+    private volatile long lastQueueWarnMs = 0;
 
     // metrics
     private Histogram eventQueueTime;
@@ -84,8 +100,19 @@ public final class CoordinatorEventManager implements EventManager {
 
     public CoordinatorEventManager(
             EventProcessor eventProcessor, CoordinatorMetricGroup coordinatorMetricGroup) {
+        this(
+                eventProcessor,
+                coordinatorMetricGroup,
+                ConfigOptions.COORDINATOR_EVENT_QUEUE_WARN_THRESHOLD.defaultValue());
+    }
+
+    public CoordinatorEventManager(
+            EventProcessor eventProcessor,
+            CoordinatorMetricGroup coordinatorMetricGroup,
+            int eventQueueWarnThreshold) {
         this.eventProcessor = eventProcessor;
         this.coordinatorMetricGroup = coordinatorMetricGroup;
+        this.eventQueueWarnThreshold = eventQueueWarnThreshold;
         registerMetrics();
     }
 
@@ -94,6 +121,8 @@ public final class CoordinatorEventManager implements EventManager {
                 coordinatorMetricGroup.histogram(
                         MetricNames.EVENT_QUEUE_TIME_MS,
                         new DescriptiveStatisticsHistogram(WINDOW_SIZE));
+
+        coordinatorMetricGroup.gauge(MetricNames.EVENT_QUEUE_SIZE, queue::size);
 
         // Register coordinator metrics
         coordinatorMetricGroup.gauge(MetricNames.ACTIVE_COORDINATOR_COUNT, () -> 1);
@@ -227,6 +256,7 @@ public final class CoordinatorEventManager implements EventManager {
                                 .getOrAddEventTypeMetricGroup(event.getClass())
                                 .queuedEventCount()
                                 .inc();
+                        maybeWarnQueueBacklog();
                         LOG.debug(
                                 "Put coordinator event {} of event type {}.",
                                 event,
@@ -235,6 +265,28 @@ public final class CoordinatorEventManager implements EventManager {
                         LOG.error("Fail to put coordinator event {}.", event, e);
                     }
                 });
+    }
+
+    /**
+     * Logs a rate-limited warning when the event backlog exceeds {@link #eventQueueWarnThreshold}.
+     * The queue is intentionally unbounded (see field doc); this is the early-warning signal for
+     * runaway growth.
+     */
+    private void maybeWarnQueueBacklog() {
+        int size = queue.size();
+        if (size <= eventQueueWarnThreshold) {
+            return;
+        }
+        long now = System.currentTimeMillis();
+        if (now - lastQueueWarnMs >= QUEUE_WARN_INTERVAL_MS) {
+            lastQueueWarnMs = now;
+            LOG.warn(
+                    "Coordinator event queue backlog is {} (warn threshold {}). The queue is "
+                            + "unbounded by design; a sustained backlog indicates the coordinator "
+                            + "event thread cannot keep up with incoming events.",
+                    size,
+                    eventQueueWarnThreshold);
+        }
     }
 
     public void clearAndPut(CoordinatorEvent event) {
