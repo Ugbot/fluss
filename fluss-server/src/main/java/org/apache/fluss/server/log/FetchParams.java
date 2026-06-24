@@ -29,6 +29,8 @@ import javax.annotation.Nullable;
 import java.util.Map;
 import java.util.Objects;
 
+import static org.apache.fluss.utils.Preconditions.checkArgument;
+
 /** Fetch data params. */
 public final class FetchParams {
     /** Value -2L means we will fetch from log start offset. */
@@ -87,6 +89,20 @@ public final class FetchParams {
             int minFetchBytes,
             long maxWaitMs,
             @Nullable Map<Long, FilterInfo> tableFilterInfoMap) {
+        checkArgument(
+                maxFetchBytes >= 0,
+                "maxFetchBytes must be non-negative, but was %s",
+                maxFetchBytes);
+        checkArgument(
+                minFetchBytes >= DEFAULT_MIN_FETCH_BYTES,
+                "minFetchBytes must be >= %s, but was %s",
+                DEFAULT_MIN_FETCH_BYTES,
+                minFetchBytes);
+        checkArgument(
+                maxWaitMs >= DEFAULT_MAX_WAIT_MS,
+                "maxWaitMs must be >= %s, but was %s",
+                DEFAULT_MAX_WAIT_MS,
+                maxWaitMs);
         this.replicaId = replicaId;
         this.fetchOnlyLeader = fetchOnlyLeader;
         this.maxFetchBytes = maxFetchBytes;
@@ -106,6 +122,10 @@ public final class FetchParams {
             ArrowCompressionInfo compressionInfo,
             @Nullable int[] projectedFields,
             ProjectionPushdownCache projectionCache) {
+        checkArgument(
+                maxFetchBytes >= 0,
+                "maxFetchBytes must be non-negative, but was %s",
+                maxFetchBytes);
         this.fetchOffset = fetchOffset;
         this.maxFetchBytes = maxFetchBytes;
         if (projectedFields != null) {

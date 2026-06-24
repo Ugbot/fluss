@@ -25,6 +25,7 @@ import java.util.Map;
 
 import static org.apache.fluss.server.log.FetchParams.DEFAULT_MAX_WAIT_MS;
 import static org.apache.fluss.server.log.FetchParams.DEFAULT_MIN_FETCH_BYTES;
+import static org.apache.fluss.utils.Preconditions.checkArgument;
 
 /** Builder of FetchParams. */
 public final class FetchParamsBuilder {
@@ -36,6 +37,10 @@ public final class FetchParamsBuilder {
     private long maxWaitMs;
 
     public FetchParamsBuilder(int replicaId, int maxFetchBytes) {
+        checkArgument(
+                maxFetchBytes >= 0,
+                "maxFetchBytes must be non-negative, but was %s",
+                maxFetchBytes);
         this.replicaId = replicaId;
         this.maxFetchBytes = maxFetchBytes;
         this.minFetchBytes = DEFAULT_MIN_FETCH_BYTES;
@@ -54,11 +59,21 @@ public final class FetchParamsBuilder {
     }
 
     public FetchParamsBuilder withMinFetchBytes(int minFetchBytes) {
+        checkArgument(
+                minFetchBytes >= DEFAULT_MIN_FETCH_BYTES,
+                "minFetchBytes must be >= %s, but was %s",
+                DEFAULT_MIN_FETCH_BYTES,
+                minFetchBytes);
         this.minFetchBytes = minFetchBytes;
         return this;
     }
 
     public FetchParamsBuilder withMaxWaitMs(long maxWaitMs) {
+        checkArgument(
+                maxWaitMs >= DEFAULT_MAX_WAIT_MS,
+                "maxWaitMs must be >= %s, but was %s",
+                DEFAULT_MAX_WAIT_MS,
+                maxWaitMs);
         this.maxWaitMs = maxWaitMs;
         return this;
     }
