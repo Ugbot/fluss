@@ -83,18 +83,23 @@ Each phase is **benchmark-gated** (no perf change lands without a before/after J
 - Exit criteria: builds/tests on JDK 25; baseline delta recorded. No behaviour change.
 
 ### Phase 3 — TigerStyle safety (low risk, improves p99)
-- [ ] Bound the unbounded server queues + add backpressure/shed:
-      `coordinator/event/CoordinatorEventManager`, `kv/KvSnapshotResource`,
-      `log/remote/RemoteLogIndexCache`; capacities as `ConfigOption`s.
+- [x] Bound the unbounded server queues + add backpressure/shed: `kv/KvSnapshotResource`
+      (bounded + `CallerRunsPolicy`, `kv.snapshot.async-operation.max-pending`) and
+      `log/remote/RemoteLogIndexCache` (bounded backstop). `coordinator/event/CoordinatorEventManager`
+      is intentionally left unbounded (its single thread re-enqueues; a bounded blocking queue would
+      self-deadlock) but now has an `eventQueueSize` gauge + a `coordinator.event-queue.warn-threshold`
+      backlog warning.
 - [ ] **HFT:** where a bounded queue sits on the request hot path, prefer a **lock-free ring
       buffer (LMAX Disruptor or Agrona `OneToOneRingBuffer`/`ManyToOneRingBuffer`)** over
       `(Array|Linked)BlockingQueue` — single-writer, mechanical-sympathy, configurable wait
       strategy. Start with `CoordinatorEventManager` (single consumer thread already) and the
       `RequestProcessorPool` per-channel queues. Both Disruptor and Agrona are tiny, zero-/few-dep
-      libraries — consistent with the dependency diet.
-- [ ] Add assertions/preconditions on hot-path entry points: `replica/Replica`,
-      `log/LogTablet#read`, `kv/KvTablet#putAsLeader` (and the Kafka typed hot path).
-- [ ] Convert time-bounded retry loops to explicit iteration bounds (ZK registration, recovery).
+      libraries — consistent with the dependency diet. (Deferred: needs dependency sign-off.)
+- [x] Add assertions/preconditions on hot-path entry points: `log/LogTablet#read` (offset/length
+      non-negative, isolation non-null) and `kv/KvTablet#putAsLeader` (records/mergeMode non-null).
+      Still TODO: `replica/Replica` and the Kafka typed hot path.
+- [x] Convert time-bounded retry loops to explicit iteration bounds (ZK registration in
+      TabletServer/CoordinatorServer, `ZOOKEEPER_REGISTER_MAX_ATTEMPTS`). Still TODO: recovery loops.
 - Exit criteria: tests green; p99 from Phase 1 harness stable or improved.
 
 ### Phase 4 — Allocation & GC
