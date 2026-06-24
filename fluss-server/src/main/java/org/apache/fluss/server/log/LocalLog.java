@@ -88,10 +88,30 @@ public final class LocalLog {
     private final Histogram flushLatencyHistogram;
 
     private volatile File logTabletDir;
+
+    // ---- HFT cache-line padding (false-sharing avoidance) -------------------------------------
+    // The fields below (recoveryPoint, localLogStartOffset, localMaxTimestamp, nextOffsetMetadata)
+    // form the hot append-path metadata cluster: they are written by the single append thread
+    // (always under the owning LogTablet lock) and read concurrently by many fetch threads on
+    // every read() / getLocalLogEndOffset() / getLocalMaxTimestamp() call. Without padding they can
+    // land on the same 64-byte cache line as the surrounding mutable fields (logTabletDir,
+    // isMemoryMappedBufferClosed), so an append store would invalidate the readers' line and stall
+    // the fetch hot path. The plain long fields p1..p7 below and pp1..pp7 after the cluster push it
+    // onto its own cache line(s). They are deliberately unused; "unused" is the whole point of
+    // padding. No serialization or reflection depends on field layout (verified: LocalLog has no
+    // Unsafe/VarHandle/reflective field access), so reordering/adding fields is safe.
+    @SuppressWarnings("unused")
+    private long p1, p2, p3, p4, p5, p6, p7;
+
     private volatile long recoveryPoint;
     private volatile long localLogStartOffset;
     private volatile long localMaxTimestamp;
     private volatile LogOffsetMetadata nextOffsetMetadata;
+
+    @SuppressWarnings("unused")
+    private long pp1, pp2, pp3, pp4, pp5, pp6, pp7;
+    // ---- end HFT cache-line padding -----------------------------------------------------------
+
     private volatile boolean isMemoryMappedBufferClosed = false;
 
     public LocalLog(
