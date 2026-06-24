@@ -31,6 +31,11 @@ deliberate order so each is measurable and low-risk:
 4. **Native tiering service + dependency diet** — standalone (no-Flink) tiering with all lakes
    behind abstractions (Iceberg mandatory + Delta), Fluss catalog as read-through/write-through
    over the lake, and aggressive removal of heavy deps (Hadoop, Flink-from-tiering, AWS SDK v1).
+5. **Mechanical sympathy (LMAX / HFT lens)** — design the hot path for the hardware: single-writer
+   per partition, lock-free ring buffers, zero allocation and zero GC on the steady-state path,
+   cache-line awareness (no false sharing), thread affinity, and latency measured honestly
+   (p99/p999/p9999, no coordinated omission). This lens reinforces TigerStyle and is applied
+   *within* the phases below, not as a separate phase — see "LMAX / HFT lens" near the end.
 
 **Existing assets on `future` to build on (do not reinvent):**
 - `fluss-catalog` — catalog service (Polaris/Unity-style) with SR/principal/grant/quota/txn
@@ -64,6 +69,9 @@ Each phase is **benchmark-gated** (no perf change lands without a before/after J
       (±projection), **Kafka typed hot path** (`KafkaFetchCodec`, Avro/JSON decode), RocksDB
       `WriteBatch` flush latency vs batch size, allocation rate per request (`-prof gc`).
 - [ ] JFR GC-pause capture under sustained produce+fetch.
+- [ ] **HFT:** measure latency with **HdrHistogram** (p99/p999/p9999), and **avoid coordinated
+      omission** (LatencyUtils / load-generator that records intended vs actual send time). Mean
+      and even p99 hide the tail that HFT cares about; report full histograms.
 - [ ] Record baselines (Fluss-native AND Kafka paths) into `dev-docs/perf/baseline-*.md`.
 - Exit criteria: reproducible baseline numbers committed; nothing tuned yet.
 
@@ -78,6 +86,12 @@ Each phase is **benchmark-gated** (no perf change lands without a before/after J
 - [ ] Bound the unbounded server queues + add backpressure/shed:
       `coordinator/event/CoordinatorEventManager`, `kv/KvSnapshotResource`,
       `log/remote/RemoteLogIndexCache`; capacities as `ConfigOption`s.
+- [ ] **HFT:** where a bounded queue sits on the request hot path, prefer a **lock-free ring
+      buffer (LMAX Disruptor or Agrona `OneToOneRingBuffer`/`ManyToOneRingBuffer`)** over
+      `(Array|Linked)BlockingQueue` — single-writer, mechanical-sympathy, configurable wait
+      strategy. Start with `CoordinatorEventManager` (single consumer thread already) and the
+      `RequestProcessorPool` per-channel queues. Both Disruptor and Agrona are tiny, zero-/few-dep
+      libraries — consistent with the dependency diet.
 - [ ] Add assertions/preconditions on hot-path entry points: `replica/Replica`,
       `log/LogTablet#read`, `kv/KvTablet#putAsLeader` (and the Kafka typed hot path).
 - [ ] Convert time-bounded retry loops to explicit iteration bounds (ZK registration, recovery).
@@ -88,6 +102,14 @@ Each phase is **benchmark-gated** (no perf change lands without a before/after J
       scratch buffers; audit `MemoryLogRecords` copies.
 - [ ] Evaluate + default **Generational ZGC** (`tablet-server.sh`/`config.sh`); set explicit
       `-XX:MaxDirectMemorySize`. Keep G1 selectable.
+- [ ] **HFT:** drive the steady-state produce/fetch path toward **zero allocation / zero GC** —
+      object/buffer pooling on every per-request alloc (extend the existing `MemorySegmentPool`/
+      `ArrowWriterPool`), reuse decode scratch. Add `-XX:+AlwaysPreTouch` and pre-size pools so
+      pages are faulted in at startup, not under load. Validate with `-prof gc` showing ~0
+      alloc/op on the hot path.
+- [ ] **HFT:** eliminate **false sharing** on hot mutable counters — pad/`@jdk.internal.vm.
+      annotation.Contended` (or manual padding) the log-end-offset, high-watermark, LSO, writer
+      sequence, and ring-buffer cursors that are written by one thread and read by others.
 - Exit criteria: benchmark-proven allocation-rate drop and GC-pause improvement.
 
 ### Phase 5 — Native tiering service + dependency diet (lakes behind abstractions)
@@ -115,6 +137,18 @@ Each phase is **benchmark-gated** (no perf change lands without a before/after J
       not the netty/event path.
 - [ ] Vector API (SIMD) on proven-hot codec loops (CRC, Arrow encode/decode, projection,
       Kafka Avro/JSON decode) behind a benchmarked fallback.
+- [ ] **HFT:** **single-writer per partition/bucket** on the append path — confirm each log
+      tablet is mutated by exactly one thread (sharded executor keyed by bucket) so the hot path
+      is lock-free by construction, not by lock.
+- [ ] **HFT:** **thread affinity / NUMA** — optional core-pinning for netty event loops and the
+      per-bucket writer threads (OpenHFT Affinity or `taskset`/`numactl` at launch), behind a
+      config flag; reduces context switches and cross-socket cache traffic.
+- [ ] **HFT:** **wait-strategy choice** on the ring buffers — expose blocking / yielding /
+      busy-spin (Disruptor `WaitStrategy`) so latency-critical deployments can trade a core for
+      sub-microsecond wakeups; default to yielding/blocking for general use.
+- [ ] **HFT:** keep hot dispatch **mono-/bi-morphic** — avoid megamorphic call sites on the
+      `KafkaFetchCodec`/`LakeWriter`/`Send` interfaces in the inner loop (specialize or cache the
+      concrete impl); verify with JIT inlining logs (`-XX:+PrintInlining`).
 - Exit criteria: each item benchmark-proven; fallback path retained.
 
 ### Phase 7 — Structure
@@ -122,6 +156,35 @@ Each phase is **benchmark-gated** (no perf change lands without a before/after J
       `LogTablet`) to expose invariants and improve inlining; finish assertion coverage.
 
 ---
+
+## LMAX / HFT lens (mechanical sympathy)
+
+Applied *within* the phases above; collected here as the checklist and rationale. The throughline:
+**make the steady-state path do no allocation, take no locks, and never surprise the cache or the
+GC.** This overlaps heavily with TigerStyle (static allocation, bounded structures, determinism).
+
+- **Single-writer principle.** One thread owns each partition/bucket's mutable state (log end
+  offset, HWM, writer state). Contention disappears by design, not by locking. (Phases 3, 6.)
+- **Lock-free ring buffers over blocking queues** on hot paths — LMAX Disruptor or Agrona ring
+  buffers replace `LinkedBlockingQueue` for the coordinator event loop and request channels.
+  Bounded by construction (satisfies the TigerStyle bound-everything rule too). (Phase 3.)
+- **Zero allocation / zero GC on the steady path.** Pool every per-request buffer; reuse decode
+  scratch; `-XX:+AlwaysPreTouch`; pre-sized pools. The GC you don't trigger can't stall p999.
+  (Phase 4.)
+- **No false sharing.** Cache-line-pad/`@Contended` the single-writer counters and ring cursors
+  that one thread writes and others read. (Phase 4.)
+- **Mechanical-sympathy data layout.** Sequential, columnar access (Arrow already helps); avoid
+  pointer-chasing in inner loops; FFM `MemorySegment` for predictable, bounds-checked off-heap.
+  (Phases 4, 6.)
+- **Thread affinity / NUMA + wait strategies.** Optional core-pinning and busy-spin/yield/block
+  wait strategies for latency-critical deployments; off by default. (Phase 6.)
+- **Honest latency.** HdrHistogram p99/p999/p9999, coordinated-omission-free load generation.
+  A perf change is only "good" if the tail improves, not just the mean. (Phase 1, every phase.)
+- **JIT discipline.** Warm up before measuring; keep hot interface dispatch mono-/bi-morphic;
+  watch `-XX:+PrintInlining`. (Phases 1, 6.)
+- **Small, targeted deps only.** LMAX Disruptor and Agrona are tiny, zero-/few-transitive-dep
+  libraries — adding them is consistent with the dependency diet, unlike the heavy stack we're
+  removing. Prefer them over hand-rolled lock-free code we'd have to maintain.
 
 ## Dependency-removal targets (tracked across Phases 2 & 5)
 | Target | Action | Phase |
