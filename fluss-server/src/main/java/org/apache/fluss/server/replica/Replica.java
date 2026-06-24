@@ -1038,6 +1038,7 @@ public final class Replica {
 
     public LogAppendInfo appendRecordsToLeader(MemoryLogRecords memoryLogRecords, int requiredAcks)
             throws Exception {
+        checkNotNull(memoryLogRecords, "memoryLogRecords to append to leader shouldn't be null.");
         return inReadLock(
                 leaderIsrUpdateLock,
                 () -> {
@@ -1068,6 +1069,8 @@ public final class Replica {
 
     public LogAppendInfo appendRecordsToFollower(MemoryLogRecords memoryLogRecords)
             throws Exception {
+        checkNotNull(
+                memoryLogRecords, "memoryLogRecords to append to follower shouldn't be null.");
         return logTablet.appendAsFollower(memoryLogRecords);
     }
 
@@ -1077,6 +1080,8 @@ public final class Replica {
             MergeMode mergeMode,
             int requiredAcks)
             throws Exception {
+        checkNotNull(kvRecords, "kvRecords to put to leader shouldn't be null.");
+        checkNotNull(mergeMode, "mergeMode to put kv records shouldn't be null.");
         return inReadLock(
                 leaderIsrUpdateLock,
                 () -> {
@@ -1107,6 +1112,7 @@ public final class Replica {
     }
 
     public LogReadInfo fetchRecords(FetchParams fetchParams) throws IOException {
+        checkNotNull(fetchParams, "fetchParams to fetch records shouldn't be null.");
         if (fetchParams.projection() != null && logFormat != LogFormat.ARROW) {
             throw new InvalidColumnProjectionException(
                     String.format(
@@ -1303,6 +1309,7 @@ public final class Replica {
     }
 
     public List<byte[]> lookups(List<byte[]> keys) {
+        checkNotNull(keys, "keys to lookup shouldn't be null.");
         if (!isKvTable()) {
             throw new NonPrimaryKeyTableException(
                     "the primary key table not exists for " + tableBucket);
@@ -1332,6 +1339,7 @@ public final class Replica {
     }
 
     public List<byte[]> prefixLookup(byte[] prefixKey) {
+        checkNotNull(prefixKey, "prefixKey to prefix lookup shouldn't be null.");
         if (!isKvTable()) {
             throw new NonPrimaryKeyTableException(
                     "Try to do prefix lookup on a non primary key table: " + getTablePath());
