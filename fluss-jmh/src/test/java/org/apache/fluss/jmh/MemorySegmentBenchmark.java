@@ -50,8 +50,8 @@ import java.util.concurrent.TimeUnit;
  * <p>Mechanical-sympathy lens: compares on-heap vs off-heap backing and sequential int/long
  * accessors vs bulk byte copy. Sequential access is the realistic codec pattern.
  *
- * <p>Run: {@code mvn -pl fluss-jmh test-compile} then execute {@code main}, or
- * {@code java ... org.apache.fluss.jmh.MemorySegmentBenchmark}.
+ * <p>Run: {@code mvn -pl fluss-jmh test-compile} then execute {@code main}, or {@code java ...
+ * org.apache.fluss.jmh.MemorySegmentBenchmark}.
  */
 @State(Scope.Benchmark)
 @Warmup(iterations = 5)
@@ -60,7 +60,9 @@ import java.util.concurrent.TimeUnit;
 @Fork(value = 1)
 public class MemorySegmentBenchmark {
 
-    /** 64 KiB — comfortably larger than L1, exercises L2 and the accessor path, not the allocator. */
+    /**
+     * 64 KiB — comfortably larger than L1, exercises L2 and the accessor path, not the allocator.
+     */
     private static final int SIZE = 64 * 1024;
 
     private static final int INT_COUNT = SIZE / Integer.BYTES;

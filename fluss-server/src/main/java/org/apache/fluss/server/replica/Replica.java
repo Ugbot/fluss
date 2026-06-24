@@ -1079,8 +1079,7 @@ public final class Replica {
 
     public LogAppendInfo appendRecordsToFollower(MemoryLogRecords memoryLogRecords)
             throws Exception {
-        checkNotNull(
-                memoryLogRecords, "memoryLogRecords to append to follower shouldn't be null.");
+        checkNotNull(memoryLogRecords, "memoryLogRecords to append to follower shouldn't be null.");
         return logTablet.appendAsFollower(memoryLogRecords);
     }
 

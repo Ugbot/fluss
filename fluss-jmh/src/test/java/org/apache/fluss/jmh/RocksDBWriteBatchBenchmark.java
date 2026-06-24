@@ -102,6 +102,7 @@ public class RocksDBWriteBatchBenchmark {
 
     /** Pre-generated, deterministic key/value payloads reused every invocation. */
     private byte[][] keys;
+
     private byte[][] values;
 
     @Setup(Level.Trial)
@@ -156,9 +157,9 @@ public class RocksDBWriteBatchBenchmark {
     }
 
     /**
-     * Builds a full batch of {@code batchSize} puts and flushes it, mirroring
-     * {@code RocksDBWriteBatchWrapper.flushIfNeeded()} -&gt; {@code flush()}. Reported as average
-     * time per whole-batch flush.
+     * Builds a full batch of {@code batchSize} puts and flushes it, mirroring {@code
+     * RocksDBWriteBatchWrapper.flushIfNeeded()} -&gt; {@code flush()}. Reported as average time per
+     * whole-batch flush.
      */
     @Benchmark
     @BenchmarkMode(Mode.AverageTime)
@@ -203,10 +204,7 @@ public class RocksDBWriteBatchBenchmark {
         Options opt =
                 new OptionsBuilder()
                         .verbosity(VerboseMode.NORMAL)
-                        .include(
-                                ".*"
-                                        + RocksDBWriteBatchBenchmark.class.getCanonicalName()
-                                        + ".*")
+                        .include(".*" + RocksDBWriteBatchBenchmark.class.getCanonicalName() + ".*")
                         .build();
 
         new Runner(opt).run();

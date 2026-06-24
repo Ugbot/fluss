@@ -71,8 +71,8 @@ import static org.apache.fluss.compression.ArrowCompressionInfo.NO_COMPRESSION;
  * the pool on {@code build()}, so the pool is reused across invocations exactly as in production.
  *
  * <p>Row counts are swept via {@code @Param}. Rows are randomized with a deterministic seed so each
- * run is reproducible. The buffer is sized large enough to hold all rows of the largest sweep so the
- * builder never reports full mid-append.
+ * run is reproducible. The buffer is sized large enough to hold all rows of the largest sweep so
+ * the builder never reports full mid-append.
  */
 @State(Scope.Thread)
 @Warmup(iterations = 3)
@@ -117,18 +117,14 @@ public class MemoryLogRecordsArrowBuildBenchmark {
 
     /**
      * Build a single Arrow log-records batch from all pre-generated rows. This exercises Arrow
-     * vector writes, the change-type vector, batch-header CRC computation and zero-copy serialization
-     * into the paged output view.
+     * vector writes, the change-type vector, batch-header CRC computation and zero-copy
+     * serialization into the paged output view.
      */
     @Benchmark
     public void buildArrowBatch(Blackhole bh) throws Exception {
         ArrowWriter writer =
                 writerPool.getOrCreateWriter(
-                        TABLE_ID,
-                        DEFAULT_SCHEMA_ID,
-                        PAGE_SIZE_IN_BYTES,
-                        rowType,
-                        NO_COMPRESSION);
+                        TABLE_ID, DEFAULT_SCHEMA_ID, PAGE_SIZE_IN_BYTES, rowType, NO_COMPRESSION);
         MemoryLogRecordsArrowBuilder builder =
                 MemoryLogRecordsArrowBuilder.builder(
                         0L,
