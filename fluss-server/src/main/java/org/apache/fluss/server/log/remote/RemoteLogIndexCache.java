@@ -105,10 +105,20 @@ public class RemoteLogIndexCache implements Closeable {
     private final AtomicBoolean isRemoteIndexCacheClosed = new AtomicBoolean(false);
 
     /**
-     * Unbounded queue containing the removed entries from the cache which are waiting to be garbage
-     * collected.
+     * Backstop capacity for the cleanup queue. The cache itself is weight-bounded, so a cleanup
+     * backlog approaching this size means the cleaner thread is wedged; bounding it keeps a stuck
+     * cleaner from growing the heap without limit. {@link #enqueueEntryForCleanup} already uses a
+     * non-blocking {@code offer} and logs when the queue is full, so this bound simply activates
+     * that pre-existing rejection path instead of letting the queue grow unbounded.
      */
-    private final LinkedBlockingQueue<Entry> expiredIndexes = new LinkedBlockingQueue<>();
+    private static final int CLEANUP_QUEUE_CAPACITY = 10_000;
+
+    /**
+     * Bounded queue containing the removed entries from the cache which are waiting to be garbage
+     * collected. See {@link #CLEANUP_QUEUE_CAPACITY}.
+     */
+    private final LinkedBlockingQueue<Entry> expiredIndexes =
+            new LinkedBlockingQueue<>(CLEANUP_QUEUE_CAPACITY);
 
     /**
      * Lock used to synchronize close with other read operations. This ensures that when we close,
