@@ -73,6 +73,7 @@ import java.util.concurrent.ScheduledFuture;
 
 import static org.apache.fluss.utils.FileUtils.flushFileIfExists;
 import static org.apache.fluss.utils.Preconditions.checkArgument;
+import static org.apache.fluss.utils.Preconditions.checkNotNull;
 
 /* This file is based on source code of Apache Kafka Project (https://kafka.apache.org/), licensed by the Apache
  * Software Foundation (ASF) under the Apache License, Version 2.0. See the NOTICE file distributed with this work for
@@ -585,6 +586,9 @@ public final class LogTablet {
             @Nullable FileLogProjection projection,
             @Nullable FilterContext filterContext)
             throws IOException {
+        checkArgument(readOffset >= 0, "readOffset must be non-negative, but was %s", readOffset);
+        checkArgument(maxLength >= 0, "maxLength must be non-negative, but was %s", maxLength);
+        checkNotNull(fetchIsolation, "fetchIsolation must not be null");
         LogOffsetMetadata maxOffsetMetadata = null;
         if (fetchIsolation == FetchIsolation.LOG_END) {
             maxOffsetMetadata = localLog.getLocalLogEndOffsetMetadata();

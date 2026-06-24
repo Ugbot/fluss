@@ -99,6 +99,7 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
+import static org.apache.fluss.utils.Preconditions.checkNotNull;
 import static org.apache.fluss.utils.concurrent.LockUtils.inReadLock;
 import static org.apache.fluss.utils.concurrent.LockUtils.inWriteLock;
 
@@ -371,6 +372,8 @@ public final class KvTablet {
     public LogAppendInfo putAsLeader(
             KvRecordBatch kvRecords, @Nullable int[] targetColumns, MergeMode mergeMode)
             throws Exception {
+        checkNotNull(kvRecords, "kvRecords must not be null");
+        checkNotNull(mergeMode, "mergeMode must not be null");
         return inWriteLock(
                 kvLock,
                 () -> {
