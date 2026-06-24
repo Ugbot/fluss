@@ -541,11 +541,13 @@ public final class LogTablet {
      * Leader Epochs.
      */
     public LogAppendInfo appendAsLeader(MemoryLogRecords records) throws Exception {
+        checkNotNull(records, "records must not be null");
         return append(records, true);
     }
 
     /** Append this message set to the active segment of the local log without assigning offsets. */
     public LogAppendInfo appendAsFollower(MemoryLogRecords records) throws Exception {
+        checkNotNull(records, "records must not be null");
         return append(records, false);
     }
 
@@ -609,6 +611,10 @@ public final class LogTablet {
      * @param highWatermark the suggested new value for the high watermark.
      */
     public void updateHighWatermark(long highWatermark) {
+        checkArgument(
+                highWatermark >= 0,
+                "highWatermark must be non-negative, but was %s",
+                highWatermark);
         LogOffsetMetadata highWatermarkMetadata = new LogOffsetMetadata(highWatermark);
         LogOffsetMetadata endOffsetMetadata = localLog.getLocalLogEndOffsetMetadata();
         LogOffsetMetadata newHighWatermarkMetadata;
@@ -650,6 +656,7 @@ public final class LogTablet {
      */
     public Optional<LogOffsetMetadata> maybeIncrementHighWatermark(
             LogOffsetMetadata newHighWatermark) throws IOException {
+        checkNotNull(newHighWatermark, "newHighWatermark must not be null");
         if (newHighWatermark.getMessageOffset() > localLogEndOffset()) {
             throw new IllegalArgumentException(
                     String.format(
@@ -1083,6 +1090,9 @@ public final class LogTablet {
      */
     public LogAppendInfo appendTxnMarker(long writerId, short producerEpoch, boolean commit)
             throws Exception {
+        checkArgument(writerId >= 0, "writerId must be non-negative, but was %s", writerId);
+        checkArgument(
+                producerEpoch >= 0, "producerEpoch must be non-negative, but was %s", producerEpoch);
         MemoryLogRecords markerRecords = buildMarkerBatch(writerId, producerEpoch, commit);
         return appendAsLeader(markerRecords);
     }
