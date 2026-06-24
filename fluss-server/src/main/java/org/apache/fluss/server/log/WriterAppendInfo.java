@@ -141,12 +141,15 @@ public class WriterAppendInfo {
      * OutOfOrderSequenceException} will occur during to write if we don't treat it as in sequence.
      */
     private boolean inSequence(
-            int lastBatchSeq,
+            int lastRecordSeq,
             int nextBatchSeq,
             boolean isWriterInBatchExpired,
             boolean isAppendAsLeader) {
-        return (lastBatchSeq == NO_BATCH_SEQUENCE && (isWriterInBatchExpired || !isAppendAsLeader))
-                || nextBatchSeq == lastBatchSeq + 1L
-                || (nextBatchSeq == 0 && lastBatchSeq == Integer.MAX_VALUE);
+        return (lastRecordSeq == NO_BATCH_SEQUENCE && (isWriterInBatchExpired || !isAppendAsLeader))
+                || nextBatchSeq == lastRecordSeq + 1L
+                // Allow a producer epoch reset: a new epoch always starts at sequence 0 regardless
+                // of where the previous epoch left off. The existing batchSequence==0 check in
+                // LogTablet.trackTransactionalBatches correctly registers the new open transaction.
+                || nextBatchSeq == 0;
     }
 }

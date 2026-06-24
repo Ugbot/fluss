@@ -51,7 +51,7 @@ import static org.apache.fluss.server.metadata.TableMetadata.DELETED_TABLE_PATH;
 import static org.apache.fluss.utils.concurrent.LockUtils.inLock;
 
 /** The implement of {@link ServerMetadataCache} for {@link TabletServer}. */
-public class TabletServerMetadataCache implements ServerMetadataCache {
+public class TabletServerMetadataCache implements ClusterMetadataProvider {
 
     private final Lock metadataLock = new ReentrantLock();
 

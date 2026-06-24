@@ -42,6 +42,7 @@ final class RequestProcessorPool {
 
     private final RequestChannel[] requestChannels;
     private final RequestProcessor[] processors;
+    private final RequestHandler<?>[] requestHandlers;
 
     private ExecutorService workerPool;
 
@@ -54,7 +55,7 @@ final class RequestProcessorPool {
         this.processors = new RequestProcessor[numProcessors];
         this.requestChannels = new RequestChannel[numProcessors];
 
-        RequestHandler<?>[] requestHandlers = initializeRequestHandlers(protocols, service);
+        this.requestHandlers = initializeRequestHandlers(protocols, service);
         for (int i = 0; i < numProcessors; i++) {
             RequestChannel requestChannel = new RequestChannel(totalQueueCapacity / numProcessors);
             requestChannels[i] = requestChannel;
@@ -110,6 +111,20 @@ final class RequestProcessorPool {
                 () -> {
                     if (workerPool != null) {
                         workerPool.shutdown();
+                    }
+                    // Only close handlers once the processors are quiescent to avoid racing
+                    // with an in-flight request.
+                    for (RequestHandler<?> handler : requestHandlers) {
+                        if (handler != null) {
+                            try {
+                                handler.close();
+                            } catch (Exception e) {
+                                LOG.warn(
+                                        "Failed to close request handler for protocol {}",
+                                        handler.requestType(),
+                                        e);
+                            }
+                        }
                     }
                 });
         // service and requestChannel shutdown is handled outside.

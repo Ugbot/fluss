@@ -340,6 +340,7 @@ public class ReplicaManager implements ServerReconfigurable {
     }
 
     public void startup() {
+        ReplicaManagers.register(this);
         // start up ISR expiration thread.
         // A follower can log behind leader for up tp configOptions#LOG_REPLICA_MAX_LAG_TIME x 1.5
         // before it is removed from ISR.
@@ -644,6 +645,28 @@ public class ReplicaManager implements ServerReconfigurable {
     }
 
     /**
+     * Phase J.3 — append a Kafka-style transaction marker to {@code bucket} (design 0016 §7). Used
+     * by {@code WRITE_TXN_MARKERS}. The marker is a control batch with no records that advances the
+     * {@link org.apache.fluss.server.log.LogTablet#lastStableOffset()} past the matching open
+     * transaction (commit) or records the aborted range (abort).
+     *
+     * <p>Synchronous append on the leader replica; throws when the bucket isn't hosted here or the
+     * leader role isn't held. The fan-out to follower replicas is the same as for any append — the
+     * marker becomes durable through the standard ISR path.
+     *
+     * @param bucket the participating partition
+     * @param producerId the producer id whose transaction this marker terminates
+     * @param producerEpoch the producer epoch (matches the open txn's epoch)
+     * @param commit {@code true} for a commit marker; {@code false} for an abort marker
+     */
+    public void appendTxnMarker(
+            TableBucket bucket, long producerId, short producerEpoch, boolean commit)
+            throws Exception {
+        Replica replica = getReplicaOrException(bucket);
+        replica.getLogTablet().appendTxnMarker(producerId, producerEpoch, commit);
+    }
+
+    /**
      * Fetch records from a replica. Currently, we will return the fetched records immediately.
      *
      * <p>The callback function will be triggered when required fetch info is satisfied. Both client
@@ -666,6 +689,26 @@ public class ReplicaManager implements ServerReconfigurable {
         // maybe do delay fetch log operation.
         maybeAddDelayedFetchLog(
                 params, bucketFetchInfo, logReadResults, userContext, responseCallback);
+    }
+
+    /**
+     * Client-style fetch entry point used by protocol bolt-ons (Kafka, etc.) so they don't reach
+     * into the internal {@link FetchParams} / {@link FetchReqInfo} mutable structs. The {@code
+     * replicaId} is hard-wired to {@code -1} (read-committed client semantics).
+     */
+    public void fetchLogRecordsForClient(
+            org.apache.fluss.rpc.log.ClientFetchRequest request,
+            Consumer<Map<TableBucket, FetchLogResultForBucket>> responseCallback) {
+        FetchParams params = new FetchParams(-1, request.maxFetchBytes());
+        Map<TableBucket, FetchReqInfo> bucketFetchInfo = new java.util.HashMap<>();
+        for (Map.Entry<TableBucket, org.apache.fluss.rpc.log.ClientFetchRequest.BucketRead> e :
+                request.buckets().entrySet()) {
+            org.apache.fluss.rpc.log.ClientFetchRequest.BucketRead read = e.getValue();
+            bucketFetchInfo.put(
+                    e.getKey(),
+                    new FetchReqInfo(read.tableId(), read.fetchOffset(), read.maxBytes()));
+        }
+        fetchLogRecords(params, bucketFetchInfo, /* userContext */ null, responseCallback);
     }
 
     /**
@@ -1482,17 +1525,23 @@ public class ReplicaManager implements ServerReconfigurable {
                 }
                 limitBytes = Math.max(0, limitBytes - recordBatchSize);
                 FetchLogResultForBucket fetchLogResult;
+                long lastStableOffset = replica.getLogLastStableOffset();
                 if (fetchedData.hasFilteredEndOffset()) {
                     fetchLogResult =
                             new FetchLogResultForBucket(
                                     tb,
                                     fetchedData.getRecords(),
                                     readInfo.getHighWatermark(),
+                                    lastStableOffset,
                                     fetchedData.getFilteredEndOffset());
                 } else {
                     fetchLogResult =
                             new FetchLogResultForBucket(
-                                    tb, fetchedData.getRecords(), readInfo.getHighWatermark());
+                                    tb,
+                                    fetchedData.getRecords(),
+                                    readInfo.getHighWatermark(),
+                                    lastStableOffset,
+                                    -1L);
                 }
                 logReadResult.put(
                         tb,
@@ -2125,6 +2174,110 @@ public class ReplicaManager implements ServerReconfigurable {
         return allReplicas.getOrDefault(tableBucket, new NoneReplica());
     }
 
+    /**
+     * Advance the log-start offset of the replica for {@code tableBucket} to {@code newStartOffset}
+     * and trim any segments that fall entirely below it. Backs protocol bolt-ons that need Kafka's
+     * {@code DeleteRecords} semantics (trim a partition up to, but not including, an offset).
+     *
+     * <p>Requires local leadership: throws {@link NotLeaderOrFollowerException} when this server is
+     * not the leader. Throws {@link UnknownTableOrBucketException} when the bucket is unknown and
+     * {@link LogOffsetOutOfRangeException} when {@code newStartOffset} is beyond the
+     * high-watermark.
+     *
+     * <p>Marked {@code @PublicEvolving} as part of the Phase-B surface cleanup: this is the stable
+     * entry point bolt-ons should use; the underlying {@link LogTablet} machinery may evolve.
+     *
+     * @return the log-start offset in effect after the call (the low-watermark returned to Kafka
+     *     clients)
+     */
+    @org.apache.fluss.annotation.PublicEvolving
+    public long deleteRecords(TableBucket tableBucket, long newStartOffset) {
+        return getReplicaOrException(tableBucket).maybeIncreaseLogStartOffset(newStartOffset);
+    }
+
+    /**
+     * Stable, read-only view of a replica's log metadata — the subset protocol bolt-ons (Kafka's
+     * {@code LIST_OFFSETS}, {@code METADATA}) need. Returns {@link java.util.Optional#empty()} when
+     * the bucket is not hosted locally.
+     */
+    public java.util.Optional<org.apache.fluss.rpc.replica.ReplicaSnapshot> getReplicaSnapshot(
+            TableBucket tableBucket) {
+        HostedReplica hosted = getReplica(tableBucket);
+        if (!(hosted instanceof OnlineReplica)) {
+            return java.util.Optional.empty();
+        }
+        Replica replica = ((OnlineReplica) hosted).getReplica();
+        return java.util.Optional.of(
+                new org.apache.fluss.rpc.replica.ReplicaSnapshot(
+                        replica.getLogStartOffset(),
+                        replica.getLocalLogEndOffset(),
+                        replica.getLogHighWatermark(),
+                        replica.getLeaderEpoch(),
+                        replica.isLeader()));
+    }
+
+    /**
+     * Snapshot of every active idempotent-producer ({@code writer}) entry for this bucket. Consumed
+     * by Kafka's {@code DESCRIBE_PRODUCERS} bolt-on.
+     *
+     * <p>Returns:
+     *
+     * <ul>
+     *   <li>{@link java.util.Optional#empty()} — bucket not hosted locally (or not a log replica).
+     *   <li>{@code Optional.of(emptyList)} — bucket hosted but has no active idempotent producers,
+     *       or the underlying log tablet exposes no writer-state manager yet.
+     *   <li>{@code Optional.of(list)} — one entry per active writer id.
+     * </ul>
+     *
+     * <p>Fluss has no per-writer epoch, no transaction coordinator, and no transactional offset
+     * concept, so {@code producerEpoch} is always {@code 0}, {@code coordinatorEpoch} and {@code
+     * currentTxnStartOffset} are both {@code -1}.
+     */
+    public java.util.Optional<java.util.List<org.apache.fluss.rpc.replica.ProducerStateSnapshot>>
+            getProducerStates(TableBucket tableBucket) {
+        HostedReplica hosted = getReplica(tableBucket);
+        if (!(hosted instanceof OnlineReplica)) {
+            return java.util.Optional.empty();
+        }
+        Replica replica = ((OnlineReplica) hosted).getReplica();
+        org.apache.fluss.server.log.LogTablet logTablet;
+        try {
+            logTablet = replica.getLogTablet();
+        } catch (Throwable t) {
+            // KV-only replicas and other non-log hosts don't have a LogTablet; surface the
+            // bucket as "hosted but no producer state tracked" rather than "unknown".
+            return java.util.Optional.of(java.util.Collections.emptyList());
+        }
+        if (logTablet == null) {
+            return java.util.Optional.of(java.util.Collections.emptyList());
+        }
+        java.util.Map<Long, org.apache.fluss.server.log.WriterStateEntry> active;
+        try {
+            active = logTablet.activeWriters();
+        } catch (Throwable t) {
+            return java.util.Optional.of(java.util.Collections.emptyList());
+        }
+        if (active == null || active.isEmpty()) {
+            return java.util.Optional.of(java.util.Collections.emptyList());
+        }
+        java.util.List<org.apache.fluss.rpc.replica.ProducerStateSnapshot> out =
+                new java.util.ArrayList<>(active.size());
+        for (java.util.Map.Entry<Long, org.apache.fluss.server.log.WriterStateEntry> e :
+                active.entrySet()) {
+            org.apache.fluss.server.log.WriterStateEntry entry = e.getValue();
+            out.add(
+                    new org.apache.fluss.rpc.replica.ProducerStateSnapshot(
+                            e.getKey(),
+                            // Fluss has no per-writer epoch today — Kafka clients tolerate 0.
+                            0,
+                            entry.lastBatchSequence(),
+                            entry.lastBatchTimestamp(),
+                            -1,
+                            -1L));
+        }
+        return java.util.Optional.of(out);
+    }
+
     private boolean isRequiredAcksInvalid(int requiredAcks) {
         return requiredAcks != 0 && requiredAcks != 1 && requiredAcks != -1;
     }
@@ -2154,6 +2307,15 @@ public class ReplicaManager implements ServerReconfigurable {
     }
 
     /**
+     * Returns the server-wide {@link org.apache.fluss.row.arrow.ArrowWriterProvider} owned by this
+     * tablet server's {@link KvManager}. Used by code paths (e.g. the Kafka bolt-on Produce
+     * transcoder) that build Arrow log batches outside the per-{@code KvTablet} world.
+     */
+    public org.apache.fluss.row.arrow.ArrowWriterProvider getServerArrowWriterProvider() {
+        return kvManager.getServerArrowWriterProvider();
+    }
+
+    /**
      * Interface to represent the state of hosted {@link Replica}. We create a concrete (active)
      * {@link Replica} instance when the TabletServer receives a createLogLeader request or
      * createFollower request from the Coordinator server.
@@ -2180,6 +2342,7 @@ public class ReplicaManager implements ServerReconfigurable {
     public static final class OfflineReplica implements HostedReplica {}
 
     public void shutdown() throws InterruptedException {
+        ReplicaManagers.unregister(this);
         // Close the resources for snapshot kv
         kvSnapshotResource.close();
         replicaFetcherManager.shutdown();

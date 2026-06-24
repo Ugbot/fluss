@@ -17,9 +17,15 @@
 
 package org.apache.fluss.server.metadata;
 
+import org.apache.fluss.annotation.PublicEvolving;
+
 import java.util.List;
 
-/** This entity used to describe the table's partition metadata. */
+/**
+ * This entity used to describe the table's partition metadata. Part of the stable surface that
+ * protocol bolt-ons consume when building wire-format metadata responses.
+ */
+@PublicEvolving
 public class PartitionMetadata {
 
     /**

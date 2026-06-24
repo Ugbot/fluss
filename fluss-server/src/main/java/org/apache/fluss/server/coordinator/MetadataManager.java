@@ -283,6 +283,21 @@ public class MetadataManager {
     }
 
     /**
+     * Bolt-on friendly partition listing — returns a stable {@code partitionName → partitionId} map
+     * without exposing the internal {@link PartitionRegistration} DTO. Used by the Kafka protocol
+     * bolt-on to resolve dotted Kafka topic names onto Fluss partitions.
+     */
+    public Map<String, Long> listPartitionIds(TablePath tablePath)
+            throws TableNotExistException, TableNotPartitionedException {
+        Map<String, PartitionRegistration> raw = listPartitions(tablePath);
+        Map<String, Long> ids = new java.util.LinkedHashMap<>(raw.size());
+        for (Map.Entry<String, PartitionRegistration> e : raw.entrySet()) {
+            ids.put(e.getKey(), e.getValue().getPartitionId());
+        }
+        return ids;
+    }
+
+    /**
      * List the partitions of the given table and partitionSpec.
      *
      * @return a map from partition name to partition registration.

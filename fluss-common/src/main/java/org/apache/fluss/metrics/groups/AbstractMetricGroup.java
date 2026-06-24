@@ -178,6 +178,11 @@ public abstract class AbstractMetricGroup implements MetricGroup {
         return parent;
     }
 
+    /** Return the metric registry this group reports to. */
+    public MetricRegistry getMetricRegistry() {
+        return registry;
+    }
+
     /**
      * Enters all variables specific to this {@link AbstractMetricGroup} and their associated values
      * into the map.
@@ -370,6 +375,12 @@ public abstract class AbstractMetricGroup implements MetricGroup {
     @VisibleForTesting
     public Map<String, Metric> getMetrics() {
         return metrics;
+    }
+
+    /** Visible for tests: inspect the sub-groups this group manages. */
+    @VisibleForTesting
+    public Map<String, AbstractMetricGroup> getSubGroups() {
+        return groups;
     }
 
     /**

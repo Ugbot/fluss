@@ -163,6 +163,25 @@ public interface LogRecordBatch {
     int getRecordCount();
 
     /**
+     * True when this batch is a control batch — a Kafka-style transaction marker introduced in
+     * Phase J.3. Control batches carry no records; their sole purpose is to advance the
+     * last-stable-offset past an open transaction (commit) or to record an aborted range (abort).
+     * Default {@code false} for backward compatibility — only {@link
+     * org.apache.fluss.record.DefaultLogRecordBatch} interprets the {@code attributes} bit today.
+     */
+    default boolean isControlBatch() {
+        return false;
+    }
+
+    /**
+     * For a control batch, true when this marker indicates an aborted transaction; false when it
+     * indicates a commit. Undefined when {@link #isControlBatch()} is false.
+     */
+    default boolean isTransactionAbort() {
+        return false;
+    }
+
+    /**
      * Returns a closeable iterator of records for this batch which basically delays deserialization
      * of the record stream until the records are actually asked for using {@link Iterator#next()}.
      * Callers should ensure that the iterator is closed.

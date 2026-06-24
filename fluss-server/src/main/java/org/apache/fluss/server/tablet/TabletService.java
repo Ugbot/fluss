@@ -148,6 +148,7 @@ import static org.apache.fluss.server.utils.ServerRpcMessageUtils.toPrefixLookup
 public final class TabletService extends RpcServiceBase implements TabletServerGateway {
 
     private final String serviceName;
+    private final int serverId;
     private final ReplicaManager replicaManager;
     private final TabletServerMetadataCache metadataCache;
     private final TabletServerMetadataProvider metadataFunctionProvider;
@@ -177,6 +178,7 @@ public final class TabletService extends RpcServiceBase implements TabletServerG
                 dynamicConfigManager,
                 ioExecutor);
         this.serviceName = "server-" + serverId;
+        this.serverId = serverId;
         this.replicaManager = replicaManager;
         this.metadataCache = metadataCache;
         this.metadataFunctionProvider =
@@ -193,6 +195,50 @@ public final class TabletService extends RpcServiceBase implements TabletServerG
 
     @Override
     public void shutdown() {}
+
+    /** Exposes the local metadata cache for non-Fluss protocol plugins (e.g. Kafka). */
+    public TabletServerMetadataCache getMetadataCache() {
+        return metadataCache;
+    }
+
+    /** Exposes the metadata manager for non-Fluss protocol plugins (e.g. Kafka). */
+    public MetadataManager getMetadataManager() {
+        return metadataManager;
+    }
+
+    /**
+     * Exposes the coordinator gateway for non-Fluss protocol plugins that need to forward admin
+     * operations (e.g. Kafka CreateTopics). Null in the testing gateway path.
+     */
+    @Nullable
+    public CoordinatorGateway getCoordinatorGateway() {
+        return coordinatorGateway;
+    }
+
+    /**
+     * Exposes the local ReplicaManager for non-Fluss protocol plugins (e.g. Kafka Produce/Fetch)
+     * that bypass the RPC gateway's thread-local session machinery.
+     */
+    public org.apache.fluss.server.replica.ReplicaManager getReplicaManager() {
+        return replicaManager;
+    }
+
+    /**
+     * Exposes the ZooKeeper client for non-Fluss protocol plugins (e.g. Kafka durable consumer
+     * offsets). Pass-through to {@link org.apache.fluss.server.RpcServiceBase#zkClient}.
+     */
+    public org.apache.fluss.server.zk.ZooKeeperClient getZooKeeperClient() {
+        return zkClient;
+    }
+
+    /**
+     * Exposes this tablet server's own numeric id. Used by non-Fluss protocol plugins (e.g. the
+     * Kafka handler) to look up their own {@link org.apache.fluss.cluster.ServerNode} in {@link
+     * TabletServerMetadataCache} for client-style bootstrap.
+     */
+    public int getServerId() {
+        return serverId;
+    }
 
     @Override
     public CompletableFuture<ProduceLogResponse> produceLog(ProduceLogRequest request) {

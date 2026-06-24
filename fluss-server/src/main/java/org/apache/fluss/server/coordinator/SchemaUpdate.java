@@ -22,6 +22,7 @@ import org.apache.fluss.exception.SchemaChangeException;
 import org.apache.fluss.metadata.Schema;
 import org.apache.fluss.metadata.TableChange;
 
+import java.util.ArrayList;
 import java.util.List;
 
 /** Schema update. */
@@ -37,7 +38,7 @@ public class SchemaUpdate {
     }
 
     // Now we only maintain the Builder
-    private final Schema.Builder builder;
+    private Schema.Builder builder;
 
     public SchemaUpdate(Schema initialSchema) {
         // Initialize builder from the current table schema
@@ -64,30 +65,62 @@ public class SchemaUpdate {
     }
 
     private SchemaUpdate addColumn(TableChange.AddColumn addColumn) {
-        // Use the builder to check if column exists
-        Schema.Column existingColumn = builder.getColumn(addColumn.getName()).orElse(null);
-
-        if (existingColumn != null) {
+        if (builder.getColumn(addColumn.getName()).isPresent()) {
             throw new InvalidAlterTableException(
                     "Column " + addColumn.getName() + " already exists.");
         }
-
-        if (addColumn.getPosition() != TableChange.ColumnPosition.last()) {
-            throw new IllegalArgumentException("Only support addColumn column at last now.");
-        }
-
         if (!addColumn.getDataType().isNullable()) {
             throw new IllegalArgumentException(
                     "Column " + addColumn.getName() + " must be nullable.");
         }
 
-        // Delegate the actual addition to the builder
-        builder.column(addColumn.getName(), addColumn.getDataType());
-
-        // Fixed: Use null check for the String comment
-        String comment = addColumn.getComment();
-        if (comment != null) {
-            builder.withComment(comment);
+        if (addColumn.getPosition() == TableChange.ColumnPosition.last()) {
+            builder.column(addColumn.getName(), addColumn.getDataType());
+            String comment = addColumn.getComment();
+            if (comment != null) {
+                builder.withComment(comment);
+            }
+        } else if (addColumn.getPosition() instanceof TableChange.After) {
+            String afterColName = ((TableChange.After) addColumn.getPosition()).columnName();
+            // Rebuild the schema with the new column spliced in after afterColName so that callers
+            // can insert before reserved trailing columns (e.g. event_time / headers on typed
+            // Kafka tables) rather than always appending at the absolute end.
+            Schema current = builder.build();
+            List<Schema.Column> cols = new ArrayList<>(current.getColumns());
+            int insertIdx = -1;
+            for (int i = 0; i < cols.size(); i++) {
+                if (cols.get(i).getName().equals(afterColName)) {
+                    insertIdx = i + 1;
+                    break;
+                }
+            }
+            if (insertIdx < 0) {
+                throw new InvalidAlterTableException(
+                        "Column '" + afterColName + "' not found; cannot add after it.");
+            }
+            // Allocate a fresh column ID by running through a temporary single-column builder so
+            // that ReassignFieldId fires correctly for nested types.
+            Schema.Builder temp = Schema.newBuilder().highestFieldId(current.getHighestFieldId());
+            temp.column(addColumn.getName(), addColumn.getDataType());
+            if (addColumn.getComment() != null) {
+                temp.withComment(addColumn.getComment());
+            }
+            Schema.Column newCol = temp.build().getColumns().get(0);
+            cols.add(insertIdx, newCol);
+            // Rebuild the main builder from the complete, reordered column list.
+            Schema.Builder fresh = Schema.newBuilder().fromColumns(cols);
+            current.getPrimaryKey()
+                    .ifPresent(
+                            pk ->
+                                    fresh.primaryKeyNamed(
+                                            pk.getConstraintName(), pk.getColumnNames()));
+            for (String autoCol : current.getAutoIncrementColumnNames()) {
+                fresh.enableAutoIncrement(autoCol);
+            }
+            this.builder = fresh;
+        } else {
+            throw new IllegalArgumentException(
+                    "Only LAST and AFTER(<column>) positions are supported for AddColumn.");
         }
 
         return this;

@@ -53,7 +53,8 @@ public class KafkaRequestHandlerTest {
                         apiVersionsRequest,
                         ByteBufAllocator.DEFAULT.buffer(),
                         ctx,
-                        new CompletableFuture<>());
+                        new CompletableFuture<>(),
+                        "KAFKA");
         handler.handleApiVersionsRequest(request);
 
         ByteBuf responseBuffer = request.responseBuffer();
@@ -81,7 +82,8 @@ public class KafkaRequestHandlerTest {
                         apiVersionsRequest,
                         ByteBufAllocator.DEFAULT.buffer(),
                         ctx,
-                        new CompletableFuture<>());
+                        new CompletableFuture<>(),
+                        "KAFKA");
         handler.handleApiVersionsRequest(request);
 
         ByteBuf responseBuffer = request.responseBuffer();
@@ -92,16 +94,20 @@ public class KafkaRequestHandlerTest {
         Map<Errors, Integer> errorCounts = response.errorCounts();
         assertThat(1).isEqualTo(errorCounts.size());
         assertThat(1).isEqualTo(errorCounts.get(Errors.NONE));
+        // Phase 1 advertises every API so kafka-clients can complete its handshake,
+        // but caps METADATA/FETCH at the versions we can actually serialize.
+        assertThat(response.data().apiKeys())
+                .extracting(apiVersion -> ApiKeys.forId(apiVersion.apiKey()))
+                .contains(ApiKeys.API_VERSIONS, ApiKeys.METADATA, ApiKeys.DESCRIBE_CLUSTER);
+
         response.data()
                 .apiKeys()
                 .forEach(
                         apiVersion -> {
                             if (ApiKeys.METADATA.id == apiVersion.apiKey()) {
-                                assertThat((short) 11)
-                                        .isGreaterThanOrEqualTo(apiVersion.maxVersion());
+                                assertThat(apiVersion.maxVersion()).isLessThanOrEqualTo((short) 11);
                             } else if (ApiKeys.FETCH.id == apiVersion.apiKey()) {
-                                assertThat((short) 12)
-                                        .isGreaterThanOrEqualTo(apiVersion.maxVersion());
+                                assertThat(apiVersion.maxVersion()).isLessThanOrEqualTo((short) 12);
                             } else {
                                 ApiKeys apiKeys = ApiKeys.forId(apiVersion.apiKey());
                                 assertThat(apiVersion.minVersion())
@@ -113,6 +119,8 @@ public class KafkaRequestHandlerTest {
     }
 
     private static KafkaRequestHandler createKafkaRequestHandler() {
-        return new KafkaRequestHandler(new TestingTabletGatewayService());
+        KafkaServerContext context =
+                new KafkaServerContext(null, null, null, null, null, "test-cluster", "kafka");
+        return new KafkaRequestHandler(new TestingTabletGatewayService(), context);
     }
 }

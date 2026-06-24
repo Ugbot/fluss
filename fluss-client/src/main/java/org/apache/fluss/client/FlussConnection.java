@@ -45,6 +45,9 @@ import java.time.Duration;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 import static org.apache.fluss.client.utils.MetadataUtils.getOneAvailableTabletServerNode;
 import static org.apache.fluss.config.FlussConfigUtils.CLIENT_PREFIX;
@@ -103,7 +106,18 @@ public final class FlussConnection implements Connection {
         // force to update the table info from server to avoid stale data in cache.
         metadataUpdater.updateTableOrPartitionMetadata(tablePath, null);
         Admin admin = getOrCreateAdmin();
-        return new FlussTable(this, tablePath, admin.getTableInfo(tablePath).join());
+        try {
+            return new FlussTable(
+                    this, tablePath, admin.getTableInfo(tablePath).get(60, TimeUnit.SECONDS));
+        } catch (TimeoutException e) {
+            throw new FlussRuntimeException("Timed out fetching table info for " + tablePath, e);
+        } catch (ExecutionException e) {
+            throw new FlussRuntimeException(
+                    "Failed to fetch table info for " + tablePath, e.getCause());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new FlussRuntimeException("Interrupted fetching table info for " + tablePath, e);
+        }
     }
 
     public MetadataUpdater getMetadataUpdater() {

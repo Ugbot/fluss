@@ -70,6 +70,20 @@ public class WriterStateEntry {
         return isEmpty() ? NO_BATCH_SEQUENCE : batchMetadata.getLast().batchSequence;
     }
 
+    /**
+     * Returns the sequence number of the last individual record in the most recent batch. For a
+     * batch with {@code batchSequence=S} and {@code offsetDelta=N-1} (N records), this is {@code S
+     * + (N-1)}. This is the correct cursor for Kafka-style per-record sequence validation where the
+     * next batch must start at {@code lastRecordSequence + 1}.
+     */
+    public int lastRecordSequence() {
+        if (isEmpty()) {
+            return NO_BATCH_SEQUENCE;
+        }
+        BatchMetadata last = batchMetadata.getLast();
+        return last.batchSequence + Math.max(0, last.offsetDelta);
+    }
+
     public long firstDataOffset() {
         return isEmpty() ? -1L : batchMetadata.getFirst().firstOffset();
     }

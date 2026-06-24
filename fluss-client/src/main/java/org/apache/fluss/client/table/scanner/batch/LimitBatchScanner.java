@@ -133,8 +133,9 @@ public class LimitBatchScanner implements BatchScanner {
         try {
             response = scanFuture.get(timeout.toMillis(), TimeUnit.MILLISECONDS);
         } catch (TimeoutException e) {
-            // poll next time
-            return CloseableIterator.emptyIterator();
+            // Treat timeout as end-of-scan so callers break out of their poll loops.
+            endOfInput = true;
+            return null;
         } catch (Exception e) {
             throw new IOException(e);
         }

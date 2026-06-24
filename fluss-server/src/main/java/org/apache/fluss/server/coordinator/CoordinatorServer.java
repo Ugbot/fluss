@@ -35,6 +35,7 @@ import org.apache.fluss.server.authorizer.AuthorizerLoader;
 import org.apache.fluss.server.coordinator.lease.KvSnapshotLeaseManager;
 import org.apache.fluss.server.coordinator.rebalance.RebalanceManager;
 import org.apache.fluss.server.coordinator.remote.RemoteDirDynamicLoader;
+import org.apache.fluss.server.coordinator.spi.CoordinatorLeaderBootstrap;
 import org.apache.fluss.server.metadata.CoordinatorMetadataCache;
 import org.apache.fluss.server.metadata.ServerMetadataCache;
 import org.apache.fluss.server.metrics.ServerMetricUtils;
@@ -62,6 +63,7 @@ import javax.annotation.concurrent.GuardedBy;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
+import java.util.ServiceLoader;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
@@ -157,6 +159,15 @@ public class CoordinatorServer extends ServerBase {
 
     @GuardedBy("lock")
     private KvSnapshotLeaseManager kvSnapshotLeaseManager;
+
+    /**
+     * Bolt-on services started on the elected leader via the {@link CoordinatorLeaderBootstrap} SPI
+     * (e.g. Kafka Schema Registry, the forthcoming Fluss catalog + Iceberg REST endpoints).
+     * Discovered through {@link ServiceLoader} so {@code fluss-server} keeps no compile-time dep on
+     * the bolt-on modules that implement them.
+     */
+    @GuardedBy("lock")
+    private final List<AutoCloseable> leaderBolts = new ArrayList<>();
 
     public CoordinatorServer(Configuration conf) {
         this(conf, SystemClock.getInstance());
@@ -341,6 +352,47 @@ public class CoordinatorServer extends ServerBase {
             coordinatorEventProcessor.startup();
 
             createDefaultDatabase();
+
+            startLeaderBoltsViaServiceLoader();
+        }
+    }
+
+    /**
+     * Start every {@link CoordinatorLeaderBootstrap} on the classpath. A bootstrap returning {@code
+     * null} is treated as "self-disabled in this configuration"; a throwing bootstrap is logged and
+     * skipped so a single misbehaving bolt-on cannot take the leader down.
+     */
+    private void startLeaderBoltsViaServiceLoader() {
+        java.util.List<CoordinatorLeaderBootstrap> sorted = new ArrayList<>();
+        for (CoordinatorLeaderBootstrap bootstrap :
+                ServiceLoader.load(
+                        CoordinatorLeaderBootstrap.class,
+                        CoordinatorLeaderBootstrap.class.getClassLoader())) {
+            sorted.add(bootstrap);
+        }
+        sorted.sort(java.util.Comparator.comparingInt(CoordinatorLeaderBootstrap::priority));
+        for (CoordinatorLeaderBootstrap bootstrap : sorted) {
+            try {
+                AutoCloseable instance =
+                        bootstrap.start(
+                                conf,
+                                zkClient,
+                                metadataManager,
+                                metadataCache,
+                                rpcServer.getBindEndpoints());
+                if (instance != null) {
+                    leaderBolts.add(instance);
+                    LOG.info(
+                            "Leader bolt-on '{}' started (priority {}).",
+                            bootstrap.name(),
+                            bootstrap.priority());
+                }
+            } catch (Throwable t) {
+                LOG.warn(
+                        "Leader bolt-on '{}' failed to start; continuing without it.",
+                        bootstrap.name(),
+                        t);
+            }
         }
     }
 
@@ -366,6 +418,16 @@ public class CoordinatorServer extends ServerBase {
             }
 
             // Clean up leader-specific resources in reverse order of initialization
+            for (int i = leaderBolts.size() - 1; i >= 0; i--) {
+                AutoCloseable bolt = leaderBolts.get(i);
+                try {
+                    bolt.close();
+                } catch (Throwable t) {
+                    LOG.warn("Failed to close leader bolt-on {}", bolt, t);
+                }
+            }
+            leaderBolts.clear();
+
             try {
                 if (coordinatorEventProcessor != null) {
                     coordinatorEventProcessor.shutdown();

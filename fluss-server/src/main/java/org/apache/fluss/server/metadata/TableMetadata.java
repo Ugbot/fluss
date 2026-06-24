@@ -17,13 +17,18 @@
 
 package org.apache.fluss.server.metadata;
 
+import org.apache.fluss.annotation.PublicEvolving;
 import org.apache.fluss.metadata.TableInfo;
 import org.apache.fluss.metadata.TablePath;
 
 import java.util.List;
 import java.util.Objects;
 
-/** This entity used to describe the table metadata. */
+/**
+ * This entity used to describe the table metadata. Part of the stable surface that protocol
+ * bolt-ons consume when building wire-format metadata responses.
+ */
+@PublicEvolving
 public class TableMetadata {
 
     /**

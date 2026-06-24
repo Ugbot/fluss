@@ -2300,6 +2300,224 @@ public class ConfigOptions {
                     .withDescription(
                             "Close kafka idle connections after the given time specified by this config.");
 
+    public static final ConfigOption<Boolean> KAFKA_METRICS_PER_TOPIC_ENABLED =
+            key("kafka.metrics.per-topic.enabled")
+                    .booleanType()
+                    .defaultValue(true)
+                    .withDescription(
+                            "Whether to emit per-topic Kafka bolt-on metrics (bytesIn/Out, operations, "
+                                    + "errors). Disable on clusters where the cardinality of topics would "
+                                    + "overwhelm the metric reporter.");
+
+    public static final ConfigOption<Integer> KAFKA_METRICS_PER_TOPIC_MAX_CARDINALITY =
+            key("kafka.metrics.per-topic.max-cardinality")
+                    .intType()
+                    .defaultValue(1000)
+                    .withDescription(
+                            "Cap on the number of distinct topic sub-groups emitted for Kafka bolt-on "
+                                    + "per-topic metrics. Topics beyond the cap roll up into a single "
+                                    + "__overflow__ bucket; a warning is logged on the first overflow.");
+
+    public static final ConfigOption<Boolean> KAFKA_METRICS_PER_GROUP_ENABLED =
+            key("kafka.metrics.per-group.enabled")
+                    .booleanType()
+                    .defaultValue(true)
+                    .withDescription("Whether to emit per-consumer-group Kafka bolt-on metrics.");
+
+    public static final ConfigOption<Integer> KAFKA_METRICS_PER_GROUP_MAX_CARDINALITY =
+            key("kafka.metrics.per-group.max-cardinality")
+                    .intType()
+                    .defaultValue(500)
+                    .withDescription(
+                            "Cap on the number of distinct consumer-group sub-groups emitted for the "
+                                    + "Kafka bolt-on. Groups beyond the cap roll up into __overflow__.");
+
+    /**
+     * Backing store for Kafka consumer-group committed offsets. {@code zk} is the legacy
+     * implementation (znodes under {@code /fluss/kafka/offsets/...}). {@code fluss_pk_table} is the
+     * Phase 2D+ target, persisting offsets to the PK table {@code kafka.__consumer_offsets__} (see
+     * design doc 0004).
+     */
+    public static final ConfigOption<String> KAFKA_OFFSETS_STORE =
+            key("kafka.offsets.store")
+                    .stringType()
+                    .defaultValue("fluss_pk_table")
+                    .withDescription(
+                            "Backing store for Kafka consumer-group committed offsets. Accepted values: "
+                                    + "'fluss_pk_table' (default, persists to the Fluss PK table "
+                                    + "kafka.__consumer_offsets__) and 'zk' (legacy ZooKeeper-backed, "
+                                    + "retained for one release as a migration escape hatch).");
+
+    /**
+     * Whether the Kafka-compatible Schema Registry HTTP endpoint is started on the coordinator
+     * leader. Phase A1 scaffolding: implements ping, GET /subjects, POST /subjects/{s}/versions,
+     * and GET /schemas/ids/{id}. Avro-only, TopicNameStrategy value subjects only (design 0002).
+     */
+    public static final ConfigOption<Boolean> KAFKA_SCHEMA_REGISTRY_ENABLED =
+            key("kafka.schema-registry.enabled")
+                    .booleanType()
+                    .defaultValue(false)
+                    .withDescription(
+                            "Whether to start the Kafka-compatible Schema Registry HTTP endpoint "
+                                    + "on the coordinator leader. Requires kafka.enabled=true.");
+
+    /**
+     * Bind host for the Schema Registry HTTP listener. {@code 0.0.0.0} by default so the endpoint
+     * is reachable from outside the host.
+     */
+    public static final ConfigOption<String> KAFKA_SCHEMA_REGISTRY_HOST =
+            key("kafka.schema-registry.host")
+                    .stringType()
+                    .defaultValue("0.0.0.0")
+                    .withDescription(
+                            "Bind host for the Schema Registry HTTP listener on the coordinator leader.");
+
+    /**
+     * Bind port for the Schema Registry HTTP listener. {@code 0} binds to a random free port
+     * (useful for tests); {@code 8081} is the standard Schema Registry default port.
+     */
+    public static final ConfigOption<Integer> KAFKA_SCHEMA_REGISTRY_PORT =
+            key("kafka.schema-registry.port")
+                    .intType()
+                    .defaultValue(8081)
+                    .withDescription(
+                            "Bind port for the Schema Registry HTTP listener on the coordinator leader. "
+                                    + "Use 0 to bind to a random free port.");
+
+    /**
+     * Whether the Schema Registry enforces catalog RBAC ({@code checkPrivilege}) on every HTTP
+     * request. Off by default — once enabled, the caller must have {@code WRITE} on the catalog
+     * wildcard to register schemas and {@code READ} to fetch them. Stays off until SASL / a real
+     * principal-extraction mechanism lands; under an anonymous-only listener, turning it on locks
+     * out all callers until an operator creates matching grants.
+     */
+    public static final ConfigOption<Boolean> KAFKA_SCHEMA_REGISTRY_RBAC_ENFORCED =
+            key("kafka.schema-registry.rbac.enforced")
+                    .booleanType()
+                    .defaultValue(false)
+                    .withDescription(
+                            "Whether the Schema Registry enforces catalog RBAC (checkPrivilege) on "
+                                    + "every HTTP request. Requires a principal-extraction path "
+                                    + "(SASL, forwarded-header, etc.); until then the SR treats "
+                                    + "every request as ANONYMOUS.");
+
+    /**
+     * CIDR blocks from which the Schema Registry HTTP listener trusts an {@code X-Forwarded-User}
+     * header. Empty (the default) means the header is never trusted — use this for deployments that
+     * have no reverse proxy in front of the SR. Typical values: {@code 10.0.0.0/8} for a private
+     * VPC, {@code 127.0.0.0/8} for loopback-only (local development), or several entries for a
+     * fleet of sidecars. Both IPv4 and IPv6 CIDRs are accepted.
+     */
+    public static final ConfigOption<List<String>> KAFKA_SCHEMA_REGISTRY_TRUSTED_PROXY_CIDRS =
+            key("kafka.schema-registry.trusted-proxy-cidrs")
+                    .stringType()
+                    .asList()
+                    .defaultValues()
+                    .withDescription(
+                            "Comma-separated list of CIDR blocks from which the Schema Registry "
+                                    + "trusts the X-Forwarded-User header. Empty means the header "
+                                    + "is never trusted. Both IPv4 and IPv6 CIDRs are accepted.");
+
+    /**
+     * JAAS-syntax credentials store used by the Schema Registry HTTP Basic-auth fallback. Same
+     * shape as the PLAIN-SASL JAAS config: a single {@code PlainLoginModule required} entry listing
+     * {@code user_<name>="<password>"} pairs. Empty (the default) disables Basic auth. The store is
+     * dedicated to the SR because the HTTP port has no SASL listener name to hang a
+     * listener-specific SASL JAAS config off.
+     */
+    public static final ConfigOption<String> KAFKA_SCHEMA_REGISTRY_BASIC_AUTH_JAAS_CONFIG =
+            key("kafka.schema-registry.basic-auth-jaas-config")
+                    .stringType()
+                    .defaultValue("")
+                    .withDescription(
+                            "JAAS-syntax credentials for HTTP Basic auth on the Schema Registry. "
+                                    + "Empty disables Basic auth. Format matches the SASL PLAIN "
+                                    + "JAAS config: "
+                                    + "'org.apache.fluss.security.auth.sasl.plain.PlainLoginModule "
+                                    + "required user_<name>=\"<password>\";'.");
+
+    /**
+     * Whether Kafka topics with a registered typed format ({@code KAFKA_TYPED_AVRO}, {@code
+     * KAFKA_TYPED_JSON}, {@code KAFKA_TYPED_PROTOBUF}) take the typed Produce/Fetch hot path (Kafka
+     * SR frame stripping + compiled codec decode/encode into typed columns). When {@code false}
+     * (the default), every topic — including ones whose catalog row carries a typed format — falls
+     * back to the byte-copy passthrough path. The flag is read once at server start; toggling
+     * requires a restart. See design 0014.
+     */
+    public static final ConfigOption<Boolean> KAFKA_TYPED_TABLES_ENABLED =
+            key("kafka.typed-tables.enabled")
+                    .booleanType()
+                    .defaultValue(false)
+                    .withDescription(
+                            "Whether the Kafka bolt-on routes registered typed-format topics "
+                                    + "(KAFKA_TYPED_AVRO/JSON/PROTOBUF) through the typed "
+                                    + "Produce/Fetch hot path that strips the Kafka SR frame "
+                                    + "and decodes / encodes via the compiled codec. Defaults to "
+                                    + "false; with the flag off, every topic takes the byte-copy "
+                                    + "passthrough path regardless of its catalog format. Read "
+                                    + "once at server start.");
+
+    /**
+     * Log format used for new Kafka log (non-PK) topics created via the Kafka API. Defaults to
+     * {@link LogFormat#ARROW} so the on-disk shape matches Fluss-native log tables; operators can
+     * pin {@link LogFormat#INDEXED} per-cluster to retain the pre-existing row-oriented format.
+     *
+     * <p>Existing Kafka topics are unaffected — their format is read from the table descriptor at
+     * produce time, so this config only governs the format stamped on tables created after it takes
+     * effect. PK/compacted Kafka topics always use {@link
+     * org.apache.fluss.metadata.KvFormat#INDEXED} regardless of this setting. Read once at server
+     * start; toggling requires a restart.
+     */
+    public static final ConfigOption<LogFormat> KAFKA_LOG_FORMAT =
+            key("kafka.log-format")
+                    .enumType(LogFormat.class)
+                    .defaultValue(LogFormat.ARROW)
+                    .withDescription(
+                            "Log format used for new Kafka log (non-PK) topics created via the "
+                                    + "Kafka API. Existing topics are unaffected. PK/compacted "
+                                    + "topics always use the INDEXED KV format. Defaults to "
+                                    + "ARROW; pin to INDEXED to revert to the prior row-oriented "
+                                    + "format. Read once at server start.");
+
+    /**
+     * Whether the Iceberg REST Catalog HTTP endpoint is started on the coordinator leader. Second
+     * projection over the Fluss catalog service, alongside the Kafka Schema Registry. Phase E
+     * preview: implements {@code GET /v1/config}, {@code GET /v1/namespaces}, {@code POST
+     * /v1/namespaces} only.
+     */
+    public static final ConfigOption<Boolean> ICEBERG_REST_ENABLED =
+            key("fluss.iceberg-rest.enabled")
+                    .booleanType()
+                    .defaultValue(false)
+                    .withDescription(
+                            "Whether to start the Iceberg REST Catalog HTTP endpoint on the "
+                                    + "coordinator leader. Starts the shared Fluss catalog service "
+                                    + "if not already running.");
+
+    /**
+     * Bind host for the Iceberg REST Catalog HTTP listener. {@code 0.0.0.0} by default so the
+     * endpoint is reachable from outside the host.
+     */
+    public static final ConfigOption<String> ICEBERG_REST_HOST =
+            key("fluss.iceberg-rest.host")
+                    .stringType()
+                    .defaultValue("0.0.0.0")
+                    .withDescription(
+                            "Bind host for the Iceberg REST Catalog HTTP listener on the "
+                                    + "coordinator leader.");
+
+    /**
+     * Bind port for the Iceberg REST Catalog HTTP listener. {@code 0} binds to a random free port
+     * (useful for tests); {@code 8181} matches the Iceberg reference implementation default.
+     */
+    public static final ConfigOption<Integer> ICEBERG_REST_PORT =
+            key("fluss.iceberg-rest.port")
+                    .intType()
+                    .defaultValue(8181)
+                    .withDescription(
+                            "Bind port for the Iceberg REST Catalog HTTP listener on the "
+                                    + "coordinator leader. Use 0 to bind to a random free port.");
+
     /**
      * Compaction style for Fluss's kv, which is same to rocksdb's, but help use avoid including
      * rocksdb dependency when only need include this common module.

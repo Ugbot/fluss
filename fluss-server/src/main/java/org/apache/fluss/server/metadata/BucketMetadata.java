@@ -17,13 +17,22 @@
 
 package org.apache.fluss.server.metadata;
 
+import org.apache.fluss.annotation.PublicEvolving;
+
 import javax.annotation.Nullable;
 
 import java.util.List;
 import java.util.Objects;
 import java.util.OptionalInt;
 
-/** This entity used to describe the bucket metadata. */
+/**
+ * This entity used to describe the bucket metadata.
+ *
+ * <p>Part of the stable surface protocol bolt-ons (Kafka, etc.) consume to build wire-format
+ * metadata responses. Field shape is intentionally minimal — {@code bucketId}, optional
+ * leader/epoch, replica list — and is expected to evolve only additively.
+ */
+@PublicEvolving
 public class BucketMetadata {
     private final int bucketId;
     private final @Nullable Integer leaderId;

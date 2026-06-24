@@ -1,0 +1,2 @@
+org.apache.fluss.kafka.sr.SchemaRegistryBootstrap
+org.apache.fluss.kafka.tx.TransactionCoordinatorBootstrap

@@ -92,6 +92,22 @@
             <artifactId>jmh-generator-annprocess</artifactId>
             <version>${jmh.version}</version>
         </dependency>
+
+        <!-- Phase T.1: JMH benches for the Avro/Janino hot-path codec.
+             Pull fluss-kafka (and its Avro + Janino deps) transitively. -->
+        <dependency>
+            <groupId>${project.groupId}</groupId>
+            <artifactId>fluss-kafka</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <!-- Explicit Avro dep so the JMH baseline compiles without relying
+             exclusively on transitive resolution from fluss-kafka. -->
+        <dependency>
+            <groupId>org.apache.avro</groupId>
+            <artifactId>avro</artifactId>
+            <version>1.11.4</version>
+        </dependency>
     </dependencies>
 
 </project>
