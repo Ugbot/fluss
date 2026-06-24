@@ -43,9 +43,14 @@ SERVICE=tablet-server
 
 if [[ $STARTSTOP == "start" ]] || [[ $STARTSTOP == "start-foreground" ]]; then
 
-    # if no other JVM options are set, set the GC to G1
-    if [ -z "${FLUSS_ENV_JAVA_OPTS}" ] && [ -z "${FLUSS_ENV_JAVA_OPTS_TS}" ]; then
-        export JVM_ARGS="$JVM_ARGS -XX:+UseG1GC"
+    # If the operator has not supplied their own JVM options (neither the shared
+    # env.java.opts.all nor the tablet-server specific env.java.opts.tablet-server),
+    # apply the Fluss defaults: Generational ZGC plus a derived
+    # -XX:MaxDirectMemorySize. To switch back to G1 (or any other GC), set
+    # env.java.opts.all / env.java.opts.tablet-server in conf/server.yaml; those
+    # options take full precedence over these defaults.
+    if [ "${FLUSS_ENV_JAVA_OPTS_USER_SET}" != "true" ] && [ -z "${FLUSS_ENV_JAVA_OPTS_TS}" ]; then
+        export JVM_ARGS="$JVM_ARGS $(constructDefaultJavaOpts "${FLUSS_ENV_JAVA_OPTS_TS}")"
     fi
 
     # Add TabletServer specific JVM options
