@@ -65,6 +65,22 @@
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-plugin-plugin</artifactId>
+                <version>3.15.1</version>
+                <!-- The descriptor mojo ASM-scans this plugin's own classes; on JDK 25 they are
+                     class major version 69, which the plugin's bundled ASM can't read. Pin ASM 9.8
+                     (supports Java 25) so the descriptor goal works — same fix as maven-shade. -->
+                <dependencies>
+                    <dependency>
+                        <groupId>org.ow2.asm</groupId>
+                        <artifactId>asm</artifactId>
+                        <version>9.8</version>
+                    </dependency>
+                    <dependency>
+                        <groupId>org.ow2.asm</groupId>
+                        <artifactId>asm-commons</artifactId>
+                        <version>9.8</version>
+                    </dependency>
+                </dependencies>
                 <configuration>
                     <goalPrefix>protogen</goalPrefix>
                     <skipErrorNoDescriptorsFound>true</skipErrorNoDescriptorsFound>
