@@ -472,20 +472,12 @@
         </profile>
 
         <!--
-          Opt-in profile for the niche cloud filesystem connectors (Aliyun OSS,
-          Azure, Huawei OBS). The mainstream filesystems (hadoop, hdfs, s3, gs,
-          cos) stay in the default build; these three are reached by relative
-          path so they need not live in the fluss-filesystems aggregator.
-          Activate with -Pextra-fs.
+          NOTE: the niche cloud filesystem connectors (Aliyun OSS, Azure, Huawei OBS)
+          remain in the DEFAULT build for now. They cannot be profile-gated until
+          fluss-dist's hard dependency + plugins assembly entry for fluss-fs-oss are
+          made profile-conditional (a separate dist-assembly rework). Spark/Scala IS
+          gated above (-Pspark) since fluss-dist does not bundle it.
         -->
-        <profile>
-            <id>extra-fs</id>
-            <modules>
-                <module>fluss-filesystems/fluss-fs-oss</module>
-                <module>fluss-filesystems/fluss-fs-azure</module>
-                <module>fluss-filesystems/fluss-fs-obs</module>
-            </modules>
-        </profile>
 
         <profile>
             <id>test-coverage</id>
