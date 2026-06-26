@@ -22,9 +22,10 @@ import org.apache.fluss.memory.MemorySegment;
 import org.apache.fluss.row.array.PrimitiveBinaryArray;
 import org.apache.fluss.types.DataType;
 
+import java.lang.foreign.ValueLayout;
 import java.lang.reflect.Array;
+import java.nio.ByteOrder;
 
-import static org.apache.fluss.memory.MemoryUtils.UNSAFE;
 import static org.apache.fluss.utils.Preconditions.checkArgument;
 
 /**
@@ -54,15 +55,12 @@ public abstract class BinaryArray extends BinarySection
 
     private static final long serialVersionUID = 1L;
 
-    /** Offset for Arrays. */
-    private static final int BYTE_ARRAY_BASE_OFFSET = UNSAFE.arrayBaseOffset(byte[].class);
-
-    private static final int BOOLEAN_ARRAY_OFFSET = UNSAFE.arrayBaseOffset(boolean[].class);
-    private static final int SHORT_ARRAY_OFFSET = UNSAFE.arrayBaseOffset(short[].class);
-    private static final int INT_ARRAY_OFFSET = UNSAFE.arrayBaseOffset(int[].class);
-    private static final int LONG_ARRAY_OFFSET = UNSAFE.arrayBaseOffset(long[].class);
-    private static final int FLOAT_ARRAY_OFFSET = UNSAFE.arrayBaseOffset(float[].class);
-    private static final int DOUBLE_ARRAY_OFFSET = UNSAFE.arrayBaseOffset(double[].class);
+    /**
+     * Native-order, unaligned int layout for writing the array-length header into the heap {@code
+     * byte[]} payload. Mirrors the former {@code Unsafe.putInt(data, ...)} machine-order write.
+     */
+    private static final ValueLayout.OfInt INT_NE =
+            ValueLayout.JAVA_INT_UNALIGNED.withOrder(ByteOrder.nativeOrder());
 
     public static int calculateHeaderInBytes(int numFields) {
         return 4 + ((numFields + 31) / 32) * 4;
@@ -573,35 +571,57 @@ public abstract class BinaryArray extends BinarySection
     // ------------------------------------------------------------------------------------------
 
     public static BinaryArray fromPrimitiveArray(boolean[] arr) {
-        return fromPrimitiveArray(arr, BOOLEAN_ARRAY_OFFSET, arr.length, 1);
+        // java.lang.foreign.MemorySegment has no boolean[] view; lay out the 8-byte-aligned buffer
+        // and write each boolean as a single byte (0/1), matching the former raw byte copy of the
+        // boolean[] heap representation.
+        final int length = arr.length;
+        final long headerInBytes = calculateHeaderInBytes(length);
+        long totalSizeInLongs = (headerInBytes + length + 7) / 8;
+        if (totalSizeInLongs > Integer.MAX_VALUE / 8) {
+            throw new UnsupportedOperationException(
+                    "Cannot convert this array to unsafe format as " + "it's too big.");
+        }
+        long totalSize = totalSizeInLongs * 8;
+
+        final byte[] data = new byte[(int) totalSize];
+        final java.lang.foreign.MemorySegment dataSegment =
+                java.lang.foreign.MemorySegment.ofArray(data);
+        dataSegment.set(INT_NE, 0, length);
+        for (int i = 0; i < length; i++) {
+            dataSegment.set(ValueLayout.JAVA_BOOLEAN, headerInBytes + i, arr[i]);
+        }
+
+        BinaryArray result = new PrimitiveBinaryArray();
+        result.pointTo(MemorySegment.wrap(data), 0, (int) totalSize);
+        return result;
     }
 
     public static BinaryArray fromPrimitiveArray(byte[] arr) {
-        return fromPrimitiveArray(arr, BYTE_ARRAY_BASE_OFFSET, arr.length, 1);
+        return fromPrimitiveArray(java.lang.foreign.MemorySegment.ofArray(arr), arr.length, 1);
     }
 
     public static BinaryArray fromPrimitiveArray(short[] arr) {
-        return fromPrimitiveArray(arr, SHORT_ARRAY_OFFSET, arr.length, 2);
+        return fromPrimitiveArray(java.lang.foreign.MemorySegment.ofArray(arr), arr.length, 2);
     }
 
     public static BinaryArray fromPrimitiveArray(int[] arr) {
-        return fromPrimitiveArray(arr, INT_ARRAY_OFFSET, arr.length, 4);
+        return fromPrimitiveArray(java.lang.foreign.MemorySegment.ofArray(arr), arr.length, 4);
     }
 
     public static BinaryArray fromPrimitiveArray(long[] arr) {
-        return fromPrimitiveArray(arr, LONG_ARRAY_OFFSET, arr.length, 8);
+        return fromPrimitiveArray(java.lang.foreign.MemorySegment.ofArray(arr), arr.length, 8);
     }
 
     public static BinaryArray fromPrimitiveArray(float[] arr) {
-        return fromPrimitiveArray(arr, FLOAT_ARRAY_OFFSET, arr.length, 4);
+        return fromPrimitiveArray(java.lang.foreign.MemorySegment.ofArray(arr), arr.length, 4);
     }
 
     public static BinaryArray fromPrimitiveArray(double[] arr) {
-        return fromPrimitiveArray(arr, DOUBLE_ARRAY_OFFSET, arr.length, 8);
+        return fromPrimitiveArray(java.lang.foreign.MemorySegment.ofArray(arr), arr.length, 8);
     }
 
     private static BinaryArray fromPrimitiveArray(
-            Object arr, int offset, int length, int elementSize) {
+            java.lang.foreign.MemorySegment source, int length, int elementSize) {
         final long headerInBytes = calculateHeaderInBytes(length);
         final long valueRegionInBytes = ((long) elementSize) * length;
 
@@ -615,9 +635,15 @@ public abstract class BinaryArray extends BinarySection
 
         final byte[] data = new byte[(int) totalSize];
 
-        UNSAFE.putInt(data, (long) BYTE_ARRAY_BASE_OFFSET, length);
-        UNSAFE.copyMemory(
-                arr, offset, data, BYTE_ARRAY_BASE_OFFSET + headerInBytes, valueRegionInBytes);
+        // Write the length header (native byte order) and byte-wise copy the primitive payload,
+        // which
+        // preserves the source array's raw in-memory (native-order) representation exactly as the
+        // former Unsafe.putInt + Unsafe.copyMemory did.
+        final java.lang.foreign.MemorySegment dataSegment =
+                java.lang.foreign.MemorySegment.ofArray(data);
+        dataSegment.set(INT_NE, 0, length);
+        java.lang.foreign.MemorySegment.copy(
+                source, 0L, dataSegment, headerInBytes, valueRegionInBytes);
 
         BinaryArray result = new PrimitiveBinaryArray();
         result.pointTo(MemorySegment.wrap(data), 0, (int) totalSize);

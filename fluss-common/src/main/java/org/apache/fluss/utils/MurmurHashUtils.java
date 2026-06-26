@@ -18,7 +18,9 @@
 package org.apache.fluss.utils;
 
 import org.apache.fluss.memory.MemorySegment;
-import org.apache.fluss.memory.MemoryUtils;
+
+import java.lang.foreign.ValueLayout;
+import java.nio.ByteOrder;
 
 import static org.apache.fluss.utils.UnsafeUtils.BYTE_ARRAY_BASE_OFFSET;
 
@@ -32,6 +34,13 @@ public class MurmurHashUtils {
     private static final int C1 = 0xcc9e2d51;
     private static final int C2 = 0x1b873593;
     public static final int DEFAULT_SEED = 42;
+
+    /**
+     * Native-order, unaligned int layout that mirrors the former {@code Unsafe.getInt(Object,
+     * long)} machine-order read used by the word-wise hash loop.
+     */
+    private static final ValueLayout.OfInt INT_NE =
+            ValueLayout.JAVA_INT_UNALIGNED.withOrder(ByteOrder.nativeOrder());
 
     /**
      * Hash unsafe bytes, length must be aligned to 4 bytes.
@@ -98,9 +107,15 @@ public class MurmurHashUtils {
 
     private static int hashUnsafeBytesByInt(Object base, long offset, int lengthInBytes, int seed) {
         assert (lengthInBytes % 4 == 0);
+        // The base is always a heap byte[]; offset is a relative index (BYTE_ARRAY_BASE_OFFSET ==
+        // 0).
+        // Wrap the array once per call and read native-order ints, exactly as the former Unsafe
+        // path.
+        final java.lang.foreign.MemorySegment segment =
+                java.lang.foreign.MemorySegment.ofArray((byte[]) base);
         int h1 = seed;
         for (int i = 0; i < lengthInBytes; i += 4) {
-            int halfWord = MemoryUtils.UNSAFE.getInt(base, offset + i);
+            int halfWord = segment.get(INT_NE, offset + i);
             int k1 = mixK1(halfWord);
             h1 = mixH1(h1, k1);
         }
@@ -123,8 +138,13 @@ public class MurmurHashUtils {
         assert (lengthInBytes >= 0) : "lengthInBytes cannot be negative";
         int lengthAligned = lengthInBytes - lengthInBytes % 4;
         int h1 = hashUnsafeBytesByInt(base, offset, lengthAligned, seed);
+        // The base is always a heap byte[]; offset is a relative index (BYTE_ARRAY_BASE_OFFSET ==
+        // 0).
+        // get(JAVA_BYTE) returns a signed byte that widens to int exactly like Unsafe.getByte did.
+        final java.lang.foreign.MemorySegment segment =
+                java.lang.foreign.MemorySegment.ofArray((byte[]) base);
         for (int i = lengthAligned; i < lengthInBytes; i++) {
-            int halfWord = MemoryUtils.UNSAFE.getByte(base, offset + i);
+            int halfWord = segment.get(ValueLayout.JAVA_BYTE, offset + i);
             int k1 = mixK1(halfWord);
             h1 = mixH1(h1, k1);
         }
