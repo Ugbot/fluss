@@ -23,12 +23,16 @@ import org.apache.fluss.server.kv.snapshot.KvSnapshotDataDownloader;
 import org.apache.fluss.server.kv.snapshot.KvSnapshotDataUploader;
 import org.apache.fluss.utils.concurrent.ExecutorThreadFactory;
 
+import java.util.List;
+import java.util.concurrent.AbstractExecutorService;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.Semaphore;
+import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
+
+import static org.apache.fluss.utils.Preconditions.checkArgument;
 
 /**
  * Containing resources needed to do kv snapshot. It contains:
@@ -92,28 +96,53 @@ public class KvSnapshotResource {
                         conf.getInt(ConfigOptions.KV_SNAPSHOT_SCHEDULER_THREAD_NUM),
                         new ExecutorThreadFactory("periodic-snapshot-scheduler-" + serverId));
 
-        // Thread pool for the async part of kv snapshot. The work queue is intentionally UNBOUNDED:
-        // the producer (PeriodicSnapshotManager.triggerSnapshot) submits while holding the KV
-        // tablet write lock (kvLock), so the submit path must never block and must never run work
-        // inline on the caller. A bounded queue with a blocking or CallerRunsPolicy handler would
-        // run a heavy remote snapshot upload inline under kvLock, stalling all writes to the
-        // tablet.
-        // Memory growth here is bounded in practice by the snapshot scheduling interval; if a
-        // backlog is a concern, observe pool/queue size via metrics rather than bounding this
-        // queue.
-        ExecutorService asyncOperationsThreadPool =
-                new ThreadPoolExecutor(
-                        0,
-                        3,
-                        60L,
-                        TimeUnit.SECONDS,
-                        new LinkedBlockingQueue<>(),
-                        new ExecutorThreadFactory("fluss-kv-snapshot-async-operations"));
+        // Thread pool for the async part of kv snapshot.
+        //
+        // Backing executor: a virtual-thread-per-task executor. The blocking snapshot phase
+        // (remote upload of checkpoint files) parks on I/O; virtual threads unmount from their
+        // carrier thread while parked, so blocking I/O no longer pins a platform thread.
+        //
+        // Concurrency bound: a Semaphore caps how many snapshot operations may be in-flight at
+        // once. The previous platform-thread pool used a maxPoolSize of 3 to bound the number of
+        // concurrent local RocksDB checkpoint directories and open file descriptors; switching to
+        // unbounded virtual threads would have removed that cap (which is exactly why the earlier
+        // unbounded version was reverted). Each submitted task acquires a permit before doing any
+        // work and releases it in a finally block, so peak in-flight snapshots stays bounded
+        // regardless of how cheap virtual threads are to spawn.
+        //
+        // The submit path must never block and must never run work inline on the caller: the
+        // producer (PeriodicSnapshotManager.triggerSnapshot) submits while holding the KV tablet
+        // write lock (kvLock). Submission here only spawns a virtual thread (cheap, non-blocking);
+        // the Semaphore is acquired inside that virtual thread, never on the submitting thread, so
+        // back-pressure never stalls writes to the tablet.
+        int maxConcurrency = conf.getInt(ConfigOptions.KV_SNAPSHOT_ASYNC_OPERATION_MAX_CONCURRENCY);
+        ExecutorService asyncOperationsThreadPool = newBoundedVirtualThreadExecutor(maxConcurrency);
         return new KvSnapshotResource(
                 kvSnapshotScheduler,
                 kvSnapshotDataUploader,
                 kvSnapshotDataDownloader,
                 asyncOperationsThreadPool);
+    }
+
+    /**
+     * Creates the executor used for the async (blocking-upload) phase of kv snapshots.
+     *
+     * <p>The executor spawns one virtual thread per submitted task so that the carrier thread is
+     * released while the task is blocked on remote snapshot I/O. Concurrency is bounded by a {@link
+     * Semaphore} of {@code maxConcurrency} permits: each task acquires a permit before running and
+     * releases it when done, so at most {@code maxConcurrency} snapshot operations are in flight at
+     * any time. This preserves the throttle that bounds local RocksDB checkpoint directories and
+     * open file descriptors.
+     *
+     * @param maxConcurrency the maximum number of concurrently running snapshot operations; must be
+     *     positive
+     */
+    static ExecutorService newBoundedVirtualThreadExecutor(int maxConcurrency) {
+        checkArgument(
+                maxConcurrency > 0,
+                "kv snapshot async-operation max-concurrency must be positive, but was %s",
+                maxConcurrency);
+        return new SemaphoreBoundedExecutorService(maxConcurrency);
     }
 
     public void close() {
@@ -122,5 +151,79 @@ public class KvSnapshotResource {
         // close kvSnapshotScheduler, also stop any actively executing task immediately
         // otherwise, a snapshot will still be take although it's closed, which will cause exception
         kvSnapshotScheduler.shutdownNow();
+    }
+
+    /**
+     * An {@link ExecutorService} that runs every submitted task on its own virtual thread while
+     * bounding the number of concurrently running tasks with a {@link Semaphore}.
+     *
+     * <p>All lifecycle management (shutdown, awaitTermination, etc.) is delegated to an inner
+     * virtual-thread-per-task executor obtained from {@link Executors#newThreadPerTaskExecutor}.
+     * Only {@link #execute(Runnable)} is intercepted: each task is wrapped so that it acquires a
+     * permit before running its body and releases it in a {@code finally} block. The permit is
+     * acquired on the spawned virtual thread, never on the submitting thread, so submission stays
+     * non-blocking (important because snapshots are submitted while holding the KV tablet write
+     * lock).
+     */
+    private static final class SemaphoreBoundedExecutorService extends AbstractExecutorService {
+
+        private final ExecutorService delegate;
+        private final Semaphore permits;
+
+        private SemaphoreBoundedExecutorService(int maxConcurrency) {
+            this.permits = new Semaphore(maxConcurrency);
+            this.delegate = Executors.newThreadPerTaskExecutor(newVirtualThreadFactory());
+        }
+
+        @Override
+        public void execute(Runnable command) {
+            delegate.execute(
+                    () -> {
+                        try {
+                            permits.acquire();
+                        } catch (InterruptedException e) {
+                            // The executor is shutting down (shutdownNow interrupts workers) or the
+                            // task was cancelled before it could start. Restore the interrupt flag
+                            // and drop the task without running its (potentially heavy) body.
+                            Thread.currentThread().interrupt();
+                            return;
+                        }
+                        try {
+                            command.run();
+                        } finally {
+                            permits.release();
+                        }
+                    });
+        }
+
+        @Override
+        public void shutdown() {
+            delegate.shutdown();
+        }
+
+        @Override
+        public List<Runnable> shutdownNow() {
+            return delegate.shutdownNow();
+        }
+
+        @Override
+        public boolean isShutdown() {
+            return delegate.isShutdown();
+        }
+
+        @Override
+        public boolean isTerminated() {
+            return delegate.isTerminated();
+        }
+
+        @Override
+        public boolean awaitTermination(long timeout, TimeUnit unit) throws InterruptedException {
+            return delegate.awaitTermination(timeout, unit);
+        }
+    }
+
+    private static ThreadFactory newVirtualThreadFactory() {
+        // name(prefix, start) yields auto-incrementing virtual-thread names for diagnostics.
+        return Thread.ofVirtual().name("fluss-kv-snapshot-async-operations-", 0).factory();
     }
 }

@@ -1786,6 +1786,18 @@ public class ConfigOptions {
                     .withDescription(
                             "The number of threads that the server uses to schedule snapshot kv data for all the replicas in the server.");
 
+    public static final ConfigOption<Integer> KV_SNAPSHOT_ASYNC_OPERATION_MAX_CONCURRENCY =
+            key("kv.snapshot.async-operation.max-concurrency")
+                    .intType()
+                    .defaultValue(3)
+                    .withDescription(
+                            "The maximum number of kv snapshot async operations (the blocking upload phase) "
+                                    + "that may run concurrently on a server. The async snapshot phase runs on a "
+                                    + "virtual-thread-per-task executor so carrier threads are freed during blocking "
+                                    + "remote I/O, but the in-flight count is bounded by this value to cap the number "
+                                    + "of concurrent local RocksDB checkpoint directories and open file descriptors. "
+                                    + "The default setting is 3.");
+
     /**
      * @deprecated This option is deprecated. Please use {@link ConfigOptions#SERVER_IO_POOL_SIZE}
      *     instead.
