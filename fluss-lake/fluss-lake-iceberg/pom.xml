@@ -31,6 +31,20 @@
     <name>Apache Fluss (Incubating) : Lake : Iceberg</name>
 
     <packaging>jar</packaging>
+
+    <dependencyManagement>
+        <dependencies>
+            <!-- Align all AWS SDK v2 modules (pulled by iceberg-aws / S3FileIO) to a single version. -->
+            <dependency>
+                <groupId>software.amazon.awssdk</groupId>
+                <artifactId>bom</artifactId>
+                <version>${awssdk.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
     <dependencies>
         <dependency>
             <groupId>org.apache.iceberg</groupId>
@@ -73,6 +87,38 @@
             <groupId>org.apache.iceberg</groupId>
             <artifactId>iceberg-bundled-guava</artifactId>
             <version>${iceberg.version}</version>
+        </dependency>
+
+        <!--
+          iceberg-aws provides S3FileIO (org.apache.iceberg.aws.s3.S3FileIO), the AWS SDK v2 based
+          FileIO that lets the tiering write path target S3 without hadoop-common / hadoop-aws on the
+          classpath. The iceberg-aws POM declares no AWS SDK dependencies (Iceberg expects them to be
+          provided at runtime), so we bring the required AWS SDK v2 modules explicitly below.
+        -->
+        <dependency>
+            <groupId>org.apache.iceberg</groupId>
+            <artifactId>iceberg-aws</artifactId>
+            <version>${iceberg.version}</version>
+        </dependency>
+        <!-- AWS SDK v2 runtime modules required by S3FileIO. Versions come from the awssdk BOM. -->
+        <dependency>
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>s3</artifactId>
+        </dependency>
+        <!-- STS enables assume-role / web-identity credential providers for S3 access. -->
+        <dependency>
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>sts</artifactId>
+        </dependency>
+        <!-- KMS model classes are referenced by S3FileIO for SSE-KMS server-side encryption. -->
+        <dependency>
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>kms</artifactId>
+        </dependency>
+        <!-- Sync HTTP client implementation used by the AWS SDK v2 service clients. -->
+        <dependency>
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>apache-client</artifactId>
         </dependency>
 
         <dependency>

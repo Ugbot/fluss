@@ -22,6 +22,7 @@ import org.apache.fluss.lake.iceberg.conf.IcebergConfiguration;
 
 import org.apache.iceberg.catalog.Catalog;
 
+import java.util.HashMap;
 import java.util.Map;
 
 import static org.apache.iceberg.CatalogUtil.buildIcebergCatalog;
@@ -32,7 +33,12 @@ public class IcebergCatalogUtils {
     public static final String ICEBERG_CATALOG_DEFAULT_NAME = "fluss-iceberg-catalog";
 
     public static Catalog createIcebergCatalog(Configuration configuration) {
-        Map<String, String> icebergProps = configuration.toMap();
+        // Copy into a mutable map: configuration.toMap() may be immutable and we need to inject the
+        // selected FileIO implementation below.
+        Map<String, String> icebergProps = new HashMap<>(configuration.toMap());
+        // Select S3FileIO (AWS SDK v2, no Hadoop) for S3 warehouses; leave HadoopFileIO as the
+        // fallback for hdfs/local locations so nothing regresses.
+        IcebergFileIOConfigurer.configureFileIO(icebergProps);
         String catalogName = icebergProps.getOrDefault("name", ICEBERG_CATALOG_DEFAULT_NAME);
         return buildIcebergCatalog(
                 catalogName, icebergProps, IcebergConfiguration.from(configuration).get());

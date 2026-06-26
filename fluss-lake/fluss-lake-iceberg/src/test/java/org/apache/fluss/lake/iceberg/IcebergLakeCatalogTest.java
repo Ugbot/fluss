@@ -22,6 +22,7 @@ import org.apache.fluss.config.Configuration;
 import org.apache.fluss.exception.InvalidAlterTableException;
 import org.apache.fluss.exception.InvalidTableException;
 import org.apache.fluss.exception.TableNotExistException;
+import org.apache.fluss.lake.iceberg.utils.IcebergFileIOConfigurer;
 import org.apache.fluss.lake.lakestorage.TestingLakeCatalogContext;
 import org.apache.fluss.metadata.Schema;
 import org.apache.fluss.metadata.TableChange;
@@ -30,6 +31,7 @@ import org.apache.fluss.metadata.TablePath;
 import org.apache.fluss.server.coordinator.SchemaUpdate;
 import org.apache.fluss.types.DataTypes;
 
+import org.apache.iceberg.CatalogUtil;
 import org.apache.iceberg.PartitionField;
 import org.apache.iceberg.RowLevelOperationMode;
 import org.apache.iceberg.SortDirection;
@@ -37,6 +39,7 @@ import org.apache.iceberg.SortField;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.catalog.Catalog;
 import org.apache.iceberg.catalog.TableIdentifier;
+import org.apache.iceberg.io.FileIO;
 import org.apache.iceberg.types.Types;
 import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
@@ -49,8 +52,10 @@ import java.io.File;
 import java.time.Duration;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -1129,6 +1134,42 @@ class IcebergLakeCatalogTest {
                                         getLakeCatalogContext(mismatched, changes)))
                 .isInstanceOf(InvalidAlterTableException.class)
                 .hasMessageContaining("Iceberg schema is not compatible with Fluss schema");
+    }
+
+    /**
+     * End-to-end check that an {@code s3://} warehouse selects Iceberg's AWS SDK v2 {@code
+     * S3FileIO} (no Hadoop) for the catalog passed to Iceberg, and that the selected class is
+     * actually loadable and instantiable from the classpath via the {@code iceberg-aws} dependency.
+     *
+     * <p>{@link IcebergCatalogUtils#createIcebergCatalog} injects {@code io-impl} into the property
+     * map before handing it to Iceberg's {@code CatalogUtil}. We reproduce that property map via
+     * {@link IcebergFileIOConfigurer#configureFileIO} and load the FileIO with Iceberg's own {@code
+     * CatalogUtil#loadFileIO}, exactly as a catalog implementation honoring {@code io-impl} would.
+     */
+    @Test
+    void testS3WarehouseSelectsAndLoadsS3FileIO() {
+        Map<String, String> props = new HashMap<>();
+        props.put("warehouse", "s3://my-bucket/warehouse");
+        // S3FileIO reads its region lazily; setting it avoids region-resolution warnings.
+        props.put("client.region", "us-east-1");
+
+        IcebergFileIOConfigurer.configureFileIO(props);
+
+        assertThat(props).containsEntry("io-impl", "org.apache.iceberg.aws.s3.S3FileIO");
+        try (FileIO io = CatalogUtil.loadFileIO(props.get("io-impl"), props, null)) {
+            assertThat(io).isInstanceOf(org.apache.iceberg.aws.s3.S3FileIO.class);
+        }
+    }
+
+    /** Non-S3 warehouses must not set {@code io-impl}, keeping Iceberg's default HadoopFileIO. */
+    @Test
+    void testLocalWarehouseKeepsDefaultFileIO() {
+        Map<String, String> props = new HashMap<>();
+        props.put("warehouse", tempWarehouseDir.toURI().toString());
+
+        IcebergFileIOConfigurer.configureFileIO(props);
+
+        assertThat(props).doesNotContainKey("io-impl");
     }
 
     private void createLogTable(String database, String tableName) {
