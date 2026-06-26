@@ -129,10 +129,19 @@ Each phase is **benchmark-gated** (no perf change lands without a before/after J
 - Exit criteria: benchmark-proven allocation-rate drop and GC-pause improvement.
 
 ### Phase 5 — Native tiering service + dependency diet (lakes behind abstractions)
-- [ ] Extract `fluss-lake-tiering-core` (engine-agnostic) from the Flink tiering source/committer.
-- [ ] Standalone `fluss-tiering-service` daemon over the `LakeTieringFactory`/`LakeWriter`/
-      `LakeCommitter` SPI + RPC coordination (`CoordinatorGateway` prepare/commit/heartbeat).
-      **All lakes behind abstractions** — no format-specific branching in the core.
+- [x] Extract `fluss-lake-tiering-core` (engine-agnostic, Flink-free, enforcer-banned flink/hadoop):
+      split/ (TieringSplit, generator), reader/ (TieringTableReader — Arrow/row/snapshot paths,
+      BoundedSplitReader, BucketWriteResult, metrics), committer/ (TableTieringCommitter,
+      FlussTableLakeSnapshotCommitter), coordinator/ (TieringCoordinatorClient heartbeat). Compiles.
+- [x] Standalone `fluss-tiering-service` daemon (TieringService main loop, TieringWorkerPool,
+      TieringServiceOptions, TieringServiceMain) over the SPI + `CoordinatorGateway` RPC; lake factory
+      via `LakeStoragePluginSetUp.fromDataLakeFormat` (no format branching — all lakes behind the SPI).
+      Compiles. NOT yet behaviorally verified — see caveats below.
+      - TODO: `TieringServiceITCase` (needs a cluster; disk-blocked at 93%); adversarial review of the
+        daemon lifecycle (force-finished is inferred from `timer.isDone()` → benign spurious-retier
+        race; force-finish timer runs on the poller executor, not a dedicated thread); `fluss-dist`
+        wiring (`tiering-service.sh` + assembly + `server.yaml` docs); Flink→core thin-adapter
+        delegation (fluss-flink-common still has its own tiering copies, left untouched).
 - [ ] Iceberg via `iceberg-core` + `iceberg-aws` `S3FileIO` (AWS SDK v2) — **no Hadoop**.
 - [ ] Add `fluss-lake-delta` (Delta Kernel write API; no Spark/Hadoop).
 - [ ] Wire **read-through/write-through catalog** using `fluss-catalog` + `fluss-iceberg-rest`
