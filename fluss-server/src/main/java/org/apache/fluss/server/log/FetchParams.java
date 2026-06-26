@@ -130,9 +130,12 @@ public final class FetchParams {
         this.maxFetchBytes = maxFetchBytes;
         if (projectedFields != null) {
             projectionEnabled = true;
-            if (fileLogProjection == null) {
-                fileLogProjection = new FileLogProjection(projectionCache);
-            }
+            // Reuse a thread-bound FileLogProjection across fetches on this request handler thread
+            // instead of allocating one per fetch. This is safe because a produced BytesView never
+            // aliases the projection's reusable scratch buffers (only freshly allocated per-batch
+            // byte[] arrays and direct FileChannel regions), so reuse cannot corrupt a previous
+            // fetch's not-yet-serialized response. See FileLogProjection#forThread.
+            fileLogProjection = FileLogProjection.forThread(projectionCache);
 
             fileLogProjection.setCurrentProjection(
                     tableId, schemaGetter, compressionInfo, projectedFields);

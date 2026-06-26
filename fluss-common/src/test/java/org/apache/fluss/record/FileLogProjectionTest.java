@@ -983,4 +983,150 @@ class FileLogProjectionTest {
             }
         }
     }
+
+    @Test
+    void testForThreadReusesInstanceOnSameThreadAndCache() {
+        ProjectionPushdownCache cache = new ProjectionPushdownCache();
+        FileLogProjection first = FileLogProjection.forThread(cache);
+        FileLogProjection second = FileLogProjection.forThread(cache);
+        // same thread + same cache -> the instance is pooled and reused
+        assertThat(second).isSameAs(first);
+    }
+
+    @Test
+    void testForThreadRebuildsOnDifferentCache() {
+        ProjectionPushdownCache cacheA = new ProjectionPushdownCache();
+        ProjectionPushdownCache cacheB = new ProjectionPushdownCache();
+        FileLogProjection forA = FileLogProjection.forThread(cacheA);
+        FileLogProjection forB = FileLogProjection.forThread(cacheB);
+        // a different cache on the same thread must not reuse the previous instance
+        assertThat(forB).isNotSameAs(forA);
+        // and switching back to the first cache rebuilds again (we only hold one per thread)
+        assertThat(FileLogProjection.forThread(cacheA)).isNotSameAs(forA);
+    }
+
+    @Test
+    void testForThreadIsThreadBound() throws Exception {
+        ProjectionPushdownCache cache = new ProjectionPushdownCache();
+        FileLogProjection mainThreadInstance = FileLogProjection.forThread(cache);
+        List<FileLogProjection> otherThreadInstance = new ArrayList<>();
+        Thread other =
+                new Thread(() -> otherThreadInstance.add(FileLogProjection.forThread(cache)));
+        other.start();
+        other.join();
+        assertThat(otherThreadInstance).hasSize(1);
+        // each thread gets its own pooled instance
+        assertThat(otherThreadInstance.get(0)).isNotSameAs(mainThreadInstance);
+    }
+
+    @Test
+    void testResetClearsTransientState() throws Exception {
+        FileLogProjection projection = new FileLogProjection(new ProjectionPushdownCache());
+        projection.setCurrentProjection(
+                7L, testingSchemaGetter, DEFAULT_COMPRESSION, new int[] {0});
+        projection.reset();
+        // after reset the per-fetch projection is no longer configured; projecting without
+        // re-configuring must fail because there is no projection registered.
+        FileLogRecords fileLogRecords =
+                createFileLogRecords(
+                        2, LOG_MAGIC_VALUE_V2, TestData.DATA2_ROW_TYPE, TestData.DATA2);
+        assertThatThrownBy(
+                        () ->
+                                projection.project(
+                                        fileLogRecords.channel(),
+                                        0,
+                                        fileLogRecords.sizeInBytes(),
+                                        Integer.MAX_VALUE))
+                .isInstanceOf(NullPointerException.class);
+    }
+
+    @Test
+    void testReusedInstanceKeepsPreviousBytesViewValid() throws Exception {
+        // Critical invariant for pooling: the BytesView produced by an earlier project() call must
+        // remain fully decodable after the same pooled instance is reset and used for a later
+        // project() call (as happens when one fetch request iterates multiple buckets, and across
+        // fetches on the same handler thread). This holds because produced views never alias the
+        // instance's reusable scratch buffers.
+        int schemaIdForData2 = 2;
+        ProjectionPushdownCache cache = new ProjectionPushdownCache();
+
+        FileLogRecords firstRecords =
+                createFileLogRecords(
+                        schemaIdForData2,
+                        LOG_MAGIC_VALUE_V2,
+                        TestData.DATA2_ROW_TYPE,
+                        TestData.DATA2);
+        FileLogRecords secondRecords = FileLogRecords.open(new File(tempDir, "second.tmp"));
+        secondRecords.append(
+                createRecordsWithoutBaseLogOffset(
+                        TestData.DATA2_ROW_TYPE,
+                        schemaIdForData2,
+                        0L,
+                        System.currentTimeMillis(),
+                        LOG_MAGIC_VALUE_V2,
+                        TestData.DATA2,
+                        LogFormat.ARROW));
+        secondRecords.flush();
+
+        FileLogProjection projection = FileLogProjection.forThread(cache);
+        projection.setCurrentProjection(
+                1L, testingSchemaGetter, DEFAULT_COMPRESSION, new int[] {0, 2});
+        BytesView firstView =
+                projection
+                        .project(
+                                firstRecords.channel(),
+                                0,
+                                firstRecords.sizeInBytes(),
+                                Integer.MAX_VALUE)
+                        .getBytesView();
+
+        // Reuse the same pooled instance for a second projection BEFORE decoding the first view.
+        FileLogProjection reused = FileLogProjection.forThread(cache);
+        assertThat(reused).isSameAs(projection);
+        reused.setCurrentProjection(1L, testingSchemaGetter, DEFAULT_COMPRESSION, new int[] {1});
+        BytesView secondView =
+                reused.project(
+                                secondRecords.channel(),
+                                0,
+                                secondRecords.sizeInBytes(),
+                                Integer.MAX_VALUE)
+                        .getBytesView();
+
+        // Now decode the FIRST view: it must still contain the original projected columns (a, c).
+        assertReadableProjection(firstView, new int[] {0, 2}, schemaIdForData2, new int[] {0, 2});
+        // And the second view must contain its own projected column (b).
+        assertReadableProjection(secondView, new int[] {1}, schemaIdForData2, new int[] {1});
+    }
+
+    private void assertReadableProjection(
+            BytesView view, int[] projectedFields, int schemaId, int[] expectedSourceColumns)
+            throws Exception {
+        LogRecords projectedRecords = new BytesViewLogRecords(view);
+        RowType projectedType = TestData.DATA2_ROW_TYPE.project(projectedFields);
+        try (LogRecordReadContext context =
+                createArrowReadContext(projectedType, schemaId, testingSchemaGetter)) {
+            for (LogRecordBatch projectedBatch : projectedRecords.batches()) {
+                try (CloseableIterator<LogRecord> records = projectedBatch.records(context)) {
+                    int recordCount = 0;
+                    while (records.hasNext()) {
+                        LogRecord record = records.next();
+                        InternalRow row = record.getRow();
+                        assertThat(row.getFieldCount()).isEqualTo(expectedSourceColumns.length);
+                        for (int i = 0; i < expectedSourceColumns.length; i++) {
+                            int sourceCol = expectedSourceColumns[i];
+                            Object[] expectedRow = TestData.DATA2.get(recordCount);
+                            if (sourceCol == 0) {
+                                assertThat(row.getInt(i)).isEqualTo(expectedRow[0]);
+                            } else {
+                                assertThat(row.getString(i).toString())
+                                        .isEqualTo(expectedRow[sourceCol]);
+                            }
+                        }
+                        recordCount++;
+                    }
+                    assertThat(recordCount).isEqualTo(TestData.DATA2.size());
+                }
+            }
+        }
+    }
 }
