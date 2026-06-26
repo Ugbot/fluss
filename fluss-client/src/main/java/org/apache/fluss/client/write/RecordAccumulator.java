@@ -66,6 +66,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.apache.fluss.record.LogRecordBatchFormat.NO_BATCH_SEQUENCE;
 import static org.apache.fluss.record.LogRecordBatchFormat.NO_WRITER_ID;
 import static org.apache.fluss.shaded.arrow.org.apache.arrow.memory.BufferAllocatorUtil.createBufferAllocator;
+import static org.apache.fluss.utils.Preconditions.checkArgument;
 import static org.apache.fluss.utils.Preconditions.checkNotNull;
 
 /* This file is based on source code of Apache Kafka Project (https://kafka.apache.org/), licensed by the Apache
@@ -181,6 +182,10 @@ public final class RecordAccumulator {
             int bucketId,
             boolean abortIfBatchFull)
             throws Exception {
+        checkNotNull(writeRecord, "writeRecord must not be null");
+        checkNotNull(callback, "callback must not be null");
+        checkNotNull(cluster, "cluster must not be null");
+        checkArgument(bucketId >= 0, "bucketId must be non-negative, but was %s", bucketId);
         PhysicalTablePath physicalTablePath = writeRecord.getPhysicalTablePath();
         TableInfo tableInfo = writeRecord.getTableInfo();
         // The metadata may return null for the partition id, but it is fine to pass null here,
