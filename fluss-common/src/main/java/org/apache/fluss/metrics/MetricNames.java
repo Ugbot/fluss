@@ -48,6 +48,8 @@ public class MetricNames {
 
     // for coordinator event processor
     public static final String EVENT_QUEUE_SIZE = "eventQueueSize";
+    // total pending events across all types in the coordinator event queue (pool-wide gauge)
+    public static final String EVENT_QUEUE_BACKLOG = "eventQueueBacklog";
     public static final String EVENT_QUEUE_TIME_MS = "eventQueueTimeMs";
     public static final String EVENT_PROCESSING_TIME_MS = "eventProcessingTimeMs";
 

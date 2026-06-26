@@ -28,7 +28,6 @@ import org.openjdk.jmh.annotations.Benchmark;
 import org.openjdk.jmh.annotations.Fork;
 import org.openjdk.jmh.annotations.Level;
 import org.openjdk.jmh.annotations.Measurement;
-import org.openjdk.jmh.annotations.OperationsPerInvocation;
 import org.openjdk.jmh.annotations.OutputTimeUnit;
 import org.openjdk.jmh.annotations.Param;
 import org.openjdk.jmh.annotations.Scope;
@@ -167,7 +166,6 @@ public class KvPreWriteBufferBenchmark {
      * Builds the map from empty to {@code entryCount} live entries within the invocation.
      */
     @Benchmark
-    @OperationsPerInvocation(1)
     public void putThenGet(Blackhole blackhole) {
         KvPreWriteBuffer buffer = new KvPreWriteBuffer(NOOP_BATCH_WRITER, metricGroup);
         for (int i = 0; i < entryCount; i++) {
@@ -181,7 +179,6 @@ public class KvPreWriteBufferBenchmark {
      * with no write or resize interference.
      */
     @Benchmark
-    @OperationsPerInvocation(1)
     public void getExisting(Blackhole blackhole) {
         for (int i = 0; i < entryCount; i++) {
             blackhole.consume(populatedBuffer.get(keys[i]));

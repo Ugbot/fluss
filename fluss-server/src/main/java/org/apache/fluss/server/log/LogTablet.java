@@ -588,7 +588,10 @@ public final class LogTablet {
             @Nullable FileLogProjection projection,
             @Nullable FilterContext filterContext)
             throws IOException {
-        checkArgument(readOffset >= 0, "readOffset must be non-negative, but was %s", readOffset);
+        // NOTE: readOffset is intentionally NOT validated as non-negative here. fetch_offset is
+        // client-supplied and negative/out-of-range values must reach LocalLog.read so it raises
+        // LogOffsetOutOfRangeException (an ApiException) which ReplicaManager handles gracefully
+        // (out-of-range / remote-log redirect) rather than logging an unexpected error.
         checkArgument(maxLength >= 0, "maxLength must be non-negative, but was %s", maxLength);
         checkNotNull(fetchIsolation, "fetchIsolation must not be null");
         LogOffsetMetadata maxOffsetMetadata = null;

@@ -1786,17 +1786,6 @@ public class ConfigOptions {
                     .withDescription(
                             "The number of threads that the server uses to schedule snapshot kv data for all the replicas in the server.");
 
-    public static final ConfigOption<Integer> KV_SNAPSHOT_ASYNC_OPERATION_MAX_PENDING =
-            key("kv.snapshot.async-operation.max-pending")
-                    .intType()
-                    .defaultValue(1024)
-                    .withDescription(
-                            "The maximum number of pending async snapshot operations (upload/cleanup) "
-                                    + "queued per tablet server. The queue is bounded to prevent unbounded "
-                                    + "memory growth when snapshots are produced faster than they can be "
-                                    + "uploaded; once the bound is reached, the submitting (scheduler) "
-                                    + "thread runs the operation itself, applying natural backpressure.");
-
     /**
      * @deprecated This option is deprecated. Please use {@link ConfigOptions#SERVER_IO_POOL_SIZE}
      *     instead.

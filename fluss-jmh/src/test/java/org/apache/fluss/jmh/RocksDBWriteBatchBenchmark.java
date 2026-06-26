@@ -100,31 +100,19 @@ public class RocksDBWriteBatchBenchmark {
     private WriteBatch batch;
     private Path dbDir;
 
-    /** Pre-generated, deterministic key/value payloads reused every invocation. */
+    /**
+     * Pre-generated, deterministic key/value payloads; each key's prefix is stamped per invocation.
+     */
     private byte[][] keys;
 
     private byte[][] values;
 
+    /** Monotonic per-invocation counter, written into each key prefix so writes are distinct. */
+    private long invocation;
+
     @Setup(Level.Trial)
-    public void setup() throws Exception {
+    public void setupTrial() throws Exception {
         NativeLibraryLoader.getInstance().loadLibrary(null);
-
-        dbDir = Files.createTempDirectory("fluss-jmh-rocksdb-writebatch-");
-
-        // Open a RocksDB instance with a write-batch-flush-shaped configuration:
-        // WAL is disabled on writes (see WriteOptions below), matching the wrapper.
-        org.rocksdb.Options options =
-                new org.rocksdb.Options().setCreateIfMissing(true).setDisableAutoCompactions(false);
-        db = RocksDB.open(options, dbDir.toString());
-        // The Options object is only needed to open the DB; once open RocksDB owns its own copy.
-        options.close();
-
-        // Disable WAL on writes, exactly as RocksDBWriteBatchWrapper does.
-        writeOptions = new WriteOptions().setDisableWAL(true);
-
-        // RocksDB's WriteBatch is sized in bytes; the wrapper uses capacity * PER_RECORD_BYTES.
-        // PER_RECORD_BYTES in the wrapper is 100; mirror that initial reservation.
-        batch = new WriteBatch(batchSize * 100);
 
         // Deterministically pre-generate payloads so the put() loop measures RocksDB, not RNG.
         Random random = new Random(RANDOM_SEED);
@@ -140,8 +128,26 @@ public class RocksDBWriteBatchBenchmark {
         }
     }
 
-    @TearDown(Level.Trial)
-    public void teardown() throws Exception {
+    // A FRESH DB per iteration bounds on-disk growth (each invocation writes DISTINCT keys, the
+    // realistic insert workload), and auto-compactions are DISABLED so the measurement is
+    // stationary
+    // within the iteration instead of drifting as background compaction kicks in.
+    @Setup(Level.Iteration)
+    public void setupIteration() throws Exception {
+        dbDir = Files.createTempDirectory("fluss-jmh-rocksdb-writebatch-");
+        // WAL is disabled on writes (see WriteOptions) to match RocksDBWriteBatchWrapper.
+        org.rocksdb.Options options =
+                new org.rocksdb.Options().setCreateIfMissing(true).setDisableAutoCompactions(true);
+        db = RocksDB.open(options, dbDir.toString());
+        options.close();
+        writeOptions = new WriteOptions().setDisableWAL(true);
+        // Mirror the wrapper's initial reservation: capacity * PER_RECORD_BYTES (100).
+        batch = new WriteBatch(batchSize * 100);
+        invocation = 0;
+    }
+
+    @TearDown(Level.Iteration)
+    public void teardownIteration() throws Exception {
         if (batch != null) {
             batch.close();
         }
@@ -157,6 +163,28 @@ public class RocksDBWriteBatchBenchmark {
     }
 
     /**
+     * Stamps the current invocation counter into the first 8 bytes of every key (and the index into
+     * bytes 8-9) so each flushed batch inserts DISTINCT keys rather than repeatedly overwriting a
+     * fixed key set.
+     */
+    private void stampKeys() {
+        long n = invocation++;
+        for (int i = 0; i < batchSize; i++) {
+            byte[] k = keys[i];
+            k[0] = (byte) (n >>> 56);
+            k[1] = (byte) (n >>> 48);
+            k[2] = (byte) (n >>> 40);
+            k[3] = (byte) (n >>> 32);
+            k[4] = (byte) (n >>> 24);
+            k[5] = (byte) (n >>> 16);
+            k[6] = (byte) (n >>> 8);
+            k[7] = (byte) n;
+            k[8] = (byte) (i >>> 8);
+            k[9] = (byte) i;
+        }
+    }
+
+    /**
      * Builds a full batch of {@code batchSize} puts and flushes it, mirroring {@code
      * RocksDBWriteBatchWrapper.flushIfNeeded()} -&gt; {@code flush()}. Reported as average time per
      * whole-batch flush.
@@ -164,6 +192,7 @@ public class RocksDBWriteBatchBenchmark {
     @Benchmark
     @BenchmarkMode(Mode.AverageTime)
     public void flushBatch() throws RocksDBException {
+        stampKeys();
         batch.clear();
         for (int i = 0; i < batchSize; i++) {
             batch.put(keys[i], values[i]);
@@ -175,6 +204,7 @@ public class RocksDBWriteBatchBenchmark {
     @Benchmark
     @BenchmarkMode(Mode.Throughput)
     public void flushBatchThroughput() throws RocksDBException {
+        stampKeys();
         batch.clear();
         for (int i = 0; i < batchSize; i++) {
             batch.put(keys[i], values[i]);

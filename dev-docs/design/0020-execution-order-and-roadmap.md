@@ -86,12 +86,18 @@ Each phase is **benchmark-gated** (no perf change lands without a before/after J
 - Exit criteria: builds/tests on JDK 25; baseline delta recorded. No behaviour change.
 
 ### Phase 3 — TigerStyle safety (low risk, improves p99)
-- [x] Bound the unbounded server queues + add backpressure/shed: `kv/KvSnapshotResource`
-      (bounded + `CallerRunsPolicy`, `kv.snapshot.async-operation.max-pending`) and
-      `log/remote/RemoteLogIndexCache` (bounded backstop). `coordinator/event/CoordinatorEventManager`
-      is intentionally left unbounded (its single thread re-enqueues; a bounded blocking queue would
-      self-deadlock) but now has an `eventQueueSize` gauge + a `coordinator.event-queue.warn-threshold`
-      backlog warning.
+- [x] Bound/observe the unbounded server queues. NOTE (post adversarial-review): two of the three
+      candidates must STAY unbounded for correctness, so the fix is observability + safe handling,
+      not a hard cap:
+      - `kv/KvSnapshotResource`: kept UNBOUNDED. Its producer submits while holding the KV tablet
+        write lock (`kvLock`), so a bounded blocking/CallerRunsPolicy queue would run a heavy remote
+        upload inline under the lock and stall all writes. (An earlier bounded+CallerRunsPolicy
+        attempt was reverted.)
+      - `log/remote/RemoteLogIndexCache`: bounded backstop (10k) AND on `offer` rejection it now runs
+        the entry cleanup SYNCHRONOUSLY (else the already-renamed `.deleted` index files + mmap leak).
+      - `coordinator/event/CoordinatorEventManager`: kept unbounded (single thread re-enqueues →
+        bounded blocking queue would self-deadlock); added an `eventQueueBacklog` gauge +
+        `coordinator.event-queue.warn-threshold` backlog warning.
 - [ ] **HFT:** where a bounded queue sits on the request hot path, prefer a **lock-free ring
       buffer (LMAX Disruptor or Agrona `OneToOneRingBuffer`/`ManyToOneRingBuffer`)** over
       `(Array|Linked)BlockingQueue` — single-writer, mechanical-sympathy, configurable wait

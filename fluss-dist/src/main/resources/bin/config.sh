@@ -138,7 +138,6 @@ KEY_ENV_SSH_OPTS="env.ssh.opts"
 KEY_ZK_HEAP_MB="zookeeper.heap.mb"
 
 KEY_REMOTE_DATA_DIR="remote.data.dir"
-KEY_SERVER_BUFFER_MEMORY_SIZE="server.buffer.memory-size"
 
 ########################################################################################################################
 # PATHS AND CONFIG
@@ -331,7 +330,24 @@ fi
 #
 #     DEFAULT_GC_OPTS="-XX:+UseG1GC"
 #
-DEFAULT_GC_OPTS="-XX:+UseZGC -XX:+ZGenerational"
+# Chooses the default GC by JVM version. JAVA_SPEC_VERSION is computed above when
+# this file is sourced. IMPORTANT: -XX:+UseZGC is an EXPERIMENTAL option on JDK
+# 11/17 and makes the JVM FAIL TO START there -- and -XX:+IgnoreUnrecognizedVMOptions
+# does NOT suppress experimental-option errors -- so we must only select ZGC on a
+# JDK that supports it as a product option:
+#   - JDK 23+  : -XX:+UseZGC          (generational is the default; +ZGenerational is deprecated)
+#   - JDK 21-22: -XX:+UseZGC -XX:+ZGenerational
+#   - JDK < 21 : -XX:+UseG1GC         (safe default; ZGC not a product option / not generational)
+selectDefaultGcOpts() {
+    local v="${JAVA_SPEC_VERSION:-0}"
+    if [[ $(( v >= 23 )) == 1 ]]; then
+        echo "-XX:+UseZGC"
+    elif [[ $(( v >= 21 )) == 1 ]]; then
+        echo "-XX:+UseZGC -XX:+ZGenerational"
+    else
+        echo "-XX:+UseG1GC"
+    fi
+}
 
 # If FLUSS_ENV_JAVA_OPTS was already exported in the environment (so the
 # env.java.opts.all read above was skipped), treat that as operator-supplied JVM
@@ -341,91 +357,10 @@ if [ -z "${FLUSS_ENV_JAVA_OPTS_USER_SET}" ]; then
 fi
 
 # Returns the default JVM options Fluss applies when the operator has NOT set any
-# of their own JVM options. This selects Generational ZGC and, when the
-# configured server buffer memory size is discoverable from conf/server.yaml,
-# wires a sensible -XX:MaxDirectMemorySize so the direct-buffer pool can hold the
-# server's write buffers (Arrow / write-ahead-log) plus headroom.
-#
-# $1: optional, the value of the role-specific FLUSS_ENV_JAVA_OPTS (CS or TS).
-#     The caller passes this so we only apply defaults when BOTH the shared and
-#     the role-specific opts are empty.
+# of their own JVM options: a version-appropriate default GC. We deliberately do
+# NOT set -XX:MaxDirectMemorySize -- the direct-buffer pool is shared by the write
+# buffers, Netty and Arrow, so a value derived from server.buffer.memory-size alone
+# is unsafe; let the JVM default apply (operators can override via env.java.opts.*).
 constructDefaultJavaOpts() {
-    local role_opts="$1"
-
-    # Only apply defaults when the operator has supplied no JVM options at all.
-    # FLUSS_ENV_JAVA_OPTS is seeded with "-XX:+IgnoreUnrecognizedVMOptions" (and
-    # possibly a security-manager flag) even when env.java.opts.all is empty, so
-    # we cannot test it directly here; the caller is responsible for detecting
-    # whether the user actually configured env.java.opts.all and only invoking
-    # this helper when they did not.
-    local default_opts="${DEFAULT_GC_OPTS}"
-
-    # Derive a default -XX:MaxDirectMemorySize from server.buffer.memory-size when
-    # it is configured as a plain "<number><unit>" value (e.g. "256mb", "2gb").
-    # We give the direct-buffer pool the configured buffer size plus 64mb of
-    # headroom for transient Arrow / Netty allocations. If the value is missing or
-    # not in a form we can safely parse, we leave -XX:MaxDirectMemorySize unset and
-    # let the JVM default apply.
-    local buffer_size
-    buffer_size=$(readFromConfig ${KEY_SERVER_BUFFER_MEMORY_SIZE} "" "${YAML_CONF}")
-    local direct_mem_mb
-    direct_mem_mb=$(directMemoryMbFromBufferSize "${buffer_size}")
-    if [ -n "${direct_mem_mb}" ]; then
-        default_opts="${default_opts} -XX:MaxDirectMemorySize=${direct_mem_mb}m"
-    fi
-
-    echo "${default_opts}"
-}
-
-# Converts a Fluss MemorySize string (e.g. "256mb", "2 gb", "1073741824b",
-# "512kb") into an integer number of megabytes plus 64mb of headroom, suitable for
-# -XX:MaxDirectMemorySize. Echoes nothing when the input is empty or cannot be
-# parsed, so callers can simply test for an empty result.
-directMemoryMbFromBufferSize() {
-    local raw="$1"
-
-    # Strip whitespace and lower-case the unit so "256 MB" and "256mb" both work.
-    raw=$(echo "${raw}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
-    if [ -z "${raw}" ]; then
-        return 0
-    fi
-
-    # Split into the numeric part and the (optional) unit suffix.
-    local num
-    local unit
-    num=$(echo "${raw}" | sed -n 's/^\([0-9][0-9]*\).*$/\1/p')
-    unit=$(echo "${raw}" | sed -n 's/^[0-9][0-9]*\(.*\)$/\1/p')
-
-    # Bail out if there was no leading number (unparseable value).
-    if [ -z "${num}" ]; then
-        return 0
-    fi
-
-    local bytes
-    case "${unit}" in
-        ""|"b"|"bytes")
-            bytes=${num}
-            ;;
-        "k"|"kb"|"kibibytes")
-            bytes=$((num * 1024))
-            ;;
-        "m"|"mb"|"mebibytes")
-            bytes=$((num * 1024 * 1024))
-            ;;
-        "g"|"gb"|"gibibytes")
-            bytes=$((num * 1024 * 1024 * 1024))
-            ;;
-        "t"|"tb"|"tebibytes")
-            bytes=$((num * 1024 * 1024 * 1024 * 1024))
-            ;;
-        *)
-            # Unknown unit; do not guess.
-            return 0
-            ;;
-    esac
-
-    # Convert to MB (rounding up) and add 64mb of headroom.
-    local mb
-    mb=$(((bytes + 1024 * 1024 - 1) / (1024 * 1024)))
-    echo $((mb + 64))
+    selectDefaultGcOpts
 }

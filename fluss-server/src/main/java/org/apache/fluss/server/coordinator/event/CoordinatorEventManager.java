@@ -122,7 +122,7 @@ public final class CoordinatorEventManager implements EventManager {
                         MetricNames.EVENT_QUEUE_TIME_MS,
                         new DescriptiveStatisticsHistogram(WINDOW_SIZE));
 
-        coordinatorMetricGroup.gauge(MetricNames.EVENT_QUEUE_SIZE, queue::size);
+        coordinatorMetricGroup.gauge(MetricNames.EVENT_QUEUE_BACKLOG, queue::size);
 
         // Register coordinator metrics
         coordinatorMetricGroup.gauge(MetricNames.ACTIVE_COORDINATOR_COUNT, () -> 1);

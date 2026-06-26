@@ -463,10 +463,15 @@ public class RemoteLogIndexCache implements Closeable {
         try {
             entry.markForCleanup();
             if (!expiredIndexes.offer(entry)) {
-                LOG.error(
-                        "Error while inserting entry {} for key {} into the cleaner queue because queue is full.",
+                // The cleaner queue is full (cleaner thread wedged or far behind). markForCleanup()
+                // has already renamed the index files to ".deleted"; if we merely logged and
+                // dropped the entry, those files and their mmap'd buffers would leak permanently
+                // (startup only sweeps ".tmp", not ".deleted"). Clean up synchronously instead.
+                LOG.warn(
+                        "Cleaner queue full; cleaning up entry {} for key {} synchronously.",
                         entry,
                         key);
+                entry.cleanup();
             }
         } catch (IOException e) {
             throw new FlussRuntimeException(e);
