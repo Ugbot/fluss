@@ -26,9 +26,6 @@ dependency-reduced-pom.xml
 .claude/
 .qoder/
 
-### dev-docs (local-only research / ADRs) ###
-dev-docs/
-
 ### Mac OS ###
 .DS_Store
 
@@ -51,3 +48,8 @@ website/versioned_docs
 website/versioned_sidebars
 website/versions.json
 website/pnpm-lock.yaml
+
+# local ad-hoc Kafka probe scripts + generated docgen output (not for the repo)
+/lo-test.py
+/version-check.py
+fluss-docgen/website/

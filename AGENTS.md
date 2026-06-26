@@ -36,40 +36,20 @@ import org.apache.zookeeper.*                           // → org.apache.fluss.
 
 ### Java Version Compatibility
 
-**Source level: Java 8** — All code MUST compile with JDK 8. CI enforces this via `compile-on-jdk8`.
+**Source/target level: Java 25** — this fork has hard-broken from upstream's Java 8 baseline to Java 25
+(`target.java.version=25` in the root pom; the full reactor is verified building on Temurin 25). CI builds
+on JDK 25; the old `compile-on-jdk8` job and the `java8` Maven profile have been removed.
 
-**Build requirement:** Java 11 is required to build the project, but all source code must remain Java 8 compatible.
+**Build requirement:** JDK 25 (e.g. Temurin 25.x). NOTE: the `./mvnw` wrapper is currently broken on a
+distribution SHA mismatch — use system Maven. Modern Java is **allowed and encouraged** where it improves
+clarity or performance: `var`, `List.of`/`Map.of`/`Set.of`, `Optional.isEmpty`, `String.strip`/`isBlank`,
+`Stream.toList`, records, switch expressions, text blocks, pattern matching, `java.lang.foreign` (FFM),
+and virtual threads.
 
-**FORBIDDEN Java 9+ features:**
-```java
-// ❌ var keyword (Java 10)
-var list = new ArrayList<>();  // → ✅ ArrayList<String> list = new ArrayList<>();
-
-// ❌ List.of(), Map.of(), Set.of() (Java 9)
-List.of("a", "b")              // → ✅ Arrays.asList("a", "b")
-Map.of("k", "v")               // → ✅ Collections.singletonMap("k", "v")
-Set.of("a", "b")               // → ✅ new HashSet<>(Arrays.asList("a", "b"))
-
-// ❌ Optional.isEmpty() (Java 11)
-optional.isEmpty()             // → ✅ !optional.isPresent()
-
-// ❌ String.strip(), String.isBlank() (Java 11)
-string.strip()                 // → ✅ string.trim()
-string.isBlank()               // → ✅ string.trim().isEmpty()
-
-// ❌ Stream.toList() (Java 16)
-stream.toList()                // → ✅ stream.collect(Collectors.toList())
-
-// ❌ Map.entry() (Java 9)
-Map.entry("k", "v")            // → ✅ new AbstractMap.SimpleEntry<>("k", "v")
-
-// ❌ InputStream.transferTo() (Java 9)
-inputStream.transferTo(out)    // → ✅ IOUtils.copyBytes(inputStream, out)
-
-// ❌ Switch expressions, text blocks, records, sealed classes, pattern matching
-```
-
-**FORBIDDEN language features:** Switch expressions (Java 12), text blocks (Java 13), records (Java 14), sealed classes (Java 17), pattern matching (Java 16+)
+> History: code written before the migration is still Java-8-idiomatic — no need to mass-rewrite it, but
+> new code should target Java 25. The `--add-exports`/`--add-opens` args stay in the pom until the FFM
+> migration (roadmap Phase 6) removes the remaining `sun.misc.Unsafe` usage. Spotless/google-java-format
+> must be on a JDK-25-compatible version (see Build & CI).
 
 ### Testing
 
