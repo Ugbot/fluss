@@ -31,11 +31,8 @@
     <modules>
         <module>fluss-fs-hadoop</module>
         <module>fluss-fs-hadoop-shaded</module>
-        <module>fluss-fs-oss</module>
         <module>fluss-fs-s3</module>
         <module>fluss-fs-gs</module>
-        <module>fluss-fs-azure</module>
-        <module>fluss-fs-obs</module>
         <module>fluss-fs-cos</module>
         <module>fluss-fs-hdfs</module>
     </modules>
