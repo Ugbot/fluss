@@ -25,8 +25,10 @@ import org.apache.fluss.utils.concurrent.ExecutorThreadFactory;
 
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Containing resources needed to do kv snapshot. It contains:
@@ -89,22 +91,23 @@ public class KvSnapshotResource {
                         conf.getInt(ConfigOptions.KV_SNAPSHOT_SCHEDULER_THREAD_NUM),
                         new ExecutorThreadFactory("periodic-snapshot-scheduler-" + serverId));
 
-        // Thread pool for the async part of kv snapshot. Concurrency is intentionally UNBOUNDED:
+        // Thread pool for the async part of kv snapshot. The work queue is intentionally UNBOUNDED:
         // the producer (PeriodicSnapshotManager.triggerSnapshot) submits while holding the KV
         // tablet write lock (kvLock), so the submit path must never block and must never run work
-        // inline on the caller. Bounding the worker count with a blocking or CallerRunsPolicy
-        // handler would run a heavy remote snapshot upload inline under kvLock, stalling all writes
-        // to the tablet.
-        // The async work is purely blocking remote I/O (snapshot file upload), so a
-        // virtual-thread-per-task executor is a natural fit: each submitted snapshot gets its own
-        // virtual thread, the platform carrier threads are released during blocking I/O, and there
-        // is no platform-thread cap to queue behind. Memory growth is bounded in practice by the
-        // snapshot scheduling interval; observe in-flight task count via metrics if a backlog is a
-        // concern.
-        ThreadFactory asyncOperationsThreadFactory =
-                Thread.ofVirtual().name("fluss-kv-snapshot-async-operations-", 0).factory();
+        // inline on the caller. A bounded queue with a blocking or CallerRunsPolicy handler would
+        // run a heavy remote snapshot upload inline under kvLock, stalling all writes to the
+        // tablet.
+        // Memory growth here is bounded in practice by the snapshot scheduling interval; if a
+        // backlog is a concern, observe pool/queue size via metrics rather than bounding this
+        // queue.
         ExecutorService asyncOperationsThreadPool =
-                Executors.newThreadPerTaskExecutor(asyncOperationsThreadFactory);
+                new ThreadPoolExecutor(
+                        0,
+                        3,
+                        60L,
+                        TimeUnit.SECONDS,
+                        new LinkedBlockingQueue<>(),
+                        new ExecutorThreadFactory("fluss-kv-snapshot-async-operations"));
         return new KvSnapshotResource(
                 kvSnapshotScheduler,
                 kvSnapshotDataUploader,
