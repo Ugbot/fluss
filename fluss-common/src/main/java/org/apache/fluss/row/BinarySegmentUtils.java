@@ -29,7 +29,6 @@ import org.apache.fluss.utils.MurmurHashUtils;
 import java.io.IOException;
 import java.nio.ByteOrder;
 
-import static org.apache.fluss.memory.MemoryUtils.UNSAFE;
 import static org.apache.fluss.row.BinarySection.HIGHEST_FIRST_BIT;
 import static org.apache.fluss.row.BinarySection.HIGHEST_SECOND_TO_EIGHTH_BIT;
 
@@ -56,7 +55,10 @@ public final class BinarySegmentUtils {
 
     private static final int MAX_CHARS_LENGTH = 1024 * 32;
 
-    private static final int BYTE_ARRAY_BASE_OFFSET = UNSAFE.arrayBaseOffset(byte[].class);
+    // Relative base offset for heap byte[] passed to MurmurHashUtils. Under the Foreign Function &
+    // Memory API the array view is addressed with relative offsets starting at 0, so this is 0 (the
+    // former value was sun.misc.Unsafe.arrayBaseOffset(byte[].class)).
+    private static final int BYTE_ARRAY_BASE_OFFSET = 0;
 
     private static final ThreadLocal<byte[]> BYTES_LOCAL = new ThreadLocal<>();
     private static final ThreadLocal<char[]> CHARS_LOCAL = new ThreadLocal<>();
