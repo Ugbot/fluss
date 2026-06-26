@@ -98,19 +98,6 @@ public final class MemorySegment {
     public static final boolean LITTLE_ENDIAN =
             (ByteOrder.nativeOrder() == ByteOrder.LITTLE_ENDIAN);
 
-    /**
-     * The beginning of the byte array contents, relative to the byte array object.
-     *
-     * <p>This is used <b>only</b> by the legacy {@link #copyToUnsafe(int, Object, int, int)} /
-     * {@link #copyFromUnsafe(int, Object, int, int)} bridge methods, whose callers pass an absolute
-     * {@code byte[]} pointer (a relative index already biased by this base offset). The FFM port
-     * recovers the relative index by subtracting this constant before copying via {@link
-     * java.lang.foreign.MemorySegment#ofArray(byte[])}. No other method references it. The hot-path
-     * accessors are fully FFM-based and do not use {@code sun.misc.Unsafe}.
-     */
-    private static final long BYTE_ARRAY_BASE_OFFSET =
-            MemoryUtils.UNSAFE.arrayBaseOffset(byte[].class);
-
     // ------------------------------------------------------------------------
 
     /**
@@ -1443,52 +1430,54 @@ public final class MemorySegment {
     }
 
     /**
-     * Bulk copy method. Copies {@code numBytes} bytes to target unsafe object and pointer. NOTE:
-     * This is an unsafe method, no check here, please be careful.
+     * Bulk copy method. Copies {@code numBytes} bytes from this memory segment, starting at {@code
+     * offset}, into the target {@code byte[]} starting at {@code targetIndex}.
+     *
+     * <p>NOTE: this performs no bounds check on the target array beyond what {@link
+     * java.lang.foreign.MemorySegment#copy} enforces; please be careful.
      *
      * @param offset The position where the bytes are started to be read from in this memory
      *     segment.
-     * @param target The unsafe memory to copy the bytes to.
-     * @param targetPointer The position in the target unsafe memory to copy the chunk to.
+     * @param target The {@code byte[]} to copy the bytes to.
+     * @param targetIndex The (relative) element index in the target array to copy the chunk to.
      * @param numBytes The number of bytes to copy.
      * @throws IndexOutOfBoundsException If the source segment does not contain the given number of
      *     bytes (starting from offset).
      */
-    public void copyToUnsafe(int offset, Object target, int targetPointer, int numBytes) {
+    public void copyToUnsafe(int offset, Object target, int targetIndex, int numBytes) {
         if ((long) offset + numBytes > size) {
             throw new IndexOutOfBoundsException(
                     String.format("offset=%d, numBytes=%d, size=%d", offset, numBytes, this.size));
         }
-        // Legacy bridge: the target is always a byte[] and targetPointer is the destination index
-        // biased by the array base offset. Recover the relative index and copy via FFM. See the
-        // BYTE_ARRAY_BASE_OFFSET javadoc.
+        // The target is always a byte[] and targetIndex is the destination element index. Copy via
+        // FFM; no sun.misc.Unsafe and no array-base-offset arithmetic is involved.
         final byte[] targetArray = (byte[]) target;
-        final int targetIndex = (int) (targetPointer - BYTE_ARRAY_BASE_OFFSET);
         java.lang.foreign.MemorySegment.copy(
                 ffm, ValueLayout.JAVA_BYTE, offset, targetArray, targetIndex, numBytes);
     }
 
     /**
-     * Bulk copy method. Copies {@code numBytes} bytes from source unsafe object and pointer. NOTE:
-     * This is an unsafe method, no check here, please be careful.
+     * Bulk copy method. Copies {@code numBytes} bytes from the source {@code byte[]}, starting at
+     * {@code sourceIndex}, into this memory segment starting at {@code offset}.
      *
-     * @param offset The position where the bytes are started to be write in this memory segment.
-     * @param source The unsafe memory to copy the bytes from.
-     * @param sourcePointer The position in the source unsafe memory to copy the chunk from.
+     * <p>NOTE: this performs no bounds check on the source array beyond what {@link
+     * java.lang.foreign.MemorySegment#copy} enforces; please be careful.
+     *
+     * @param offset The position where the bytes are started to be written in this memory segment.
+     * @param source The {@code byte[]} to copy the bytes from.
+     * @param sourceIndex The (relative) element index in the source array to copy the chunk from.
      * @param numBytes The number of bytes to copy.
      * @throws IndexOutOfBoundsException If this segment can not contain the given number of bytes
      *     (starting from offset).
      */
-    public void copyFromUnsafe(int offset, Object source, int sourcePointer, int numBytes) {
+    public void copyFromUnsafe(int offset, Object source, int sourceIndex, int numBytes) {
         if ((long) offset + numBytes > size) {
             throw new IndexOutOfBoundsException(
                     String.format("offset=%d, numBytes=%d, size=%d", offset, numBytes, this.size));
         }
-        // Legacy bridge: the source is always a byte[] and sourcePointer is the source index biased
-        // by the array base offset. Recover the relative index and copy via FFM. See the
-        // BYTE_ARRAY_BASE_OFFSET javadoc.
+        // The source is always a byte[] and sourceIndex is the source element index. Copy via FFM;
+        // no sun.misc.Unsafe and no array-base-offset arithmetic is involved.
         final byte[] sourceArray = (byte[]) source;
-        final int sourceIndex = (int) (sourcePointer - BYTE_ARRAY_BASE_OFFSET);
         java.lang.foreign.MemorySegment.copy(
                 sourceArray, sourceIndex, ffm, ValueLayout.JAVA_BYTE, offset, numBytes);
     }

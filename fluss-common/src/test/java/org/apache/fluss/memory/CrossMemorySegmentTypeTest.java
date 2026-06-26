@@ -30,8 +30,6 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * org.apache.fluss.memory.MemorySegment}.
  */
 public class CrossMemorySegmentTypeTest {
-    private static final long BYTE_ARRAY_BASE_OFFSET =
-            MemoryUtils.UNSAFE.arrayBaseOffset(byte[].class);
 
     private final int pageSize = 32 * 1024;
 
@@ -185,12 +183,10 @@ public class CrossMemorySegmentTypeTest {
 
             seg1.put(thisPos, bytes);
             seg1.copyTo(thisPos, seg2, otherPos, numBytes);
-            seg1.copyToUnsafe(
-                    thisPos, unsafeCopy, (int) (otherPos + BYTE_ARRAY_BASE_OFFSET), numBytes);
+            seg1.copyToUnsafe(thisPos, unsafeCopy, otherPos, numBytes);
 
             int otherPos2 = random.nextInt(pageSize - numBytes);
-            unsafeCopySeg.copyFromUnsafe(
-                    otherPos2, unsafeCopy, (int) (otherPos + BYTE_ARRAY_BASE_OFFSET), numBytes);
+            unsafeCopySeg.copyFromUnsafe(otherPos2, unsafeCopy, otherPos, numBytes);
             assertThat(unsafeCopySeg.equalTo(seg2, otherPos2, otherPos, numBytes)).isTrue();
         }
 
