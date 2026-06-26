@@ -24,13 +24,14 @@ import javax.annotation.Nullable;
 import java.io.DataInput;
 import java.io.DataOutput;
 import java.io.IOException;
+import java.lang.foreign.Arena;
+import java.lang.foreign.ValueLayout;
 import java.nio.BufferOverflowException;
 import java.nio.BufferUnderflowException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.ReadOnlyBufferException;
 
-import static org.apache.fluss.memory.MemoryUtils.getByteBufferAddress;
 import static org.apache.fluss.utils.Preconditions.checkNotNull;
 
 /* This file is based on source code of Apache Flink Project (https://flink.apache.org/), licensed by the Apache
@@ -67,11 +68,28 @@ import static org.apache.fluss.utils.Preconditions.checkNotNull;
 @Internal
 public final class MemorySegment {
 
-    /** The unsafe handle for transparent memory copied (heap / off-heap). */
-    private static final sun.misc.Unsafe UNSAFE = MemoryUtils.UNSAFE;
+    /**
+     * Native-order, byte-aligned (unaligned-tolerant) value layouts used for all multi-byte scalar
+     * access.
+     *
+     * <p>The accessors below address memory at arbitrary byte offsets (e.g. {@code index}), so the
+     * access is unaligned by construction. The {@code *_UNALIGNED} layouts permit this; the aligned
+     * {@link ValueLayout} constants would throw on a misaligned offset and additionally pay an
+     * alignment check. The native byte order preserves the previous {@code Unsafe.get*}/{@code
+     * Unsafe.put*} semantics: those read/wrote in machine order, and the public little/big-endian
+     * variants then flip via {@code reverseBytes} exactly as before.
+     */
+    private static final ValueLayout.OfChar CHAR_NE =
+            ValueLayout.JAVA_CHAR_UNALIGNED.withOrder(ByteOrder.nativeOrder());
 
-    /** The beginning of the byte array contents, relative to the byte array object. */
-    private static final long BYTE_ARRAY_BASE_OFFSET = UNSAFE.arrayBaseOffset(byte[].class);
+    private static final ValueLayout.OfShort SHORT_NE =
+            ValueLayout.JAVA_SHORT_UNALIGNED.withOrder(ByteOrder.nativeOrder());
+
+    private static final ValueLayout.OfInt INT_NE =
+            ValueLayout.JAVA_INT_UNALIGNED.withOrder(ByteOrder.nativeOrder());
+
+    private static final ValueLayout.OfLong LONG_NE =
+            ValueLayout.JAVA_LONG_UNALIGNED.withOrder(ByteOrder.nativeOrder());
 
     /**
      * Constant that flags the byte order. Because this is a boolean constant, the JIT compiler can
@@ -80,7 +98,31 @@ public final class MemorySegment {
     public static final boolean LITTLE_ENDIAN =
             (ByteOrder.nativeOrder() == ByteOrder.LITTLE_ENDIAN);
 
+    /**
+     * The beginning of the byte array contents, relative to the byte array object.
+     *
+     * <p>This is used <b>only</b> by the legacy {@link #copyToUnsafe(int, Object, int, int)} /
+     * {@link #copyFromUnsafe(int, Object, int, int)} bridge methods, whose callers pass an absolute
+     * {@code byte[]} pointer (a relative index already biased by this base offset). The FFM port
+     * recovers the relative index by subtracting this constant before copying via {@link
+     * java.lang.foreign.MemorySegment#ofArray(byte[])}. No other method references it. The hot-path
+     * accessors are fully FFM-based and do not use {@code sun.misc.Unsafe}.
+     */
+    private static final long BYTE_ARRAY_BASE_OFFSET =
+            MemoryUtils.UNSAFE.arrayBaseOffset(byte[].class);
+
     // ------------------------------------------------------------------------
+
+    /**
+     * The Foreign Function &amp; Memory backing of this segment.
+     *
+     * <p>For on-heap segments this is a heap segment created via {@link
+     * java.lang.foreign.MemorySegment#ofArray(byte[])} over {@link #heapMemory}; for off-heap
+     * segments this is a native segment (arena-allocated, or a view over a wrapped direct {@link
+     * ByteBuffer}). It is sized exactly {@link #size} bytes and addressed with relative offsets.
+     * Holding this reference keeps the native memory reachable for the segment's lifetime.
+     */
+    private final java.lang.foreign.MemorySegment ffm;
 
     /**
      * The heap byte array object relative to which we access the memory.
@@ -98,45 +140,54 @@ public final class MemorySegment {
      */
     @Nullable private final ByteBuffer offHeapBuffer;
 
-    /**
-     * The address to the data, relative to the heap memory byte array. If the heap memory byte
-     * array is <tt>null</tt>, this becomes an absolute memory address outside the heap.
-     */
-    private long address;
-
-    /**
-     * The address one byte after the last addressable byte, i.e. <tt>address + size</tt> while the
-     * segment is not disposed.
-     */
-    private final long addressLimit;
-
     /** The size in bytes of the memory segment. */
     private final int size;
 
     /**
-     * Creates a new memory segment that represents the memory of the byte array.
+     * Flags whether this segment has been freed. Replaces the former {@code address > addressLimit}
+     * sentinel. Marked {@code volatile} so a concurrent {@link #free()} is observed by accessors.
+     */
+    private volatile boolean freed;
+
+    /**
+     * Creates a new memory segment backed by the given FFM segment.
      *
-     * <p>Since the byte array is backed by on-heap memory, this memory segment holds its data on
-     * heap. The buffer must be at least of size 8 bytes.
+     * @param ffm the Foreign Function &amp; Memory backing (heap or native), sized {@code size}
+     * @param heapMemory the heap array iff on-heap, otherwise {@code null}
+     * @param offHeapBuffer the wrapped direct buffer iff off-heap, otherwise {@code null}
+     * @param size the size in bytes of the segment
      */
     private MemorySegment(
+            java.lang.foreign.MemorySegment ffm,
             @Nullable byte[] heapMemory,
             @Nullable ByteBuffer offHeapBuffer,
-            long address,
             int size) {
+        this.ffm = ffm;
         this.heapMemory = heapMemory;
         this.offHeapBuffer = offHeapBuffer;
-        this.address = address;
         this.size = size;
-        this.addressLimit = this.address + this.size;
+        this.freed = false;
     }
 
     public static MemorySegment wrap(byte[] buffer) {
-        return new MemorySegment(buffer, null, BYTE_ARRAY_BASE_OFFSET, buffer.length);
+        return new MemorySegment(
+                java.lang.foreign.MemorySegment.ofArray(buffer), buffer, null, buffer.length);
     }
 
     public static MemorySegment wrapOffHeapMemory(ByteBuffer buffer) {
-        return new MemorySegment(null, buffer, getByteBufferAddress(buffer), buffer.capacity());
+        // Preserve the historical contract: the segment spans the buffer's FULL capacity and is
+        // addressed by absolute offsets from element 0 (the previous implementation used the
+        // direct buffer's base address + buffer.capacity() as size, independent of the buffer's
+        // current position/limit). MemorySegment.ofBuffer(...) honors position/limit, so view a
+        // full-range duplicate to obtain the same [0, capacity) coverage. The original buffer is
+        // retained for getOffHeapBuffer()/wrap(int,int), which already address absolutely.
+        ByteBuffer fullRange = buffer.duplicate();
+        fullRange.clear();
+        return new MemorySegment(
+                java.lang.foreign.MemorySegment.ofBuffer(fullRange),
+                null,
+                buffer,
+                buffer.capacity());
     }
 
     public static MemorySegment allocateHeapMemory(int size) {
@@ -144,7 +195,15 @@ public final class MemorySegment {
     }
 
     public static MemorySegment allocateOffHeapMemory(int size) {
-        return wrapOffHeapMemory(ByteBuffer.allocateDirect(size));
+        // Back the off-heap segment with an automatic arena so its native memory is reclaimed by
+        // the GC once this segment becomes unreachable, preserving the previous "fire and forget"
+        // direct-ByteBuffer cleaner semantics with no lifecycle API change. The resulting native
+        // FFM segment is exposed as a direct ByteBuffer for getOffHeapBuffer()/wrap(int,int).
+        java.lang.foreign.MemorySegment native0 = Arena.ofAuto().allocate(size);
+        // Match java.nio.ByteBuffer.allocateDirect(...)'s default BIG_ENDIAN order so the buffer
+        // exposed by getOffHeapBuffer()/wrap(int,int) is byte-for-byte equivalent to before.
+        ByteBuffer view = native0.asByteBuffer().order(ByteOrder.BIG_ENDIAN);
+        return new MemorySegment(native0, null, view, size);
     }
 
     // ------------------------------------------------------------------------
@@ -166,7 +225,7 @@ public final class MemorySegment {
      * @return <tt>true</tt>, if the memory segment has been freed, <tt>false</tt> otherwise.
      */
     public boolean isFreed() {
-        return address > addressLimit;
+        return freed;
     }
 
     /**
@@ -177,12 +236,14 @@ public final class MemorySegment {
      * memory segment object has become garbage collected.
      */
     public void free() {
-        if (isFreed()) {
+        if (freed) {
             throw new IllegalStateException("MemorySegment can be freed only once!");
         }
-        // this ensures we can place no more data and trigger
-        // the checks for the freed segment
-        address = addressLimit + 1;
+        // this ensures we can place no more data and trigger the checks for the freed segment.
+        // The actual native memory (if off-heap) is reclaimed by the owning arena: standalone
+        // off-heap segments use an automatic (GC-driven) arena, matching the previous
+        // direct-ByteBuffer cleaner behavior.
+        freed = true;
     }
 
     /**
@@ -231,7 +292,10 @@ public final class MemorySegment {
      */
     public long getAddress() {
         if (heapMemory == null) {
-            return address;
+            // The returned address is only valid for the lifetime of this segment's backing native
+            // memory (kept alive by the {@link #ffm} reference / owning arena); callers must not
+            // perform pointer arithmetic that outlives this segment.
+            return ffm.address();
         } else {
             throw new IllegalStateException("Memory segment does not represent off heap memory");
         }
@@ -253,7 +317,7 @@ public final class MemorySegment {
     }
 
     private ByteBuffer wrapInternal(int offset, int length) {
-        if (address <= addressLimit) {
+        if (!freed) {
             if (heapMemory != null) {
                 return ByteBuffer.wrap(heapMemory, offset, length);
             } else {
@@ -295,10 +359,9 @@ public final class MemorySegment {
      *     size of the memory segment.
      */
     public byte get(int index) {
-        final long pos = address + index;
-        if (index >= 0 && pos < addressLimit) {
-            return UNSAFE.getByte(heapMemory, pos);
-        } else if (address > addressLimit) {
+        if (index >= 0 && index < size && !freed) {
+            return ffm.get(ValueLayout.JAVA_BYTE, index);
+        } else if (freed) {
             throw new IllegalStateException("segment has been freed");
         } else {
             // index is in fact invalid
@@ -315,10 +378,9 @@ public final class MemorySegment {
      *     size of the memory segment.
      */
     public void put(int index, byte b) {
-        final long pos = address + index;
-        if (index >= 0 && pos < addressLimit) {
-            UNSAFE.putByte(heapMemory, pos, b);
-        } else if (address > addressLimit) {
+        if (index >= 0 && index < size && !freed) {
+            ffm.set(ValueLayout.JAVA_BYTE, index, b);
+        } else if (freed) {
             throw new IllegalStateException("segment has been freed");
         } else {
             // index is in fact invalid
@@ -373,17 +435,16 @@ public final class MemorySegment {
             throw new IndexOutOfBoundsException();
         }
 
-        final long pos = address + index;
-        if (index >= 0 && pos <= addressLimit - length) {
-            final long arrayAddress = BYTE_ARRAY_BASE_OFFSET + offset;
-            UNSAFE.copyMemory(heapMemory, pos, dst, arrayAddress, length);
-        } else if (address > addressLimit) {
+        if (index >= 0 && index <= size - length && !freed) {
+            java.lang.foreign.MemorySegment.copy(
+                    ffm, ValueLayout.JAVA_BYTE, index, dst, offset, length);
+        } else if (freed) {
             throw new IllegalStateException("segment has been freed");
         } else {
             throw new IndexOutOfBoundsException(
                     String.format(
                             "pos: %d, length: %d, index: %d, offset: %d",
-                            pos, length, index, offset));
+                            (long) index, length, index, offset));
         }
     }
 
@@ -405,12 +466,10 @@ public final class MemorySegment {
             throw new IndexOutOfBoundsException();
         }
 
-        final long pos = address + index;
-
-        if (index >= 0 && pos <= addressLimit - length) {
-            final long arrayAddress = BYTE_ARRAY_BASE_OFFSET + offset;
-            UNSAFE.copyMemory(src, arrayAddress, heapMemory, pos, length);
-        } else if (address > addressLimit) {
+        if (index >= 0 && index <= size - length && !freed) {
+            java.lang.foreign.MemorySegment.copy(
+                    src, offset, ffm, ValueLayout.JAVA_BYTE, index, length);
+        } else if (freed) {
             throw new IllegalStateException("segment has been freed");
         } else {
             // index is in fact invalid
@@ -472,12 +531,10 @@ public final class MemorySegment {
      * @throws IndexOutOfBoundsException Thrown, if the index is negative, or larger than the
      *     segment size minus 2.
      */
-    @SuppressWarnings("restriction")
     public char getCharNativeEndian(int index) {
-        final long pos = address + index;
-        if (index >= 0 && pos <= addressLimit - 2) {
-            return UNSAFE.getChar(heapMemory, pos);
-        } else if (address > addressLimit) {
+        if (index >= 0 && index <= size - 2 && !freed) {
+            return ffm.get(CHAR_NE, index);
+        } else if (freed) {
             throw new IllegalStateException("This segment has been freed.");
         } else {
             // index is in fact invalid
@@ -535,12 +592,10 @@ public final class MemorySegment {
      * @throws IndexOutOfBoundsException Thrown, if the index is negative, or larger than the
      *     segment size minus 2.
      */
-    @SuppressWarnings("restriction")
     public void putCharNativeEndian(int index, char value) {
-        final long pos = address + index;
-        if (index >= 0 && pos <= addressLimit - 2) {
-            UNSAFE.putChar(heapMemory, pos, value);
-        } else if (address > addressLimit) {
+        if (index >= 0 && index <= size - 2 && !freed) {
+            ffm.set(CHAR_NE, index, value);
+        } else if (freed) {
             throw new IllegalStateException("segment has been freed");
         } else {
             // index is in fact invalid
@@ -601,10 +656,9 @@ public final class MemorySegment {
      *     segment size minus 2.
      */
     public short getShortNativeEndian(int index) {
-        final long pos = address + index;
-        if (index >= 0 && pos <= addressLimit - 2) {
-            return UNSAFE.getShort(heapMemory, pos);
-        } else if (address > addressLimit) {
+        if (index >= 0 && index <= size - 2 && !freed) {
+            return ffm.get(SHORT_NE, index);
+        } else if (freed) {
             throw new IllegalStateException("segment has been freed");
         } else {
             // index is in fact invalid
@@ -664,10 +718,9 @@ public final class MemorySegment {
      *     segment size minus 2.
      */
     public void putShortNativeEndian(int index, short value) {
-        final long pos = address + index;
-        if (index >= 0 && pos <= addressLimit - 2) {
-            UNSAFE.putShort(heapMemory, pos, value);
-        } else if (address > addressLimit) {
+        if (index >= 0 && index <= size - 2 && !freed) {
+            ffm.set(SHORT_NE, index, value);
+        } else if (freed) {
             throw new IllegalStateException("segment has been freed");
         } else {
             // index is in fact invalid
@@ -732,10 +785,9 @@ public final class MemorySegment {
      *     segment size minus 4.
      */
     public int getIntNativeEndian(int index) {
-        final long pos = address + index;
-        if (index >= 0 && pos <= addressLimit - 4) {
-            return UNSAFE.getInt(heapMemory, pos);
-        } else if (address > addressLimit) {
+        if (index >= 0 && index <= size - 4 && !freed) {
+            return ffm.get(INT_NE, index);
+        } else if (freed) {
             throw new IllegalStateException("segment has been freed");
         } else {
             // index is in fact invalid
@@ -811,10 +863,9 @@ public final class MemorySegment {
      *     segment size minus 4.
      */
     public void putIntNativeEndian(int index, int value) {
-        final long pos = address + index;
-        if (index >= 0 && pos <= addressLimit - 4) {
-            UNSAFE.putInt(heapMemory, pos, value);
-        } else if (address > addressLimit) {
+        if (index >= 0 && index <= size - 4 && !freed) {
+            ffm.set(INT_NE, index, value);
+        } else if (freed) {
             throw new IllegalStateException("segment has been freed");
         } else {
             // index is in fact invalid
@@ -879,10 +930,9 @@ public final class MemorySegment {
      *     segment size minus 8.
      */
     public long getLongNativeEndian(int index) {
-        final long pos = address + index;
-        if (index >= 0 && pos <= addressLimit - 8) {
-            return UNSAFE.getLong(heapMemory, pos);
-        } else if (address > addressLimit) {
+        if (index >= 0 && index <= size - 8 && !freed) {
+            return ffm.get(LONG_NE, index);
+        } else if (freed) {
             throw new IllegalStateException("segment has been freed");
         } else {
             // index is in fact invalid
@@ -946,10 +996,9 @@ public final class MemorySegment {
      *     segment size minus 8.
      */
     public void putLongNativeEndian(int index, long value) {
-        final long pos = address + index;
-        if (index >= 0 && pos <= addressLimit - 8) {
-            UNSAFE.putLong(heapMemory, pos, value);
-        } else if (address > addressLimit) {
+        if (index >= 0 && index <= size - 8 && !freed) {
+            ffm.set(LONG_NE, index, value);
+        } else if (freed) {
             throw new IllegalStateException("segment has been freed");
         } else {
             // index is in fact invalid
@@ -1188,7 +1237,7 @@ public final class MemorySegment {
     // -------------------------------------------------------------------------
 
     public void get(DataOutput out, int offset, int length) throws IOException {
-        if (address <= addressLimit) {
+        if (!freed) {
             if (heapMemory != null) {
                 out.write(heapMemory, offset, length);
             } else {
@@ -1220,7 +1269,7 @@ public final class MemorySegment {
      *     End-Of-File.
      */
     public void put(DataInput in, int offset, int length) throws IOException {
-        if (address <= addressLimit) {
+        if (!freed) {
             if (heapMemory != null) {
                 in.readFully(heapMemory, offset, length);
             } else {
@@ -1274,13 +1323,18 @@ public final class MemorySegment {
 
         if (target.isDirect()) {
             // copy to the target memory directly
-            final long targetPointer = getByteBufferAddress(target) + targetOffset;
-            final long sourcePointer = address + offset;
-
-            if (sourcePointer <= addressLimit - numBytes) {
-                UNSAFE.copyMemory(heapMemory, sourcePointer, null, targetPointer, numBytes);
+            if (offset >= 0 && offset <= size - numBytes && !freed) {
+                // ofBuffer(target) is bounded to the buffer's [position, limit) range, so the
+                // destination base already starts at targetOffset (== target.position()); copy to
+                // relative offset 0 within that view.
+                java.lang.foreign.MemorySegment.copy(
+                        ffm,
+                        offset,
+                        java.lang.foreign.MemorySegment.ofBuffer(target),
+                        0,
+                        numBytes);
                 target.position(targetOffset + numBytes);
-            } else if (address > addressLimit) {
+            } else if (freed) {
                 throw new IllegalStateException("segment has been freed");
             } else {
                 throw new IndexOutOfBoundsException();
@@ -1330,13 +1384,18 @@ public final class MemorySegment {
 
         if (source.isDirect()) {
             // copy to the target memory directly
-            final long sourcePointer = getByteBufferAddress(source) + sourceOffset;
-            final long targetPointer = address + offset;
-
-            if (targetPointer <= addressLimit - numBytes) {
-                UNSAFE.copyMemory(null, sourcePointer, heapMemory, targetPointer, numBytes);
+            if (offset >= 0 && offset <= size - numBytes && !freed) {
+                // ofBuffer(source) is bounded to the buffer's [position, limit) range, so the source
+                // base already starts at sourceOffset (== source.position()); copy from relative
+                // offset 0 within that view.
+                java.lang.foreign.MemorySegment.copy(
+                        java.lang.foreign.MemorySegment.ofBuffer(source),
+                        0,
+                        ffm,
+                        offset,
+                        numBytes);
                 source.position(sourceOffset + numBytes);
-            } else if (address > addressLimit) {
+            } else if (freed) {
                 throw new IllegalStateException("segment has been freed");
             } else {
                 throw new IndexOutOfBoundsException();
@@ -1371,23 +1430,22 @@ public final class MemorySegment {
      *     does not have enough space for the bytes (counting from targetOffset).
      */
     public void copyTo(int offset, MemorySegment target, int targetOffset, int numBytes) {
-        final long thisPointer = this.address + offset;
-        final long otherPointer = target.address + targetOffset;
-
         if ((numBytes | offset | targetOffset) >= 0
-                && thisPointer <= this.addressLimit - numBytes
-                && otherPointer <= target.addressLimit - numBytes) {
-            UNSAFE.copyMemory(
-                    this.heapMemory, thisPointer, target.heapMemory, otherPointer, numBytes);
-        } else if (this.address > this.addressLimit) {
+                && offset <= this.size - numBytes
+                && targetOffset <= target.size - numBytes
+                && !this.freed
+                && !target.freed) {
+            java.lang.foreign.MemorySegment.copy(
+                    this.ffm, offset, target.ffm, targetOffset, numBytes);
+        } else if (this.freed) {
             throw new IllegalStateException("this memory segment has been freed.");
-        } else if (target.address > target.addressLimit) {
+        } else if (target.freed) {
             throw new IllegalStateException("target memory segment has been freed.");
         } else {
             throw new IndexOutOfBoundsException(
                     String.format(
-                            "offset=%d, targetOffset=%d, numBytes=%d, address=%d, targetAddress=%d",
-                            offset, targetOffset, numBytes, this.address, target.address));
+                            "offset=%d, targetOffset=%d, numBytes=%d, size=%d, targetSize=%d",
+                            offset, targetOffset, numBytes, this.size, target.size));
         }
     }
 
@@ -1404,13 +1462,17 @@ public final class MemorySegment {
      *     bytes (starting from offset).
      */
     public void copyToUnsafe(int offset, Object target, int targetPointer, int numBytes) {
-        final long thisPointer = this.address + offset;
-        if (thisPointer + numBytes > addressLimit) {
+        if ((long) offset + numBytes > size) {
             throw new IndexOutOfBoundsException(
-                    String.format(
-                            "offset=%d, numBytes=%d, address=%d", offset, numBytes, this.address));
+                    String.format("offset=%d, numBytes=%d, size=%d", offset, numBytes, this.size));
         }
-        UNSAFE.copyMemory(this.heapMemory, thisPointer, target, targetPointer, numBytes);
+        // Legacy bridge: the target is always a byte[] and targetPointer is the destination index
+        // biased by the array base offset. Recover the relative index and copy via FFM. See the
+        // BYTE_ARRAY_BASE_OFFSET javadoc.
+        final byte[] targetArray = (byte[]) target;
+        final int targetIndex = (int) (targetPointer - BYTE_ARRAY_BASE_OFFSET);
+        java.lang.foreign.MemorySegment.copy(
+                ffm, ValueLayout.JAVA_BYTE, offset, targetArray, targetIndex, numBytes);
     }
 
     /**
@@ -1425,13 +1487,17 @@ public final class MemorySegment {
      *     (starting from offset).
      */
     public void copyFromUnsafe(int offset, Object source, int sourcePointer, int numBytes) {
-        final long thisPointer = this.address + offset;
-        if (thisPointer + numBytes > addressLimit) {
+        if ((long) offset + numBytes > size) {
             throw new IndexOutOfBoundsException(
-                    String.format(
-                            "offset=%d, numBytes=%d, address=%d", offset, numBytes, this.address));
+                    String.format("offset=%d, numBytes=%d, size=%d", offset, numBytes, this.size));
         }
-        UNSAFE.copyMemory(source, sourcePointer, this.heapMemory, thisPointer, numBytes);
+        // Legacy bridge: the source is always a byte[] and sourcePointer is the source index biased
+        // by the array base offset. Recover the relative index and copy via FFM. See the
+        // BYTE_ARRAY_BASE_OFFSET javadoc.
+        final byte[] sourceArray = (byte[]) source;
+        final int sourceIndex = (int) (sourcePointer - BYTE_ARRAY_BASE_OFFSET);
+        java.lang.foreign.MemorySegment.copy(
+                sourceArray, sourceIndex, ffm, ValueLayout.JAVA_BYTE, offset, numBytes);
     }
 
     // -------------------------------------------------------------------------
@@ -1502,24 +1568,25 @@ public final class MemorySegment {
     public void swapBytes(
             byte[] tempBuffer, MemorySegment seg2, int offset1, int offset2, int len) {
         if ((offset1 | offset2 | len | (tempBuffer.length - len)) >= 0) {
-            final long thisPos = this.address + offset1;
-            final long otherPos = seg2.address + offset2;
-
-            if (thisPos <= this.addressLimit - len && otherPos <= seg2.addressLimit - len) {
+            if (offset1 <= this.size - len
+                    && offset2 <= seg2.size - len
+                    && !this.freed
+                    && !seg2.freed) {
                 // this -> temp buffer
-                UNSAFE.copyMemory(
-                        this.heapMemory, thisPos, tempBuffer, BYTE_ARRAY_BASE_OFFSET, len);
+                java.lang.foreign.MemorySegment.copy(
+                        this.ffm, ValueLayout.JAVA_BYTE, offset1, tempBuffer, 0, len);
 
                 // other -> this
-                UNSAFE.copyMemory(seg2.heapMemory, otherPos, this.heapMemory, thisPos, len);
+                java.lang.foreign.MemorySegment.copy(
+                        seg2.ffm, offset2, this.ffm, offset1, len);
 
                 // temp buffer -> other
-                UNSAFE.copyMemory(
-                        tempBuffer, BYTE_ARRAY_BASE_OFFSET, seg2.heapMemory, otherPos, len);
+                java.lang.foreign.MemorySegment.copy(
+                        tempBuffer, 0, seg2.ffm, ValueLayout.JAVA_BYTE, offset2, len);
                 return;
-            } else if (this.address > this.addressLimit) {
+            } else if (this.freed) {
                 throw new IllegalStateException("this memory segment has been freed.");
-            } else if (seg2.address > seg2.addressLimit) {
+            } else if (seg2.freed) {
                 throw new IllegalStateException("other memory segment has been freed.");
             }
         }
@@ -1527,8 +1594,8 @@ public final class MemorySegment {
         // index is in fact invalid
         throw new IndexOutOfBoundsException(
                 String.format(
-                        "offset1=%d, offset2=%d, len=%d, bufferSize=%d, address1=%d, address2=%d",
-                        offset1, offset2, len, tempBuffer.length, this.address, seg2.address));
+                        "offset1=%d, offset2=%d, len=%d, bufferSize=%d, size1=%d, size2=%d",
+                        offset1, offset2, len, tempBuffer.length, this.size, seg2.size));
     }
 
     /**

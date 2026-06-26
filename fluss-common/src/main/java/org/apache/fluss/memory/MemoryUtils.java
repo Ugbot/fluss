@@ -20,7 +20,6 @@ package org.apache.fluss.memory;
 import org.apache.fluss.annotation.Internal;
 
 import java.lang.reflect.Field;
-import java.nio.Buffer;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 
@@ -35,15 +34,20 @@ import static org.apache.fluss.utils.Preconditions.checkState;
 /** Utility class for memory operations. */
 @Internal
 public class MemoryUtils {
-    /** The "unsafe", which can be used to perform native memory accesses. */
+    /**
+     * The "unsafe" handle.
+     *
+     * <p>The hot-path primitive accessors and off-heap lifecycle of {@link MemorySegment} no longer
+     * use this handle: those have been migrated to the Java Foreign Function &amp; Memory API
+     * ({@link java.lang.foreign.MemorySegment} / {@link java.lang.foreign.Arena}). The handle is
+     * retained only for the few remaining heap {@code byte[]} base-offset / typed bulk-copy helpers
+     * outside this class that have not yet been migrated. New code MUST NOT add usages.
+     */
     @SuppressWarnings({"restriction", "UseOfSunClasses"})
     public static final sun.misc.Unsafe UNSAFE = getUnsafe();
 
     /** The native byte order of the platform on which the system currently runs. */
     public static final ByteOrder NATIVE_BYTE_ORDER = ByteOrder.nativeOrder();
-
-    private static final long BUFFER_ADDRESS_FIELD_OFFSET =
-            getClassFieldOffset(Buffer.class, "address");
 
     @SuppressWarnings("restriction")
     private static sun.misc.Unsafe getUnsafe() {
@@ -67,33 +71,14 @@ public class MemoryUtils {
         }
     }
 
-    private static long getClassFieldOffset(
-            @SuppressWarnings("SameParameterValue") Class<?> cl, String fieldName) {
-        try {
-            return UNSAFE.objectFieldOffset(cl.getDeclaredField(fieldName));
-        } catch (SecurityException e) {
-            throw new Error(
-                    getClassFieldOffsetErrorMessage(cl, fieldName)
-                            + ", permission denied by security manager.",
-                    e);
-        } catch (NoSuchFieldException e) {
-            throw new Error(getClassFieldOffsetErrorMessage(cl, fieldName), e);
-        } catch (Throwable t) {
-            throw new Error(
-                    getClassFieldOffsetErrorMessage(cl, fieldName) + ", unclassified error", t);
-        }
-    }
-
-    private static String getClassFieldOffsetErrorMessage(Class<?> cl, String fieldName) {
-        return "Could not get field '"
-                + fieldName
-                + "' offset in class '"
-                + cl
-                + "' for unsafe operations";
-    }
-
     /**
      * Get native memory address wrapped by the given {@link ByteBuffer}.
+     *
+     * <p>This is implemented on top of the Java Foreign Function &amp; Memory API: the direct buffer
+     * is viewed as a {@link java.lang.foreign.MemorySegment} via {@link
+     * java.lang.foreign.MemorySegment#ofBuffer(ByteBuffer)} and its base {@link
+     * java.lang.foreign.MemorySegment#address()} is returned. No reflective access to the private
+     * {@code java.nio.Buffer#address} field is required.
      *
      * @param buffer {@link ByteBuffer} which wraps the native memory address to get
      * @return native memory address wrapped by the given {@link ByteBuffer}
@@ -104,9 +89,9 @@ public class MemoryUtils {
 
         long offHeapAddress;
         try {
-            offHeapAddress = UNSAFE.getLong(buffer, BUFFER_ADDRESS_FIELD_OFFSET);
+            offHeapAddress = java.lang.foreign.MemorySegment.ofBuffer(buffer).address();
         } catch (Throwable t) {
-            throw new Error("Could not access direct byte buffer address field.", t);
+            throw new Error("Could not access direct byte buffer address.", t);
         }
 
         checkState(offHeapAddress > 0, "negative pointer or size");
