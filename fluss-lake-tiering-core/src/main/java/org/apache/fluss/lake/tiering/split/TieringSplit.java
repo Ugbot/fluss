@@ -92,9 +92,14 @@ public abstract class TieringSplit {
     /** Returns the unique identifier of this split. */
     public abstract String splitId();
 
-    /** Checks whether this split is a primary key table split to tier. */
-    public final boolean isTieringSnapshotSplit() {
-        return getClass() == TieringSnapshotSplit.class;
+    /**
+     * Checks whether this split is a primary key table split to tier.
+     *
+     * <p>Not {@code final}: engine adapters (e.g. the Flink tiering source) subclass this base with
+     * their own concrete split types and override this to discriminate on those types.
+     */
+    public boolean isTieringSnapshotSplit() {
+        return this instanceof TieringSnapshotSplit;
     }
 
     /** Casts this split into a {@link TieringSnapshotSplit}. */
@@ -102,9 +107,14 @@ public abstract class TieringSplit {
         return (TieringSnapshotSplit) this;
     }
 
-    /** Checks whether this split is a log split to tier. */
-    public final boolean isTieringLogSplit() {
-        return getClass() == TieringLogSplit.class;
+    /**
+     * Checks whether this split is a log split to tier.
+     *
+     * <p>Not {@code final}: engine adapters (e.g. the Flink tiering source) subclass this base with
+     * their own concrete split types and override this to discriminate on those types.
+     */
+    public boolean isTieringLogSplit() {
+        return this instanceof TieringLogSplit;
     }
 
     /**

@@ -24,34 +24,19 @@ import org.apache.flink.api.connector.source.SourceSplit;
 
 import javax.annotation.Nullable;
 
-import java.util.Objects;
-
-/** The base table split for tiering service. */
-public abstract class TieringSplit implements SourceSplit {
-
-    public static final byte TIERING_SNAPSHOT_SPLIT_FLAG = 1;
-    public static final byte TIERING_LOG_SPLIT_FLAG = 2;
-    public static final int UNKNOWN_SPLIT_INDEX = -1;
-    public static final long UNKNOWN_TIERING_ROUND_TIMESTAMP = -1L;
-
-    protected static final int UNKNOWN_NUMBER_OF_SPLITS = -1;
-
-    protected final TablePath tablePath;
-    protected final TableBucket tableBucket;
-    @Nullable protected final String partitionName;
-
-    // the total number of splits in one round of tiering
-    protected final int numberOfSplits;
-    // the split index in one round of tiering
-    protected final int splitIndex;
-    // the timestamp when one round of tiering was generated
-    protected final long tieringRoundTimestamp;
-
-    /**
-     * Indicates whether to skip tiering data for this split in the current round of tiering. When
-     * set to true, the split will not be processed and tiering for the split will be skipped.
-     */
-    protected boolean skipCurrentRound;
+/**
+ * The base table split for the Flink tiering source.
+ *
+ * <p>This is a thin adapter over the engine-agnostic {@link
+ * org.apache.fluss.lake.tiering.split.TieringSplit} that lives in {@code fluss-lake-tiering-core}.
+ * All of the split data and behaviour (table path, bucket, offsets, equality, etc.) is inherited
+ * from the core class; this Flink subclass only adds the Flink {@link SourceSplit} contract so the
+ * splits can flow through the Flink {@code Source}/{@code SplitEnumerator}/{@code SourceReader}
+ * runtime. The core already declares {@code splitId()} (the single method required by {@link
+ * SourceSplit}), so no extra wiring is needed beyond declaring the interface.
+ */
+public abstract class TieringSplit extends org.apache.fluss.lake.tiering.split.TieringSplit
+        implements SourceSplit {
 
     public TieringSplit(
             TablePath tablePath,
@@ -59,14 +44,7 @@ public abstract class TieringSplit implements SourceSplit {
             @Nullable String partitionName,
             int numberOfSplits,
             boolean skipCurrentRound) {
-        this(
-                tablePath,
-                tableBucket,
-                partitionName,
-                numberOfSplits,
-                skipCurrentRound,
-                UNKNOWN_SPLIT_INDEX,
-                UNKNOWN_TIERING_ROUND_TIMESTAMP);
+        super(tablePath, tableBucket, partitionName, numberOfSplits, skipCurrentRound);
     }
 
     public TieringSplit(
@@ -77,134 +55,7 @@ public abstract class TieringSplit implements SourceSplit {
             boolean skipCurrentRound,
             int splitIndex,
             long tieringRoundTimestamp) {
-        this.tablePath = tablePath;
-        this.tableBucket = tableBucket;
-        this.partitionName = partitionName;
-        if ((tableBucket.getPartitionId() == null && partitionName != null)
-                || (tableBucket.getPartitionId() != null && partitionName == null)) {
-            throw new IllegalArgumentException(
-                    "Partition name and partition id must be both null or both not null.");
-        }
-        this.numberOfSplits = numberOfSplits;
-        this.skipCurrentRound = skipCurrentRound;
-        this.splitIndex = splitIndex;
-        this.tieringRoundTimestamp = tieringRoundTimestamp;
-    }
-
-    /** Checks whether this split is a primary key table split to tier. */
-    public final boolean isTieringSnapshotSplit() {
-        return getClass() == TieringSnapshotSplit.class;
-    }
-
-    /** Casts this split into a {@link TieringSnapshotSplit}. */
-    public TieringSnapshotSplit asTieringSnapshotSplit() {
-        return (TieringSnapshotSplit) this;
-    }
-
-    /** Checks whether this split is a log split to tier. */
-    public final boolean isTieringLogSplit() {
-        return getClass() == TieringLogSplit.class;
-    }
-
-    /**
-     * Marks this split to skip reading data in the current round. Once called, the split will not
-     * be processed and data reading will be skipped.
-     */
-    public void skipCurrentRound() {
-        this.skipCurrentRound = true;
-    }
-
-    /**
-     * Returns whether this split should skip tiering data in the current round of tiering.
-     *
-     * @return true if the split should skip tiering data, false otherwise
-     */
-    public boolean shouldSkipCurrentRound() {
-        return skipCurrentRound;
-    }
-
-    /** Casts this split into a {@link TieringLogSplit}. */
-    public TieringLogSplit asTieringLogSplit() {
-        return (TieringLogSplit) this;
-    }
-
-    protected byte splitKind() {
-        if (isTieringSnapshotSplit()) {
-            return TIERING_SNAPSHOT_SPLIT_FLAG;
-        } else if (isTieringLogSplit()) {
-            return TIERING_LOG_SPLIT_FLAG;
-        } else {
-            throw new IllegalArgumentException("Unsupported split kind for " + getClass());
-        }
-    }
-
-    public int getNumberOfSplits() {
-        return numberOfSplits;
-    }
-
-    public int getSplitIndex() {
-        return splitIndex;
-    }
-
-    public boolean isFirstSplit() {
-        return splitIndex == 0;
-    }
-
-    public long getTieringRoundTimestamp() {
-        return tieringRoundTimestamp;
-    }
-
-    protected static String toSplitId(String splitPrefix, TableBucket tableBucket) {
-        if (tableBucket.getPartitionId() != null) {
-            return splitPrefix
-                    + tableBucket.getTableId()
-                    + "-p"
-                    + tableBucket.getPartitionId()
-                    + "-"
-                    + tableBucket.getBucket();
-        } else {
-            return splitPrefix + tableBucket.getTableId() + "-" + tableBucket.getBucket();
-        }
-    }
-
-    public TablePath getTablePath() {
-        return tablePath;
-    }
-
-    public TableBucket getTableBucket() {
-        return tableBucket;
-    }
-
-    @Nullable
-    public String getPartitionName() {
-        return partitionName;
-    }
-
-    public TieringSplit copy(int numberOfSplits) {
-        return copy(numberOfSplits, splitIndex, tieringRoundTimestamp);
-    }
-
-    public abstract TieringSplit copy(
-            int numberOfSplits, int splitIndex, long tieringRoundTimestamp);
-
-    @Override
-    public boolean equals(Object object) {
-        if (!(object instanceof TieringSplit)) {
-            return false;
-        }
-        TieringSplit that = (TieringSplit) object;
-        return Objects.equals(tablePath, that.tablePath)
-                && Objects.equals(tableBucket, that.tableBucket)
-                && Objects.equals(partitionName, that.partitionName)
-                && numberOfSplits == that.numberOfSplits
-                && skipCurrentRound == that.skipCurrentRound
-                && splitIndex == that.splitIndex
-                && tieringRoundTimestamp == that.tieringRoundTimestamp;
-    }
-
-    @Override
-    public int hashCode() {
-        return Objects.hash(
+        super(
                 tablePath,
                 tableBucket,
                 partitionName,
@@ -212,5 +63,46 @@ public abstract class TieringSplit implements SourceSplit {
                 skipCurrentRound,
                 splitIndex,
                 tieringRoundTimestamp);
+    }
+
+    /**
+     * Discriminates on the Flink concrete split types. The core base discriminates on the core
+     * concrete types; the Flink adapter splits are distinct types, so the type check is overridden
+     * here to recognise the Flink ones. (The core base intentionally leaves these non-final to
+     * allow engine adapters to do exactly this.)
+     */
+    @Override
+    public boolean isTieringSnapshotSplit() {
+        return this instanceof TieringSnapshotSplit;
+    }
+
+    @Override
+    public boolean isTieringLogSplit() {
+        return this instanceof TieringLogSplit;
+    }
+
+    /**
+     * Re-exposes the core {@code splitKind()} to the {@code fluss-flink} split package so the
+     * {@link TieringSplitSerializer} (which is not a subclass and lives in a different package than
+     * the core class) can read it. Widens the inherited {@code protected} method; the inherited
+     * body already routes through the overridden {@link #isTieringSnapshotSplit()} / {@link
+     * #isTieringLogSplit()} above.
+     */
+    @Override
+    public byte splitKind() {
+        return super.splitKind();
+    }
+
+    /**
+     * Narrows the return type of the core {@code copy(...)} to the Flink {@link TieringSplit} so
+     * the Flink enumerator can keep working with {@code List<TieringSplit>} (Flink type).
+     */
+    @Override
+    public abstract TieringSplit copy(
+            int numberOfSplits, int splitIndex, long tieringRoundTimestamp);
+
+    @Override
+    public TieringSplit copy(int numberOfSplits) {
+        return copy(numberOfSplits, getSplitIndex(), getTieringRoundTimestamp());
     }
 }

@@ -91,14 +91,14 @@ public class TieringSplitSerializer implements SimpleVersionedSerializer<Tiering
         out.writeLong(split.getTieringRoundTimestamp());
         if (split.isTieringSnapshotSplit()) {
             // Snapshot split
-            TieringSnapshotSplit tieringSnapshotSplit = split.asTieringSnapshotSplit();
+            TieringSnapshotSplit tieringSnapshotSplit = (TieringSnapshotSplit) split;
             // write snapshot id
             out.writeLong(tieringSnapshotSplit.getSnapshotId());
             // write log offset of snapshot
             out.writeLong(tieringSnapshotSplit.getLogOffsetOfSnapshot());
         } else {
             // Log split
-            TieringLogSplit tieringLogSplit = split.asTieringLogSplit();
+            TieringLogSplit tieringLogSplit = (TieringLogSplit) split;
             // write starting offset
             out.writeLong(tieringLogSplit.getStartingOffset());
             // write stopping offset

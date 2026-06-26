@@ -44,6 +44,13 @@
             <version>${project.version}</version>
         </dependency>
 
+        <!-- Engine-agnostic tiering core: the Flink tiering classes are thin adapters over it. -->
+        <dependency>
+            <groupId>org.apache.fluss</groupId>
+            <artifactId>fluss-lake-tiering-core</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
         <!-- Flink dependency -->
         <dependency>
             <groupId>org.apache.flink</groupId>
