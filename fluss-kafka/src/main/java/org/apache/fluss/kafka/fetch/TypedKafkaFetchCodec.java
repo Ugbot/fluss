@@ -43,6 +43,9 @@ import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 
+import static org.apache.fluss.utils.Preconditions.checkArgument;
+import static org.apache.fluss.utils.Preconditions.checkNotNull;
+
 /**
  * Typed Fetch codec — design 0014 §5. Calls {@link RecordCodec#encodeInto} on the typed value
  * columns of a Fluss row, prepends the 5-byte Kafka SR wire frame ({@code [0x00][int32
@@ -111,6 +114,9 @@ public final class TypedKafkaFetchCodec implements KafkaFetchCodec {
 
     @Override
     public LogRecordReadContext readContext(int schemaId) {
+        // schemaId comes from the batch header (batch.schemaId()), which is always a
+        // non-negative Fluss schema id for any valid batch the transcoder iterates.
+        checkArgument(schemaId >= 0, "schemaId must be non-negative, got %s", schemaId);
         // Use the shared schemaGetter so old batches (written with an earlier Fluss schema ID)
         // are deserialized with their original schema and then projected to the current target
         // schema by DefaultLogRecordBatch via getOutputProjectedRow(). Without this, every batch
@@ -123,6 +129,12 @@ public final class TypedKafkaFetchCodec implements KafkaFetchCodec {
     @Override
     @Nullable
     public KafkaRecordView rowToKafkaRecord(InternalRow row, ChangeType type, long logOffset) {
+        // The transcoder feeds row=record.getRow() and type=record.getChangeType() (both
+        // non-null for every decoded record) and logOffset=record.logOffset() (a non-negative
+        // log offset). These are genuine invariants of the fetch hot path.
+        checkNotNull(row, "row");
+        checkNotNull(type, "type");
+        checkArgument(logOffset >= 0, "logOffset must be non-negative, got %s", logOffset);
         boolean tombstone = type == ChangeType.DELETE;
         byte[] key = row.isNullAt(COL_RECORD_KEY) ? null : row.getBytes(COL_RECORD_KEY);
         long ts = row.getTimestampLtz(colEventTime, 3).toEpochMicros() / 1000L;
