@@ -89,7 +89,12 @@ public class MemoryUtils {
 
         long offHeapAddress;
         try {
-            offHeapAddress = java.lang.foreign.MemorySegment.ofBuffer(buffer).address();
+            // MemorySegment.ofBuffer() spans [position, limit), so its address() is the address of
+            // the buffer's CURRENT position. The historical Unsafe-based contract returned the
+            // address of logical element 0 (position-independent), so subtract the position to
+            // preserve that semantics for positioned/sliced buffers.
+            offHeapAddress =
+                    java.lang.foreign.MemorySegment.ofBuffer(buffer).address() - buffer.position();
         } catch (Throwable t) {
             throw new Error("Could not access direct byte buffer address.", t);
         }
