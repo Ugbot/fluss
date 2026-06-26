@@ -73,7 +73,6 @@
         <module>fluss-test-coverage</module>
         <module>fluss-server</module>
         <module>fluss-flink</module>
-        <module>fluss-spark</module>
         <module>fluss-protogen</module>
         <module>fluss-jmh</module>
         <module>fluss-lake</module>
@@ -460,6 +459,34 @@
     </dependencyManagement>
 
     <profiles>
+        <!--
+          Opt-in profile for the Spark/Scala connectors. These pull in the Scala
+          toolchain and Spark dependencies, so they are kept out of the default,
+          lean build. Activate with -Pspark.
+        -->
+        <profile>
+            <id>spark</id>
+            <modules>
+                <module>fluss-spark</module>
+            </modules>
+        </profile>
+
+        <!--
+          Opt-in profile for the niche cloud filesystem connectors (Aliyun OSS,
+          Azure, Huawei OBS). The mainstream filesystems (hadoop, hdfs, s3, gs,
+          cos) stay in the default build; these three are reached by relative
+          path so they need not live in the fluss-filesystems aggregator.
+          Activate with -Pextra-fs.
+        -->
+        <profile>
+            <id>extra-fs</id>
+            <modules>
+                <module>fluss-filesystems/fluss-fs-oss</module>
+                <module>fluss-filesystems/fluss-fs-azure</module>
+                <module>fluss-filesystems/fluss-fs-obs</module>
+            </modules>
+        </profile>
+
         <profile>
             <id>test-coverage</id>
             <properties>
