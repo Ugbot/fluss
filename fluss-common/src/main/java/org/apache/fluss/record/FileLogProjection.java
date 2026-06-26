@@ -75,39 +75,8 @@ import static org.apache.fluss.utils.FileUtils.readFullyOrFail;
 import static org.apache.fluss.utils.Preconditions.checkNotNull;
 import static org.apache.fluss.utils.Preconditions.checkState;
 
-/**
- * Column projection util on Arrow format {@link FileLogRecords}.
- *
- * <p><b>Pooling and lifecycle.</b> Instances are relatively expensive to allocate (each holds
- * several {@link ByteBuffer} scratch buffers and a {@link ByteArrayOutputStream}), and on the fetch
- * path one used to be created per request. To remove that per-fetch allocation, callers should
- * obtain a thread-bound instance via {@link #forThread(ProjectionPushdownCache)}; each request
- * handler thread then reuses a single instance across fetches.
- *
- * <p>Reuse across fetches is safe because the {@link BytesView} produced by {@link
- * #project(FileChannel, int, int, int)} (and {@link #projectRecordBatch}) never aliases this
- * instance's reusable scratch buffers: every byte range handed to the {@link
- * MultiBytesView.Builder} is either a freshly allocated per-batch {@code byte[]} (the projected log
- * header and the serialized Arrow metadata, both copied out via {@link
- * ByteArrayOutputStream#toByteArray()}) or a direct {@link FileChannel} region. Subsequent calls
- * only mutate the scratch buffers ({@link #logHeaderBuffer}, {@link #arrowHeaderBuffer}, {@link
- * #arrowMetadataBuffer}, {@link #outputStream}), leaving previously produced views intact. As a
- * result a pooled instance may be reused on the same thread for a new fetch even before the
- * previous fetch's response has been serialized.
- *
- * <p>This class is <b>not</b> thread-safe: a single instance must only be driven by one thread at a
- * time. The thread-bound pool guarantees that invariant for the fetch path.
- */
+/** Column projection util on Arrow format {@link FileLogRecords}. */
 public class FileLogProjection {
-
-    /**
-     * Thread-bound pool of projection instances for the fetch path. Each request handler thread
-     * reuses a single {@link FileLogProjection} across fetches instead of allocating one per fetch.
-     * The held instance is keyed by the {@link ProjectionPushdownCache} it was built with so that
-     * an instance is never reused with a different cache (which would corrupt cache lookups); a
-     * thread normally only ever sees a single, server-wide cache instance.
-     */
-    private static final ThreadLocal<FileLogProjection> POOL = new ThreadLocal<>();
 
     // see the arrow binary message format in the page:
     // https://arrow.apache.org/docs/format/Columnar.html#encapsulated-message-format
@@ -145,52 +114,6 @@ public class FileLogProjection {
         this.logHeaderBuffer.order(ByteOrder.LITTLE_ENDIAN);
         // arrow force use little endian to encode int32 values
         this.arrowHeaderBuffer.order(ByteOrder.LITTLE_ENDIAN);
-    }
-
-    /**
-     * Returns a thread-bound {@link FileLogProjection} for the given projection cache, creating one
-     * on first use for the calling thread and reusing it on subsequent calls. This removes the
-     * per-fetch allocation on the request handler threads.
-     *
-     * <p>If the calling thread already holds an instance built with a different {@link
-     * ProjectionPushdownCache}, a new instance bound to the supplied cache replaces it. In normal
-     * operation a server uses a single cache instance, so the held instance is reused for the
-     * lifetime of the thread.
-     *
-     * <p>The returned instance has its transient per-fetch state cleared; the caller must still
-     * call {@link #setCurrentProjection} before projecting. See the class javadoc for why reusing
-     * an instance is safe with respect to the {@link BytesView} aliasing.
-     *
-     * @param projectionsCache the server-wide projection cache to bind the instance to
-     * @return a thread-bound projection instance ready to be configured via {@link
-     *     #setCurrentProjection}
-     */
-    public static FileLogProjection forThread(ProjectionPushdownCache projectionsCache) {
-        checkNotNull(projectionsCache, "projectionsCache");
-        FileLogProjection projection = POOL.get();
-        if (projection == null || projection.projectionsCache != projectionsCache) {
-            projection = new FileLogProjection(projectionsCache);
-            POOL.set(projection);
-        } else {
-            projection.reset();
-        }
-        return projection;
-    }
-
-    /**
-     * Clears the transient per-fetch state so this instance can be safely reused for a new fetch.
-     * The reusable scratch buffers ({@link #outputStream}, {@link #logHeaderBuffer}, {@link
-     * #arrowHeaderBuffer}, {@link #arrowMetadataBuffer}) are intentionally retained for reuse; they
-     * are fully rewound/reset on each use and are never aliased by a produced {@link BytesView}
-     * (see class javadoc). The shared {@link #projectionsCache} is also retained.
-     */
-    @VisibleForTesting
-    void reset() {
-        this.schemaGetter = null;
-        this.compressionInfo = null;
-        this.selectedFieldPositions = null;
-        this.tableId = 0L;
-        this.outputStream.reset();
     }
 
     public void setCurrentProjection(
