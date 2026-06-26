@@ -77,6 +77,7 @@
         <module>fluss-protogen</module>
         <module>fluss-jmh</module>
         <module>fluss-lake</module>
+        <module>fluss-lake-tiering-core</module>
         <module>fluss-catalog</module>
         <module>fluss-kafka</module>
         <module>fluss-iceberg-rest</module>
