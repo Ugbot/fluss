@@ -1092,7 +1092,9 @@ public final class LogTablet {
             throws Exception {
         checkArgument(writerId >= 0, "writerId must be non-negative, but was %s", writerId);
         checkArgument(
-                producerEpoch >= 0, "producerEpoch must be non-negative, but was %s", producerEpoch);
+                producerEpoch >= 0,
+                "producerEpoch must be non-negative, but was %s",
+                producerEpoch);
         MemoryLogRecords markerRecords = buildMarkerBatch(writerId, producerEpoch, commit);
         return appendAsLeader(markerRecords);
     }

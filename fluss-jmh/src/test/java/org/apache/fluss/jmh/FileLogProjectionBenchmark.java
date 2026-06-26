@@ -153,8 +153,8 @@ public class FileLogProjectionBenchmark {
 
     /**
      * Project the source batch to the selected column subset. Exercises Arrow IPC metadata parsing,
-     * buffer/field-node selection and zero-copy {@code BytesView} assembly via the cached projection
-     * info.
+     * buffer/field-node selection and zero-copy {@code BytesView} assembly via the cached
+     * projection info.
      */
     @Benchmark
     public void project(Blackhole bh) throws Exception {
@@ -205,8 +205,7 @@ public class FileLogProjectionBenchmark {
         Options opt =
                 new OptionsBuilder()
                         .verbosity(VerboseMode.NORMAL)
-                        .include(
-                                ".*" + FileLogProjectionBenchmark.class.getCanonicalName() + ".*")
+                        .include(".*" + FileLogProjectionBenchmark.class.getCanonicalName() + ".*")
                         .build();
 
         new Runner(opt).run();
