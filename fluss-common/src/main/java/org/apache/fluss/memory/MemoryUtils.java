@@ -19,7 +19,6 @@ package org.apache.fluss.memory;
 
 import org.apache.fluss.annotation.Internal;
 
-import java.lang.reflect.Field;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 
@@ -31,45 +30,20 @@ import static org.apache.fluss.utils.Preconditions.checkState;
  * Software Foundation (ASF) under the Apache License, Version 2.0. See the NOTICE file distributed with this work for
  * additional information regarding copyright ownership. */
 
-/** Utility class for memory operations. */
+/**
+ * Utility class for memory operations.
+ *
+ * <p>This class no longer holds a {@code sun.misc.Unsafe} handle. All hot-path accessors, the
+ * off-heap lifecycle of {@link MemorySegment}, and the byte-buffer address lookup below are
+ * implemented on top of the Java Foreign Function &amp; Memory API ({@link
+ * java.lang.foreign.MemorySegment} / {@link java.lang.foreign.Arena}). New code MUST NOT
+ * reintroduce {@code sun.misc.Unsafe}.
+ */
 @Internal
 public class MemoryUtils {
-    /**
-     * The "unsafe" handle.
-     *
-     * <p>The hot-path primitive accessors and off-heap lifecycle of {@link MemorySegment} no longer
-     * use this handle: those have been migrated to the Java Foreign Function &amp; Memory API
-     * ({@link java.lang.foreign.MemorySegment} / {@link java.lang.foreign.Arena}). The handle is
-     * retained only for the few remaining heap {@code byte[]} base-offset / typed bulk-copy helpers
-     * outside this class that have not yet been migrated. New code MUST NOT add usages.
-     */
-    @SuppressWarnings({"restriction", "UseOfSunClasses"})
-    public static final sun.misc.Unsafe UNSAFE = getUnsafe();
 
     /** The native byte order of the platform on which the system currently runs. */
     public static final ByteOrder NATIVE_BYTE_ORDER = ByteOrder.nativeOrder();
-
-    @SuppressWarnings("restriction")
-    private static sun.misc.Unsafe getUnsafe() {
-        try {
-            Field unsafeField = sun.misc.Unsafe.class.getDeclaredField("theUnsafe");
-            unsafeField.setAccessible(true);
-            return (sun.misc.Unsafe) unsafeField.get(null);
-        } catch (SecurityException e) {
-            throw new Error(
-                    "Could not access the sun.misc.Unsafe handle, permission denied by security manager.",
-                    e);
-        } catch (NoSuchFieldException e) {
-            throw new Error("The static handle field in sun.misc.Unsafe was not found.", e);
-        } catch (IllegalArgumentException e) {
-            throw new Error("Bug: Illegal argument reflection access for static field.", e);
-        } catch (IllegalAccessException e) {
-            throw new Error("Access to sun.misc.Unsafe is forbidden by the runtime.", e);
-        } catch (Throwable t) {
-            throw new Error(
-                    "Unclassified error while trying to access the sun.misc.Unsafe handle.", t);
-        }
-    }
 
     /**
      * Get native memory address wrapped by the given {@link ByteBuffer}.

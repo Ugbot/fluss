@@ -560,11 +560,10 @@
                     <!-- The semantics of this option are reversed, see MCOMPILER-209. -->
                     <useIncrementalCompilation>false</useIncrementalCompilation>
                     <compilerArgs >
-                        <arg>--add-exports=java.base/sun.net.util=ALL-UNNAMED</arg>
-                        <arg>--add-exports=java.management/sun.management=ALL-UNNAMED</arg>
+                        <!-- fluss-metrics-jmx JMXServer extends sun.rmi.registry.RegistryImpl. -->
                         <arg>--add-exports=java.rmi/sun.rmi.registry=ALL-UNNAMED</arg>
+                        <!-- fluss-fs-hdfs HadoopUtilsTest uses sun.security.krb5.Config/KrbException. -->
                         <arg>--add-exports=java.security.jgss/sun.security.krb5=ALL-UNNAMED</arg>
-                        <arg>--add-exports=java.base/sun.nio.ch=ALL-UNNAMED</arg>
                         <!-- Prevents recompilation due to missing package-info.class, see MCOMPILER-205 -->
                         <arg>-Xpkginfo:always</arg>
                     </compilerArgs>
