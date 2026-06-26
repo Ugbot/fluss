@@ -99,6 +99,45 @@
                     </execution>
                 </executions>
             </plugin>
+
+            <!--
+                Build a self-contained fat jar so the daemon can be dropped into the dist
+                lib/ directory and launched directly. This mirrors the fluss-server shade
+                execution: it shades in fluss-client, fluss-lake-tiering-core, fluss-common,
+                fluss-rpc and their needed transitive deps (artifactSet *:*). The concrete
+                lake implementation (fluss-lake-iceberg) is provided + optional, so it is NOT
+                shaded here; it stays a runtime plugin loaded from the plugins/ directory.
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-shade-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>shade-fluss</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>shade</goal>
+                        </goals>
+                        <configuration>
+                            <artifactSet>
+                                <includes>
+                                    <include>*:*</include>
+                                </includes>
+                            </artifactSet>
+                            <relocations>
+                                <relocation>
+                                    <pattern>org.apache.commons</pattern>
+                                    <shadedPattern>org.apache.fluss.shaded.org.apache.commons</shadedPattern>
+                                </relocation>
+                                <relocation>
+                                    <pattern>org.roaringbitmap</pattern>
+                                    <shadedPattern>org.apache.fluss.shaded.org.roaringbitmap</shadedPattern>
+                                </relocation>
+                            </relocations>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
         </plugins>
     </build>
 

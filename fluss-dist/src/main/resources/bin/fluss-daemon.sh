@@ -17,7 +17,7 @@
 #
 
 
-USAGE="Usage: fluss-daemon.sh (start|stop|stop-all) (coordinator-server|tablet-server|zookeeper) [args]"
+USAGE="Usage: fluss-daemon.sh (start|stop|stop-all) (coordinator-server|tablet-server|tiering-service|zookeeper) [args]"
 
 
 STARTSTOP=$1
@@ -36,6 +36,10 @@ case $DAEMON in
 
     (tablet-server)
         CLASS_TO_RUN=org.apache.fluss.server.tablet.TabletServer
+    ;;
+
+    (tiering-service)
+        CLASS_TO_RUN=org.apache.fluss.tiering.service.TieringServiceMain
     ;;
 
     (zookeeper)

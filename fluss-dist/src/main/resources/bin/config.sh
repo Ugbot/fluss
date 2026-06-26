@@ -118,6 +118,7 @@ DEFAULT_ENV_LOG_LEVEL="INFO"                        # Level of the root logger
 DEFAULT_ENV_JAVA_OPTS=""                            # Optional JVM args
 DEFAULT_ENV_JAVA_OPTS_CS=""                         # Optional JVM args (CoordinatorServer)
 DEFAULT_ENV_JAVA_OPTS_TS=""                         # Optional JVM args (TabletServer)
+DEFAULT_ENV_JAVA_OPTS_TIERING=""                    # Optional JVM args (TieringService)
 DEFAULT_ENV_SSH_OPTS=""                             # Optional SSH parameters running in cluster mode
 
 
@@ -134,6 +135,7 @@ KEY_ENV_JAVA_HOME="env.java.home"
 KEY_ENV_JAVA_OPTS="env.java.opts.all"
 KEY_ENV_JAVA_OPTS_CS="env.java.opts.coordinator-server"
 KEY_ENV_JAVA_OPTS_TS="env.java.opts.tablet-server"
+KEY_ENV_JAVA_OPTS_TIERING="env.java.opts.tiering-service"
 KEY_ENV_SSH_OPTS="env.ssh.opts"
 KEY_ZK_HEAP_MB="zookeeper.heap.mb"
 
@@ -287,6 +289,12 @@ if [ -z "${FLUSS_ENV_JAVA_OPTS_TS}" ]; then
     FLUSS_ENV_JAVA_OPTS_TS=$(readFromConfig ${KEY_ENV_JAVA_OPTS_TS} "${DEFAULT_ENV_JAVA_OPTS_TS}" "${YAML_CONF}")
     # Remove leading and ending double quotes (if present) of value
     FLUSS_ENV_JAVA_OPTS_TS="$( echo "${FLUSS_ENV_JAVA_OPTS_TS}" | sed -e 's/^"//'  -e 's/"$//' )"
+fi
+
+if [ -z "${FLUSS_ENV_JAVA_OPTS_TIERING}" ]; then
+    FLUSS_ENV_JAVA_OPTS_TIERING=$(readFromConfig ${KEY_ENV_JAVA_OPTS_TIERING} "${DEFAULT_ENV_JAVA_OPTS_TIERING}" "${YAML_CONF}")
+    # Remove leading and ending double quotes (if present) of value
+    FLUSS_ENV_JAVA_OPTS_TIERING="$( echo "${FLUSS_ENV_JAVA_OPTS_TIERING}" | sed -e 's/^"//'  -e 's/"$//' )"
 fi
 
 
