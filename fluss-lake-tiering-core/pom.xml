@@ -49,12 +49,11 @@
             <artifactId>fluss-rpc</artifactId>
             <version>${project.version}</version>
         </dependency>
-        <dependency>
-            <groupId>org.apache.fluss</groupId>
-            <artifactId>fluss-metrics</artifactId>
-            <version>${project.version}</version>
-            <type>pom</type>
-        </dependency>
+        <!--
+            NOTE: fluss-metrics is a pom aggregator (real reporters live in
+            fluss-metrics-jmx / -prometheus; MetricRegistry is in fluss-common and
+            ClientMetricGroup in fluss-rpc), so the tiering core does not depend on it.
+        -->
     </dependencies>
 
     <build>
