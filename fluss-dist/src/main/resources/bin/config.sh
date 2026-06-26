@@ -365,10 +365,18 @@ if [ -z "${FLUSS_ENV_JAVA_OPTS_USER_SET}" ]; then
 fi
 
 # Returns the default JVM options Fluss applies when the operator has NOT set any
-# of their own JVM options: a version-appropriate default GC. We deliberately do
-# NOT set -XX:MaxDirectMemorySize -- the direct-buffer pool is shared by the write
-# buffers, Netty and Arrow, so a value derived from server.buffer.memory-size alone
-# is unsafe; let the JVM default apply (operators can override via env.java.opts.*).
+# of their own JVM options: a version-appropriate default GC plus -XX:+AlwaysPreTouch.
+#
+# -XX:+AlwaysPreTouch faults in (zeroes) every heap page at JVM startup rather than
+# lazily on first access. This moves the one-time page-fault cost into the startup
+# window instead of letting it surface as first-touch latency spikes once the server
+# is taking live traffic -- a meaningful win for the low-latency, tail-sensitive
+# workloads Fluss servers run. It pairs naturally with the region-based default GC.
+#
+# We deliberately do NOT set -XX:MaxDirectMemorySize -- the direct-buffer pool is
+# shared by the write buffers, Netty and Arrow, so a value derived from
+# server.buffer.memory-size alone is unsafe; let the JVM default apply (operators can
+# override via env.java.opts.*).
 constructDefaultJavaOpts() {
-    selectDefaultGcOpts
+    echo "$(selectDefaultGcOpts) -XX:+AlwaysPreTouch"
 }
