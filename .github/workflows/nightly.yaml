@@ -26,9 +26,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build-on-jdk8:
-    name: "Java 8"
+  build-on-jdk25:
+    name: "Java 25"
     uses: ./.github/workflows/ci-template.yaml
     with:
-      java-version: "8"
-      maven-parameters: "-Pjava8"
+      java-version: "25"

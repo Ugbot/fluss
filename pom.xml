@@ -89,7 +89,7 @@
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
-        <target.java.version>11</target.java.version>
+        <target.java.version>25</target.java.version>
         <maven.compiler.source>${target.java.version}</maven.compiler.source>
         <maven.compiler.target>${target.java.version}</maven.compiler.target>
         <test.unit.pattern>**/*Test.*</test.unit.pattern>
@@ -461,31 +461,6 @@
 
     <profiles>
         <profile>
-            <id>java8</id>
-            <properties>
-                <target.java.version>1.8</target.java.version>
-                <skip.on.java8>true</skip.on.java8>
-            </properties>
-            <build>
-                <plugins>
-                    <plugin>
-                        <groupId>org.apache.maven.plugins</groupId>
-                        <artifactId>maven-compiler-plugin</artifactId>
-                        <configuration>
-                            <source>${target.java.version}</source>
-                            <target>${target.java.version}</target>
-                            <useIncrementalCompilation>false</useIncrementalCompilation>
-                            <compilerArgs >
-                                <!-- Prevents recompilation due to missing package-info.class, see MCOMPILER-205 -->
-                                <arg>-Xpkginfo:always</arg>
-                            </compilerArgs>
-                        </configuration>
-                    </plugin>
-                </plugins>
-            </build>
-        </profile>
-
-        <profile>
             <id>test-coverage</id>
             <properties>
                 <test.skip.coverage>false</test.skip.coverage>
@@ -578,7 +553,7 @@
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>
-                <version>3.8.0</version>
+                <version>3.13.0</version>
                 <configuration>
                     <source>${target.java.version}</source>
                     <target>${target.java.version}</target>
@@ -980,9 +955,9 @@
                 <plugin>
                     <groupId>org.apache.maven.plugins</groupId>
                     <artifactId>maven-compiler-plugin</artifactId>
-                    <version>3.8.0</version>
+                    <version>3.13.0</version>
                     <configuration>
-                        <!-- Make sure that we only use Java 8 compatible APIs -->
+                        <!-- Source/target level is Java 25 (see target.java.version). -->
                         <source>${target.java.version}</source>
                         <target>${target.java.version}</target>
                         <!-- The semantics of this option are reversed, see MCOMPILER-209. -->
@@ -1092,7 +1067,7 @@
                     <configuration>
                         <quiet>true</quiet>
                         <detectOfflineLinks>false</detectOfflineLinks>
-                        <release>8</release>
+                        <release>${target.java.version}</release>
                         <additionalJOptions>
                             <additionalJOption>-Xdoclint:none</additionalJOption>
                             <additionalJOption>--allow-script-in-comments</additionalJOption>
@@ -1119,7 +1094,21 @@
                 <plugin>
                     <groupId>org.apache.maven.plugins</groupId>
                     <artifactId>maven-shade-plugin</artifactId>
-                    <version>3.4.1</version>
+                    <version>3.6.0</version>
+                    <dependencies>
+                        <!-- Pin ASM 9.8 so shading can read Java 25 (class major version 69)
+                             bytecode; the plugin's bundled ASM lags the JDK. -->
+                        <dependency>
+                            <groupId>org.ow2.asm</groupId>
+                            <artifactId>asm</artifactId>
+                            <version>9.8</version>
+                        </dependency>
+                        <dependency>
+                            <groupId>org.ow2.asm</groupId>
+                            <artifactId>asm-commons</artifactId>
+                            <version>9.8</version>
+                        </dependency>
+                    </dependencies>
                 </plugin>
 
                 <plugin>
