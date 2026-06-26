@@ -70,6 +70,47 @@ tablet-server.id: 0
 # tablet-server.controlled-shutdown.retry-interval: 1000ms
 
 #==============================================================================
+# Tiering Service
+#==============================================================================
+
+# The standalone tiering service is launched as a separate process with
+# ./bin/tiering-service.sh start. It is NOT configured from this file; instead
+# its configuration is supplied as "--key value" command-line parameters that
+# are forwarded to TieringServiceMain. The keys below document the available
+# daemon options (shown with their default values). Example invocation:
+#
+#   ./bin/tiering-service.sh start \
+#       --fluss.bootstrap.servers localhost:9123 \
+#       --datalake.format iceberg \
+#       --datalake.iceberg.warehouse /tmp/iceberg-warehouse \
+#       --tiering.poll.table.interval 30s \
+#       --tiering.max-concurrent-tables 1 \
+#       --tiering.poll.timeout 10s
+#
+# Parameter blocks:
+#   fluss.*            Fluss client config; fluss.bootstrap.servers is mandatory.
+#                      The fluss. prefix is stripped before use.
+#   datalake.format    The target lake format (e.g. iceberg). Mandatory.
+#   datalake.<format>.* Lake storage config (warehouse, catalog props, S3
+#                      endpoint/region/credentials); prefix stripped.
+#   lake.tiering.*     Forwarded verbatim to the lake committer.
+#
+# Daemon-specific options (passed within the fluss. block, e.g.
+# --fluss.tiering.poll.table.interval ... is NOT required; pass them as plain
+# --tiering.* parameters):
+#   tiering.poll.table.interval   30s   Interval to request/heartbeat a tiering
+#                                       table from the coordinator. Must stay well
+#                                       under the coordinator's 2 minute timeout.
+#   tiering.max-concurrent-tables  1    Number of tables tiered concurrently
+#                                       (the worker pool size).
+#   tiering.poll.timeout          10s   Timeout for a single log poll while
+#                                       tiering a table's log splits.
+#
+# Optional JVM options for the tiering-service process can be set here and are
+# picked up by ./bin/tiering-service.sh:
+# env.java.opts.tiering-service: ""
+
+#==============================================================================
 # OSS FileSystem
 #==============================================================================
 

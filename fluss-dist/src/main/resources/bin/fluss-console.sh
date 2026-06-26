@@ -20,7 +20,7 @@
 
 # Start a Fluss service as a console application. Must be stopped with Ctrl-C
 # or with SIGTERM by kill or the controlling process.
-USAGE="Usage: fluss-console.sh (coordinator-server|tablet-server|zookeeper) [args]"
+USAGE="Usage: fluss-console.sh (coordinator-server|tablet-server|tiering-service|zookeeper) [args]"
 
 SERVICE=$1
 ARGS=("${@:2}") # get remaining arguments as array
@@ -37,6 +37,10 @@ case $SERVICE in
 
     (tablet-server)
         CLASS_TO_RUN=org.apache.fluss.server.tablet.TabletServer
+    ;;
+
+    (tiering-service)
+        CLASS_TO_RUN=org.apache.fluss.tiering.service.TieringServiceMain
     ;;
 
     (zookeeper)

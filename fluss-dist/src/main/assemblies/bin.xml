@@ -56,6 +56,14 @@
             <fileMode>0644</fileMode>
         </file>
 
+        <!-- copy fluss-tiering-service fat jar -->
+        <file>
+            <source>../fluss-tiering-service/target/fluss-tiering-service-${project.version}.jar</source>
+            <outputDirectory>lib/</outputDirectory>
+            <destName>fluss-tiering-service-${project.version}.jar</destName>
+            <fileMode>0644</fileMode>
+        </file>
+
         <!-- copy the config file -->
         <file>
             <source>src/main/resources/server.yaml</source>
