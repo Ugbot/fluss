@@ -55,17 +55,18 @@ import java.util.concurrent.TimeUnit;
  * Microbenchmark for the RPC wire-encode hot path in {@link MessageCodec}.
  *
  * <p>Every RPC the server emits and every RPC the client sends passes through {@link MessageCodec},
- * which sizes the message via {@link
- * org.apache.fluss.rpc.messages.ApiMessage#totalSize()}, allocates a Netty {@link ByteBuf} of
- * exactly that capacity from the pooled allocator, writes the frame header, and serializes the
- * message body by walking its fields. This sits directly on the produce/fetch/metadata critical
- * path, so the per-message allocation + serialization cost matters under high request rates.
+ * which sizes the message via {@link org.apache.fluss.rpc.messages.ApiMessage#totalSize()},
+ * allocates a Netty {@link ByteBuf} of exactly that capacity from the pooled allocator, writes the
+ * frame header, and serializes the message body by walking its fields. This sits directly on the
+ * produce/fetch/metadata critical path, so the per-message allocation + serialization cost matters
+ * under high request rates.
  *
  * <p>The benchmark uses {@link ApiVersionsResponse} as the carrier message because it is the
- * smallest real {@code ApiMessage} that still exposes a {@code repeated} field ({@link PbApiVersion}
- * with three {@code int32} fields each). Sweeping the entry count gives a clean field-count axis
- * while keeping construction cheap, isolating the codec/allocator cost from message-construction
- * noise. Entries are filled with fixed-seed random data (project policy: no hardcoded sample data).
+ * smallest real {@code ApiMessage} that still exposes a {@code repeated} field ({@link
+ * PbApiVersion} with three {@code int32} fields each). Sweeping the entry count gives a clean
+ * field-count axis while keeping construction cheap, isolating the codec/allocator cost from
+ * message-construction noise. Entries are filled with fixed-seed random data (project policy: no
+ * hardcoded sample data).
  *
  * <p>Two real encode paths are measured, both against the pooled {@link PooledByteBufAllocator}:
  *
@@ -116,8 +117,7 @@ public class MessageCodecBenchmark {
         List<PbApiVersion> versions = new ArrayList<>(entryCount);
         for (int i = 0; i < entryCount; i++) {
             PbApiVersion version = new PbApiVersion();
-            version
-                    .setApiKey(random.nextInt(Short.MAX_VALUE))
+            version.setApiKey(random.nextInt(Short.MAX_VALUE))
                     .setMinVersion(random.nextInt(Short.MAX_VALUE))
                     .setMaxVersion(random.nextInt(Short.MAX_VALUE));
             versions.add(version);
@@ -157,8 +157,8 @@ public class MessageCodecBenchmark {
     }
 
     /**
-     * Drains and releases all staged outbound buffers from the embedded channel, returning the total
-     * number of bytes drained so the JIT cannot elide the encode work.
+     * Drains and releases all staged outbound buffers from the embedded channel, returning the
+     * total number of bytes drained so the JIT cannot elide the encode work.
      */
     private int drainOutbound() {
         int drainedBytes = 0;

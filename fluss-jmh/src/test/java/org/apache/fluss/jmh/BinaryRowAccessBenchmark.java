@@ -49,14 +49,15 @@ import java.util.concurrent.TimeUnit;
  * org.apache.fluss.memory.MemorySegment}. {@code IndexedRow} (and the {@link
  * org.apache.fluss.row.BinarySegmentUtils} it delegates to for variable-length fields) sits on the
  * read hot path: every record decoded from a fetched log batch is materialized as a binary row, and
- * downstream operators pull {@code int}/{@code long}/{@code String} fields out of it field by field.
+ * downstream operators pull {@code int}/{@code long}/{@code String} fields out of it field by
+ * field.
  *
  * <p>Purpose: this is the reference number for the planned migration of {@code MemorySegment} (and
  * therefore of {@code BinaryRow} field access through {@code BinarySegmentUtils}) off {@code
- * sun.misc.Unsafe} onto the Java 25 Foreign Function &amp; Memory API. Field decode is the realistic
- * consumer pattern, so this benchmark complements {@link MemorySegmentBenchmark} (raw primitive
- * accessors) by measuring the row-decode layer that callers actually use. Re-run after that
- * migration: it must not regress.
+ * sun.misc.Unsafe} onto the Java 25 Foreign Function &amp; Memory API. Field decode is the
+ * realistic consumer pattern, so this benchmark complements {@link MemorySegmentBenchmark} (raw
+ * primitive accessors) by measuring the row-decode layer that callers actually use. Re-run after
+ * that migration: it must not regress.
  *
  * <p>The row layout cycles {@code INT}, {@code BIGINT}, {@code STRING} across a {@code fieldCount}
  * sweep so the mix of fixed-width (in-place segment read) and variable-length (offset/length

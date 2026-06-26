@@ -51,21 +51,21 @@ import java.util.concurrent.TimeUnit;
  *
  * <p>On every upsert, the tablet server first writes the key-value pair into the pre-write buffer
  * ({@link KvPreWriteBuffer#insert}/{@link KvPreWriteBuffer#update}) and, to generate the CDC change
- * log, looks up the previous value for the same key ({@link KvPreWriteBuffer#get}) before the WAL is
- * persisted. Both operations are backed by a {@code HashMap<Key, KvEntry>}: each put performs a
+ * log, looks up the previous value for the same key ({@link KvPreWriteBuffer#get}) before the WAL
+ * is persisted. Both operations are backed by a {@code HashMap<Key, KvEntry>}: each put performs a
  * {@code Map.compute} (a hash + probe to thread the previous-entry pointer) and each get performs a
  * separate {@code Map.get}. The audit flagged this per-put map lookup as the dominant cost of the
  * buffer, so this benchmark isolates it.
  *
- * <p>The benchmark drives a realistic put-then-get pair per logical key over a sweep of distinct-key
- * counts ({@code entryCount}). Each invocation:
+ * <p>The benchmark drives a realistic put-then-get pair per logical key over a sweep of
+ * distinct-key counts ({@code entryCount}). Each invocation:
  *
  * <ul>
  *   <li>{@code putThenGet} — for every key, {@code insert} the key (the {@code Map.compute} write
- *       path that also walks any existing entry) immediately followed by {@code get} of the same key
- *       (the {@code Map.get} CDC-lookup path), mirroring the real produce-side ordering. The buffer
- *       is reset each invocation so log sequence numbers stay strictly increasing as the buffer
- *       requires and the map grows from empty to {@code entryCount} live entries.
+ *       path that also walks any existing entry) immediately followed by {@code get} of the same
+ *       key (the {@code Map.get} CDC-lookup path), mirroring the real produce-side ordering. The
+ *       buffer is reset each invocation so log sequence numbers stay strictly increasing as the
+ *       buffer requires and the map grows from empty to {@code entryCount} live entries.
  *   <li>{@code getExisting} — {@code get} every key from a buffer pre-populated with {@code
  *       entryCount} entries, isolating the pure {@code Map.get} lookup cost (hash + {@code Key}
  *       equals, which compares the cached Murmur hash then the key bytes) with no write or resize
@@ -78,12 +78,12 @@ import java.util.concurrent.TimeUnit;
  * sizes; sweeping {@code entryCount} across {@code HashMap} resize boundaries surfaces the load
  * factor / resize behaviour of the buffer.
  *
- * <p>The buffer's constructor requires a {@link KvBatchWriter} and a {@link TabletServerMetricGroup},
- * but neither is touched by the {@code insert}/{@code update}/{@code get} paths under test (the batch
- * writer is only used by {@code flush}, and the counters only by {@code truncateTo}). The batch
- * writer is therefore a no-op stand-in and the metric group is built against {@link
- * NOPMetricRegistry}; no flush or truncate is exercised, so the substitution does not affect the
- * measured path.
+ * <p>The buffer's constructor requires a {@link KvBatchWriter} and a {@link
+ * TabletServerMetricGroup}, but neither is touched by the {@code insert}/{@code update}/{@code get}
+ * paths under test (the batch writer is only used by {@code flush}, and the counters only by {@code
+ * truncateTo}). The batch writer is therefore a no-op stand-in and the metric group is built
+ * against {@link NOPMetricRegistry}; no flush or truncate is exercised, so the substitution does
+ * not affect the measured path.
  *
  * <p>Run: {@code mvn -pl fluss-jmh test-compile} then execute {@code main}, or {@code java ...
  * org.apache.fluss.jmh.KvPreWriteBufferBenchmark}.
@@ -153,8 +153,7 @@ public class KvPreWriteBufferBenchmark {
         }
 
         metricGroup =
-                new TabletServerMetricGroup(
-                        NOPMetricRegistry.INSTANCE, "fluss", "rack", "host", 0);
+                new TabletServerMetricGroup(NOPMetricRegistry.INSTANCE, "fluss", "rack", "host", 0);
 
         populatedBuffer = new KvPreWriteBuffer(NOOP_BATCH_WRITER, metricGroup);
         for (int i = 0; i < entryCount; i++) {
@@ -164,8 +163,8 @@ public class KvPreWriteBufferBenchmark {
 
     /**
      * Put each key then immediately get it back, mirroring the produce-side ordering where every
-     * upsert writes the buffer and then reads the previous value to build the CDC change log. Builds
-     * the map from empty to {@code entryCount} live entries within the invocation.
+     * upsert writes the buffer and then reads the previous value to build the CDC change log.
+     * Builds the map from empty to {@code entryCount} live entries within the invocation.
      */
     @Benchmark
     @OperationsPerInvocation(1)
