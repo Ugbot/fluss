@@ -21,7 +21,6 @@ import org.apache.fluss.exception.IndexOffsetOverflowException;
 import org.apache.fluss.server.exception.CorruptIndexException;
 import org.apache.fluss.utils.FileUtils;
 import org.apache.fluss.utils.IOUtils;
-import org.apache.fluss.utils.log.ByteBufferUnmapper;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -30,6 +29,7 @@ import java.io.Closeable;
 import java.io.File;
 import java.io.IOException;
 import java.io.RandomAccessFile;
+import java.lang.foreign.Arena;
 import java.nio.ByteBuffer;
 import java.nio.MappedByteBuffer;
 import java.nio.channels.FileChannel;
@@ -80,6 +80,17 @@ public abstract class AbstractIndex implements Closeable {
 
     private volatile MappedByteBuffer mmap;
 
+    /**
+     * The FFM {@link Arena} that owns the native lifetime of {@link #mmap}. Closing this arena
+     * deterministically unmaps the memory-mapped region without resorting to {@code
+     * sun.misc.Unsafe.invokeCleaner}. A {@linkplain Arena#ofShared() shared} arena is used because
+     * readers access {@link #mmap} from threads other than the one holding {@link #lock} (see the
+     * locking note above); a confined arena would throw {@code WrongThreadException} on such reads,
+     * and closing a shared arena safely fences all access via a global safepoint. The reference is
+     * swapped (and the previous arena closed) on every remap performed by {@link #resize(int)}.
+     */
+    private volatile Arena mmapArena;
+
     /** The maximum number of entries this index can hold. */
     private volatile int maxEntries;
 
@@ -118,11 +129,18 @@ public abstract class AbstractIndex implements Closeable {
             }
 
             long length = raf.length();
-            MappedByteBuffer mmap =
-                    createMappedBuffer(raf, newlyCreated, length, writable, entrySize());
+            Arena arena = Arena.ofShared();
+            MappedByteBuffer mmap;
+            try {
+                mmap = createMappedBuffer(raf, newlyCreated, length, writable, entrySize(), arena);
+            } catch (IOException | RuntimeException | Error e) {
+                arena.close();
+                throw e;
+            }
 
             this.length = length;
             this.mmap = mmap;
+            this.mmapArena = arena;
         } finally {
             IOUtils.closeQuietly(raf, "index " + file.getName());
         }
@@ -223,12 +241,22 @@ public abstract class AbstractIndex implements Closeable {
                                             safeForceUnmap();
                                             raf.setLength(roundedNewSize);
                                             this.length = roundedNewSize;
-                                            mmap =
-                                                    raf.getChannel()
-                                                            .map(
-                                                                    FileChannel.MapMode.READ_WRITE,
-                                                                    0,
-                                                                    roundedNewSize);
+                                            Arena arena = Arena.ofShared();
+                                            try {
+                                                java.lang.foreign.MemorySegment segment =
+                                                        raf.getChannel()
+                                                                .map(
+                                                                        FileChannel.MapMode
+                                                                                .READ_WRITE,
+                                                                        0,
+                                                                        roundedNewSize,
+                                                                        arena);
+                                                mmap = (MappedByteBuffer) segment.asByteBuffer();
+                                            } catch (IOException | RuntimeException | Error e) {
+                                                arena.close();
+                                                throw e;
+                                            }
+                                            this.mmapArena = arena;
                                             this.maxEntries = mmap.limit() / entrySize();
                                             mmap.position(position);
                                             LOG.debug(
@@ -408,14 +436,25 @@ public abstract class AbstractIndex implements Closeable {
         }
     }
 
-    /** Forcefully free the buffer's mmap. */
+    /**
+     * Forcefully free the buffer's mmap by closing the {@link Arena} that owns its native lifetime.
+     *
+     * <p>Closing the shared arena unmaps the region deterministically (with a global safepoint that
+     * fences any concurrent access) and does not rely on {@code sun.misc.Unsafe}. The {@link #mmap}
+     * and {@link #mmapArena} references are cleared so the buffer cannot be referenced after this
+     * call.
+     */
     // Visible for testing, we can make this protected once OffsetIndexTest is in the same package
     // as this class
     public void forceUnmap() throws IOException {
+        Arena arena = mmapArena;
         try {
-            ByteBufferUnmapper.unmap(file.getAbsolutePath(), mmap);
+            if (arena != null) {
+                arena.close();
+            }
         } finally {
             mmap = null;
+            mmapArena = null;
         }
     }
 
@@ -465,14 +504,19 @@ public abstract class AbstractIndex implements Closeable {
             boolean newlyCreated,
             long length,
             boolean writable,
-            int entrySize)
+            int entrySize,
+            Arena arena)
             throws IOException {
-        MappedByteBuffer idx;
-        if (writable) {
-            idx = raf.getChannel().map(FileChannel.MapMode.READ_WRITE, 0, length);
-        } else {
-            idx = raf.getChannel().map(FileChannel.MapMode.READ_ONLY, 0, length);
-        }
+        FileChannel.MapMode mode =
+                writable ? FileChannel.MapMode.READ_WRITE : FileChannel.MapMode.READ_ONLY;
+        // Map through the FFM Arena so the native lifetime is owned by the arena and can be
+        // released deterministically via arena.close() (no sun.misc.Unsafe.invokeCleaner). The
+        // arena-backed FileChannel.map overload returns a java.lang.foreign.MemorySegment; its
+        // asByteBuffer() view is a MappedByteBuffer (a DirectByteBuffer subclass) that supports the
+        // position/limit/force operations this class relies on, and whose access is fenced once the
+        // arena is closed.
+        java.lang.foreign.MemorySegment segment = raf.getChannel().map(mode, 0, length, arena);
+        MappedByteBuffer idx = (MappedByteBuffer) segment.asByteBuffer();
 
         /* set the position in the index for the next entry */
         if (newlyCreated) {
