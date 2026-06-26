@@ -79,11 +79,16 @@ Each phase is **benchmark-gated** (no perf change lands without a before/after J
 - Exit criteria: reproducible baseline numbers committed; nothing tuned yet.
 
 ### Phase 2 — Java 25 baseline
-- [ ] Flip `target.java.version` to 25; delete the `java8` profile and `compile-on-jdk8` CI job.
-- [ ] Drop `--add-exports`/`--add-opens` crutches in root `pom.xml` as strong-encapsulation/FFM
-      allow; bump deps (Caffeine 3.x, Arrow, Netty io_uring, ZK/curator).
-- [ ] Re-run Phase 1 benchmarks to quantify the free lift.
-- Exit criteria: builds/tests on JDK 25; baseline delta recorded. No behaviour change.
+- [x] Flip `target.java.version` 11→25; bump `maven-compiler-plugin` 3.8.0→3.13.0; delete the
+      `java8` profile; bump `maven-shade-plugin` 3.4.1→3.6.0 + pin ASM 9.8 (only real blocker — old
+      ASM can't read Java 25 bytecode/major-version-69; code compiles unchanged); CI (`ci.yaml`,
+      `nightly.yaml`) drop `compile-on-jdk8` and build on JDK 25. Caffeine already on 3.1.8.
+      **Verified: full BUILD SUCCESS on Temurin 25.0.2** across common/rpc/server/client/
+      flink-common/kafka/catalog/iceberg/lake-tiering-core/tiering-service.
+- [ ] Still TODO: kept `--add-exports`/`--add-opens` (needed for `sun.*` until Phase 6 FFM removes
+      the usage); build the FULL reactor on 25 (flink-1.18/1.19/2.2, spark, all fs + lake modules);
+      run tests on 25 (shaded Arrow/Netty/ZK + FRocksDB JNI are runtime risks; cluster tests
+      disk-blocked); re-run Phase 1 benchmarks on 25 for the delta.
 
 ### Phase 3 — TigerStyle safety (low risk, improves p99)
 - [x] Bound/observe the unbounded server queues. NOTE (post adversarial-review): two of the three
