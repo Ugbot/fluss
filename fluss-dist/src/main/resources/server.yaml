@@ -70,6 +70,35 @@ tablet-server.id: 0
 # tablet-server.controlled-shutdown.retry-interval: 1000ms
 
 #==============================================================================
+# JVM Options / Garbage Collection
+#==============================================================================
+
+# When NO env.java.opts.* key (and no FLUSS_ENV_JAVA_OPTS* environment variable)
+# is set, the start scripts apply a set of low-latency JVM defaults:
+#
+#   * A version-appropriate garbage collector:
+#       - JDK 23+  : -XX:+UseZGC                     (generational ZGC)
+#       - JDK 21-22: -XX:+UseZGC -XX:+ZGenerational
+#       - JDK < 21 : -XX:+UseG1GC
+#   * -XX:+AlwaysPreTouch, which faults in (zeroes) every heap page at JVM
+#     startup instead of lazily on first access. This shifts the one-time
+#     page-fault cost into the startup window so it does not surface as
+#     first-touch latency spikes once the server is taking live traffic.
+#
+# These are DEFAULTS only. Setting any of the env.java.opts.* keys below (or the
+# corresponding FLUSS_ENV_JAVA_OPTS* environment variables) replaces the defaults
+# entirely, so operator-provided options always win. To switch back to G1, for
+# example, set:
+#
+#   env.java.opts.all: "-XX:+UseG1GC"
+#
+# Shared JVM options applied to all server processes:
+# env.java.opts.all: ""
+# Per-role overrides:
+# env.java.opts.coordinator-server: ""
+# env.java.opts.tablet-server: ""
+
+#==============================================================================
 # Tiering Service
 #==============================================================================
 
