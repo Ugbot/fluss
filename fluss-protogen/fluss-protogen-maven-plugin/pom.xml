@@ -65,9 +65,6 @@
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-plugin-plugin</artifactId>
-                <!-- 3.15.1 bundles an ASM that can parse Java 25 (class major 69) bytecode;
-                     the inherited 3.9.0 fails the descriptor scan in -am builds on JDK 25. -->
-                <version>3.15.1</version>
                 <configuration>
                     <goalPrefix>protogen</goalPrefix>
                     <skipErrorNoDescriptorsFound>true</skipErrorNoDescriptorsFound>
