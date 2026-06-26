@@ -71,6 +71,7 @@ public final class FetchParams {
     @Nullable private FileLogProjection fileLogProjection;
     private final int minFetchBytes;
     private final long maxWaitMs;
+
     // TODO: add more params like epoch etc.
 
     public FetchParams(int replicaId, int maxFetchBytes) {

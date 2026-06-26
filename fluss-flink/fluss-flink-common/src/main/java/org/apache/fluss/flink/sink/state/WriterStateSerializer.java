@@ -58,6 +58,7 @@ public class WriterStateSerializer extends TypeSerializer<WriterState> {
 
     /** The current version of the serialization format. */
     private static final int CURRENT_VERSION = 1;
+
     // -------------------------------------------------------------------------
     //  TypeSerializer methods
     // -------------------------------------------------------------------------

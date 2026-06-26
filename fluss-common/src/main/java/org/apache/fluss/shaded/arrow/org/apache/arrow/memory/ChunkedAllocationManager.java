@@ -181,13 +181,16 @@ public class ChunkedAllocationManager extends AllocationManager {
     static class Chunk {
         final long address;
         final long capacity;
+
         /** Bump pointer — only accessed under the factory's synchronized lock. */
         long used;
+
         /**
          * Number of active sub-allocations. Decremented from arbitrary threads when ArrowBuf
          * instances are released.
          */
         final AtomicInteger subAllocCount = new AtomicInteger(0);
+
         /**
          * Generation counter incremented each time this chunk is successfully drained. Used to
          * prevent ABA double-recycle: a caller snapshots the generation before the atomic
@@ -195,6 +198,7 @@ public class ChunkedAllocationManager extends AllocationManager {
          * ChunkedFactory#onChunkDrained} runs, the drain is stale and must be skipped.
          */
         volatile int drainGeneration;
+
         /** Back-reference to the owning factory for recycling on drain. */
         final ChunkedFactory factory;
 

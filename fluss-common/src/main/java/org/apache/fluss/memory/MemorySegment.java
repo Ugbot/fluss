@@ -1328,11 +1328,7 @@ public final class MemorySegment {
                 // destination base already starts at targetOffset (== target.position()); copy to
                 // relative offset 0 within that view.
                 java.lang.foreign.MemorySegment.copy(
-                        ffm,
-                        offset,
-                        java.lang.foreign.MemorySegment.ofBuffer(target),
-                        0,
-                        numBytes);
+                        ffm, offset, java.lang.foreign.MemorySegment.ofBuffer(target), 0, numBytes);
                 target.position(targetOffset + numBytes);
             } else if (freed) {
                 throw new IllegalStateException("segment has been freed");
@@ -1385,15 +1381,12 @@ public final class MemorySegment {
         if (source.isDirect()) {
             // copy to the target memory directly
             if (offset >= 0 && offset <= size - numBytes && !freed) {
-                // ofBuffer(source) is bounded to the buffer's [position, limit) range, so the source
+                // ofBuffer(source) is bounded to the buffer's [position, limit) range, so the
+                // source
                 // base already starts at sourceOffset (== source.position()); copy from relative
                 // offset 0 within that view.
                 java.lang.foreign.MemorySegment.copy(
-                        java.lang.foreign.MemorySegment.ofBuffer(source),
-                        0,
-                        ffm,
-                        offset,
-                        numBytes);
+                        java.lang.foreign.MemorySegment.ofBuffer(source), 0, ffm, offset, numBytes);
                 source.position(sourceOffset + numBytes);
             } else if (freed) {
                 throw new IllegalStateException("segment has been freed");
@@ -1577,8 +1570,7 @@ public final class MemorySegment {
                         this.ffm, ValueLayout.JAVA_BYTE, offset1, tempBuffer, 0, len);
 
                 // other -> this
-                java.lang.foreign.MemorySegment.copy(
-                        seg2.ffm, offset2, this.ffm, offset1, len);
+                java.lang.foreign.MemorySegment.copy(seg2.ffm, offset2, this.ffm, offset1, len);
 
                 // temp buffer -> other
                 java.lang.foreign.MemorySegment.copy(

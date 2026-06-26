@@ -63,6 +63,7 @@ public final class KafkaScramCredentialsTranscoder {
 
     /** Kafka's enum byte for {@code SCRAM-SHA-256}. */
     public static final byte MECHANISM_SHA_256 = 1;
+
     /** Kafka's enum byte for {@code SCRAM-SHA-512}. */
     public static final byte MECHANISM_SHA_512 = 2;
 

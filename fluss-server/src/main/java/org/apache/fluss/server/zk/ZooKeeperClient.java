@@ -393,6 +393,7 @@ public class ZooKeeperClient implements AutoCloseable {
         int currentVersion = currentStat.getVersion();
         return new ZkEpoch(currentEpoch, currentVersion);
     }
+
     // --------------------------------------------------------------------------------------------
     // Tablet server
     // --------------------------------------------------------------------------------------------

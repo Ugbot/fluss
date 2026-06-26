@@ -295,6 +295,7 @@ final class PojoType<T> {
         final String name;
 
         final Class<?> type;
+
         /** The generic type of the field (e.g. {@code Map<String, AddressPojo>}). */
         final Type genericType;
 

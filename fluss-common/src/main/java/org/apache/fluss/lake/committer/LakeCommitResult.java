@@ -173,6 +173,7 @@ public class LakeCommitResult {
     public static class ReadableSnapshot {
 
         private final long readableSnapshotId;
+
         /**
          * The log end offsets that have been tiered to the lake storage for this snapshot. These
          * represent the physical data boundaries in the lake.

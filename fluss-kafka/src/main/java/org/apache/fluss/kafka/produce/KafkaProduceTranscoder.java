@@ -880,10 +880,13 @@ public final class KafkaProduceTranscoder {
     static final class TypedProduceBinding {
         final RecordCodec codec;
         final int srSchemaId;
+
         /** Pre-allocated writer for decoding user columns from the SR-encoded body. */
         final IndexedRowWriter userColWriter;
+
         /** Pre-allocated row view over {@link #userColWriter}'s segment after each decode. */
         final IndexedRow userColRow;
+
         /** Per-column field getters for extracting values from {@link #userColRow}. */
         final InternalRow.FieldGetter[] userColGetters;
 

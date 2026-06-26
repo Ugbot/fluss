@@ -203,7 +203,7 @@ class IcebergBinaryRowWriter {
             case DOUBLE:
                 return (writer, value) -> writer.writeDouble((double) value);
 
-                // support for nanoseconds come check again after #1195 merge
+            // support for nanoseconds come check again after #1195 merge
             case TIMESTAMP_WITHOUT_TIME_ZONE:
                 return (writer, value) -> {
                     TimestampNtz ts = (TimestampNtz) value;

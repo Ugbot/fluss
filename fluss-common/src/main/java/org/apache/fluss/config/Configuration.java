@@ -471,6 +471,7 @@ public class Configuration implements Serializable, ReadableConfig {
     public Map<String, String> getMap(ConfigOption<Map<String, String>> configOption) {
         return getOptional(configOption).orElseGet(configOption::defaultValue);
     }
+
     // --------------------------------------------------------------------------------------------
 
     /**

@@ -457,6 +457,7 @@ public final class KafkaFetchTranscoder {
         private final TimestampType timestampType;
         private final long fetchOffset;
         private final @Nullable KafkaFetchCodec codec;
+
         /** Phase J.3 — clamp the response at LSO + filter aborted batches when set. */
         private final boolean readCommitted;
 

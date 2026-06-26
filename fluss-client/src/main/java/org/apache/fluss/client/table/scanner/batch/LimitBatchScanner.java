@@ -68,6 +68,7 @@ public class LimitBatchScanner implements BatchScanner {
     private final SchemaGetter schemaGetter;
     private final KvFormat kvFormat;
     private final int targetSchemaId;
+
     /** The chunked allocation manager factory to reuse memory for arrow log write batch. */
     private final ChunkedAllocationManager.ChunkedFactory chunkedFactory;
 

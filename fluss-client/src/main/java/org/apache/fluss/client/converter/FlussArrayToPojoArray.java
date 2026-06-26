@@ -38,6 +38,7 @@ public class FlussArrayToPojoArray {
     private final InternalArray flussArray;
     private final String fieldName;
     private final Class<?> pojoType;
+
     /** Pre-compiled per-element converter; avoids repeating the type-switch on every element. */
     private final ElementConverter elementConverter;
 

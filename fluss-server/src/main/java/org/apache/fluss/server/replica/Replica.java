@@ -165,6 +165,7 @@ public final class Replica {
     private final LogManager logManager;
     private final LogTablet logTablet;
     private final long replicaMaxLagTime;
+
     /** A closeable registry to register all registered {@link Closeable}s. */
     private final CloseableRegistry closeableRegistry;
 
@@ -180,6 +181,7 @@ public final class Replica {
     private final int localTabletServerId;
     private final DelayedOperationManager<DelayedWrite<?>> delayedWriteManager;
     private final DelayedOperationManager<DelayedFetchLog> delayedFetchLogManager;
+
     /** The manger to manger the isr expand and shrink. */
     private final AdjustIsrManager adjustIsrManager;
 
@@ -195,6 +197,7 @@ public final class Replica {
     private final RemoteLogManager remoteLogManager;
 
     private static final int INIT_KV_TABLET_MAX_RETRY_TIMES = 5;
+
     /**
      * storing the remote follower replicas' state, used to update leader's highWatermark and
      * replica ISR.

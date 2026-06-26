@@ -35,6 +35,7 @@ public class ServerModel implements Comparable<ServerModel> {
     private final boolean isOfflineTagged;
     private final String rack;
     private final Set<ReplicaModel> replicas;
+
     /** A map for tracking (tableId) -> (BucketId -> replica) for none-partitioned table. */
     private final Map<Long, Map<Integer, ReplicaModel>> tableReplicas;
 

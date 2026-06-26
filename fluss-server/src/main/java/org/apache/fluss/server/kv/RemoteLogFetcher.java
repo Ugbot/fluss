@@ -401,6 +401,7 @@ public class RemoteLogFetcher implements Closeable {
         private int nextConsumeIndex = 0;
 
         private LogRecordBatch nextBatch;
+
         /** The local .log file currently opened as {@link #currentFileLogRecords}. */
         private File currentLocalFile;
 

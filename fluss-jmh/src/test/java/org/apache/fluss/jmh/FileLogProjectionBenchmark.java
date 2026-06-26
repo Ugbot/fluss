@@ -85,8 +85,10 @@ public class FileLogProjectionBenchmark {
     private static final int SCHEMA_ID = 1;
     private static final long TABLE_ID = 1L;
     private static final long DETERMINISTIC_SEED = 0x5DEECE66DL;
+
     /** Width of the source schema: alternating INT and STRING columns. */
     private static final int TOTAL_COLUMNS = 32;
+
     /** Number of rows encoded into the single source Arrow batch. */
     private static final int ROW_COUNT = 2000;
 

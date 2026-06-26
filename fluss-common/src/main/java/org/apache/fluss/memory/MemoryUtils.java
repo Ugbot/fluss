@@ -74,8 +74,8 @@ public class MemoryUtils {
     /**
      * Get native memory address wrapped by the given {@link ByteBuffer}.
      *
-     * <p>This is implemented on top of the Java Foreign Function &amp; Memory API: the direct buffer
-     * is viewed as a {@link java.lang.foreign.MemorySegment} via {@link
+     * <p>This is implemented on top of the Java Foreign Function &amp; Memory API: the direct
+     * buffer is viewed as a {@link java.lang.foreign.MemorySegment} via {@link
      * java.lang.foreign.MemorySegment#ofBuffer(ByteBuffer)} and its base {@link
      * java.lang.foreign.MemorySegment#address()} is returned. No reflective access to the private
      * {@code java.nio.Buffer#address} field is required.

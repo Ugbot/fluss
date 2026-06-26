@@ -279,7 +279,7 @@ public class CompactedRowReader {
         // ordered by type root definition
         switch (fieldType.getTypeRoot()) {
             case CHAR:
-                // TODO: use readChar(length) in the future, but need to keep compatibility
+            // TODO: use readChar(length) in the future, but need to keep compatibility
             case STRING:
                 fieldReader = (reader, pos) -> reader.readString();
                 break;
@@ -287,7 +287,7 @@ public class CompactedRowReader {
                 fieldReader = (reader, pos) -> reader.readBoolean();
                 break;
             case BINARY:
-                // TODO: use readBinary(length) in the future, but need to keep compatibility
+            // TODO: use readBinary(length) in the future, but need to keep compatibility
             case BYTES:
                 fieldReader = (reader, pos) -> reader.readBytes();
                 break;

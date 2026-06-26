@@ -102,6 +102,7 @@ public class TieringCommitOperator<WriteResult, Committable>
     private final class CommitResult {
         /** The lake committable, or {@code null} if nothing was written in this round. */
         @Nullable final Committable committable;
+
         /** Per-table tiering statistics collected during this round. */
         @Nullable final TieringStats stats;
 

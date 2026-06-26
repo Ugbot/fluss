@@ -108,6 +108,7 @@ class KafkaObservabilityITCase {
     private static final String ADMIN_PASSWORD = "admin-secret";
     private static final String ALICE = "alice";
     private static final String ALICE_PASSWORD = "alice-secret";
+
     /** Permission-less user, used to drive the authz-deny counter path. */
     private static final String CHARLIE = "charlie";
 

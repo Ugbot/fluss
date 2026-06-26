@@ -29,6 +29,7 @@ public class FinishedKvSnapshotConsumeEvent implements SourceEvent {
     private static final long serialVersionUID = 1L;
 
     private final long checkpointId;
+
     /** The tableBucket set who finished consume kv snapshots. */
     private final Set<TableBucket> tableBuckets;
 

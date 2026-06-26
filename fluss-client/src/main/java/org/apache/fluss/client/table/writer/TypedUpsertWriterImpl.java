@@ -76,7 +76,7 @@ class TypedUpsertWriterImpl<T> implements TypedUpsertWriter<T> {
         if (record instanceof InternalRow) {
             return delegate.upsert((InternalRow) record);
         }
-        InternalRow row = convertPojo(record, /*forDelete=*/ false);
+        InternalRow row = convertPojo(record, /* forDelete= */ false);
         return delegate.upsert(row);
     }
 
@@ -85,7 +85,7 @@ class TypedUpsertWriterImpl<T> implements TypedUpsertWriter<T> {
         if (record instanceof InternalRow) {
             return delegate.delete((InternalRow) record);
         }
-        InternalRow pkOnly = convertPojo(record, /*forDelete=*/ true);
+        InternalRow pkOnly = convertPojo(record, /* forDelete= */ true);
         return delegate.delete(pkOnly);
     }
 
