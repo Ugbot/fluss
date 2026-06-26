@@ -65,9 +65,12 @@ Each phase is **benchmark-gated** (no perf change lands without a before/after J
 
 ### Phase 1 — Measure (benchmark harness + baselines)
 "Don't guess, benchmark." Only 3 JMH benchmarks exist today.
-- [ ] Extend `fluss-jmh`: end-to-end produce throughput (batch-size sweep), fetch throughput
-      (±projection), **Kafka typed hot path** (`KafkaFetchCodec`, Avro/JSON decode), RocksDB
-      `WriteBatch` flush latency vs batch size, allocation rate per request (`-prof gc`).
+- [~] Extend `fluss-jmh`: ADDED so far — `MemorySegmentBenchmark` (FFM baseline),
+      `RocksDBWriteBatchBenchmark` (batch-size sweep), `MemoryLogRecordsArrowBuildBenchmark`
+      (produce encode), `CrcChecksumBenchmark`, `FileLogProjectionBenchmark`, plus
+      `MessageCodec`/`KvPreWriteBuffer`/`BinaryRow` benches in flight. Kafka typed hot path already
+      covered by the existing `AvroDecodeBench`/`AvroEncodeBench`/`CodecCacheContentionBench`.
+      Still TODO: end-to-end produce/fetch throughput + allocation rate (`-prof gc`).
 - [ ] JFR GC-pause capture under sustained produce+fetch.
 - [ ] **HFT:** measure latency with **HdrHistogram** (p99/p999/p9999), and **avoid coordinated
       omission** (LatencyUtils / load-generator that records intended vs actual send time). Mean
@@ -103,18 +106,20 @@ Each phase is **benchmark-gated** (no perf change lands without a before/after J
 - Exit criteria: tests green; p99 from Phase 1 harness stable or improved.
 
 ### Phase 4 — Allocation & GC
-- [ ] Remove per-fetch allocations in `record/FileLogProjection` (`:327`, `:394`) via reusable
-      scratch buffers; audit `MemoryLogRecords` copies.
-- [ ] Evaluate + default **Generational ZGC** (`tablet-server.sh`/`config.sh`); set explicit
-      `-XX:MaxDirectMemorySize`. Keep G1 selectable.
+- [x] Audited per-fetch allocations in `record/FileLogProjection`: the per-batch `byte[]` (`:327`) is
+      load-bearing (its `BytesView` aliases the array until response serialization, and one project()
+      call retains many batches' headers), so it can't be a shared scratch buffer; `:394`'s
+      `arrowMetadataBuffer` is already grow-on-demand-reused. Documented; the real win is pooling
+      `FileLogProjection` instances per fetch thread (follow-up).
+- [x] Default **Generational ZGC** (`-XX:+UseZGC -XX:+ZGenerational`) in `tablet-server.sh`/
+      `coordinator-server.sh`/`config.sh`, with derived `-XX:MaxDirectMemorySize` and G1 selectable
+      via `env.java.opts.*`. NOTE: takes effect only on JDK 21+ (no JDK 25 installed here yet).
 - [ ] **HFT:** drive the steady-state produce/fetch path toward **zero allocation / zero GC** —
       object/buffer pooling on every per-request alloc (extend the existing `MemorySegmentPool`/
-      `ArrowWriterPool`), reuse decode scratch. Add `-XX:+AlwaysPreTouch` and pre-size pools so
-      pages are faulted in at startup, not under load. Validate with `-prof gc` showing ~0
-      alloc/op on the hot path.
-- [ ] **HFT:** eliminate **false sharing** on hot mutable counters — pad/`@jdk.internal.vm.
-      annotation.Contended` (or manual padding) the log-end-offset, high-watermark, LSO, writer
-      sequence, and ring-buffer cursors that are written by one thread and read by others.
+      `ArrowWriterPool`), reuse decode scratch. Add `-XX:+AlwaysPreTouch` and pre-size pools.
+- [x] **HFT:** eliminated **false sharing** on the single-writer log counters in `log/LocalLog.java`
+      via manual cache-line padding (Java-8/11 safe; not `@Contended` which needs --add-exports).
+      Still TODO: writer-sequence and any future ring-buffer cursors.
 - Exit criteria: benchmark-proven allocation-rate drop and GC-pause improvement.
 
 ### Phase 5 — Native tiering service + dependency diet (lakes behind abstractions)
