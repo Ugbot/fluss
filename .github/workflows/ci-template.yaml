@@ -38,8 +38,13 @@ jobs:
       matrix:
         module: [ core, flink, spark3, spark3-scala213, lake ]
         include:
+          # fluss-spark lives behind the opt-in -Pspark profile (dep diet), so the
+          # spark stages must activate it for those modules to be in the reactor.
+          - module: spark3
+            spark-profile: "-Pspark"
           - module: spark3-scala213
             scala-profile: "-Pscala-2.13"
+            spark-profile: "-Pspark"
             test-profile: "test-spark3"
     name: "${{ matrix.module }}"
     steps:
@@ -52,14 +57,14 @@ jobs:
           distribution: 'temurin'
       - name: Build
         run: |
-          mvn -T 1C -B clean install -DskipTests ${{ matrix.scala-profile }} ${{ inputs.maven-parameters }}
+          mvn -T 1C -B clean install -DskipTests ${{ matrix.scala-profile }} ${{ matrix.spark-profile }} ${{ inputs.maven-parameters }}
       - name: Test
         timeout-minutes: 60
         run: |
           TEST_MODULES=$(./.github/workflows/stage.sh ${{ matrix.module }})
           echo "github ref: ${{ github.ref }}"
           echo "Start testing modules: $TEST_MODULES"
-          mvn -B verify $TEST_MODULES -Ptest-coverage -P${{ matrix.test-profile || format('test-{0}', matrix.module) }} ${{ matrix.scala-profile }} -Dlog.dir=${{ runner.temp }}/fluss-logs -Dlog4j.configurationFile=${{ github.workspace }}/tools/ci/log4j.properties ${{ inputs.maven-parameters }}
+          mvn -B verify $TEST_MODULES -Ptest-coverage -P${{ matrix.test-profile || format('test-{0}', matrix.module) }} ${{ matrix.scala-profile }} ${{ matrix.spark-profile }} -Dlog.dir=${{ runner.temp }}/fluss-logs -Dlog4j.configurationFile=${{ github.workspace }}/tools/ci/log4j.properties ${{ inputs.maven-parameters }}
         env:
           MAVEN_OPTS: -Xmx4096m
           ARTIFACTS_OSS_ENDPOINT: ${{ secrets.ARTIFACTS_OSS_ENDPOINT }}

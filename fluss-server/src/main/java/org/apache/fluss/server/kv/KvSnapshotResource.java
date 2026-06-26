@@ -102,13 +102,15 @@ public class KvSnapshotResource {
         // (remote upload of checkpoint files) parks on I/O; virtual threads unmount from their
         // carrier thread while parked, so blocking I/O no longer pins a platform thread.
         //
-        // Concurrency bound: a Semaphore caps how many snapshot operations may be in-flight at
-        // once. The previous platform-thread pool used a maxPoolSize of 3 to bound the number of
-        // concurrent local RocksDB checkpoint directories and open file descriptors; switching to
-        // unbounded virtual threads would have removed that cap (which is exactly why the earlier
+        // Concurrency bound: a Semaphore caps how many async (upload) snapshot operations may be
+        // in-flight at once. The previous platform-thread pool used a maxPoolSize of 3 to bound the
+        // number of concurrent in-flight async uploads (remote I/O, memory, connections); switching
+        // to unbounded virtual threads would have removed that cap (which is why the earlier
         // unbounded version was reverted). Each submitted task acquires a permit before doing any
-        // work and releases it in a finally block, so peak in-flight snapshots stays bounded
-        // regardless of how cheap virtual threads are to spawn.
+        // work and releases it in a finally block, so peak in-flight uploads stays bounded
+        // regardless of how cheap virtual threads are to spawn. (The local RocksDB checkpoint
+        // directories are created earlier, synchronously under kvLock in initSnapshot, and are
+        // bounded per-bucket by the snapshot scheduler — not by this Semaphore.)
         //
         // The submit path must never block and must never run work inline on the caller: the
         // producer (PeriodicSnapshotManager.triggerSnapshot) submits while holding the KV tablet
@@ -130,9 +132,9 @@ public class KvSnapshotResource {
      * <p>The executor spawns one virtual thread per submitted task so that the carrier thread is
      * released while the task is blocked on remote snapshot I/O. Concurrency is bounded by a {@link
      * Semaphore} of {@code maxConcurrency} permits: each task acquires a permit before running and
-     * releases it when done, so at most {@code maxConcurrency} snapshot operations are in flight at
-     * any time. This preserves the throttle that bounds local RocksDB checkpoint directories and
-     * open file descriptors.
+     * releases it when done, so at most {@code maxConcurrency} async upload operations are in flight
+     * at any time. (Local RocksDB checkpoint directories are created earlier under kvLock in
+     * initSnapshot and bounded per-bucket by the scheduler, not by this Semaphore.)
      *
      * @param maxConcurrency the maximum number of concurrently running snapshot operations; must be
      *     positive

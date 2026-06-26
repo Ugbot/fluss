@@ -1794,9 +1794,8 @@ public class ConfigOptions {
                             "The maximum number of kv snapshot async operations (the blocking upload phase) "
                                     + "that may run concurrently on a server. The async snapshot phase runs on a "
                                     + "virtual-thread-per-task executor so carrier threads are freed during blocking "
-                                    + "remote I/O, but the in-flight count is bounded by this value to cap the number "
-                                    + "of concurrent local RocksDB checkpoint directories and open file descriptors. "
-                                    + "The default setting is 3.");
+                                    + "remote I/O, and this value bounds how many such uploads are in flight at once "
+                                    + "(remote I/O, memory and connections). The default setting is 3.");
 
     /**
      * @deprecated This option is deprecated. Please use {@link ConfigOptions#SERVER_IO_POOL_SIZE}
