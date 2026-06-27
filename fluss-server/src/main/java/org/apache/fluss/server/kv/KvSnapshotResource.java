@@ -132,8 +132,8 @@ public class KvSnapshotResource {
      * <p>The executor spawns one virtual thread per submitted task so that the carrier thread is
      * released while the task is blocked on remote snapshot I/O. Concurrency is bounded by a {@link
      * Semaphore} of {@code maxConcurrency} permits: each task acquires a permit before running and
-     * releases it when done, so at most {@code maxConcurrency} async upload operations are in flight
-     * at any time. (Local RocksDB checkpoint directories are created earlier under kvLock in
+     * releases it when done, so at most {@code maxConcurrency} async upload operations are in
+     * flight at any time. (Local RocksDB checkpoint directories are created earlier under kvLock in
      * initSnapshot and bounded per-bucket by the scheduler, not by this Semaphore.)
      *
      * @param maxConcurrency the maximum number of concurrently running snapshot operations; must be
