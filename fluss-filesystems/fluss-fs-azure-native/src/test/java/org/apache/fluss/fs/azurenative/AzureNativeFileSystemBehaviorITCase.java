@@ -62,6 +62,9 @@ class AzureNativeFileSystemBehaviorITCase extends FileSystemBehaviorTestSuite {
 
     @BeforeAll
     static void setup() {
+        org.junit.jupiter.api.Assumptions.assumeTrue(
+                org.testcontainers.DockerClientFactory.instance().isDockerAvailable(),
+                "Docker/podman is not available; skipping the container-backed behavior suite.");
         AZURITE.start();
 
         String host = AZURITE.getHost();

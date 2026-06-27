@@ -49,6 +49,9 @@ class S3NativeFileSystemBehaviorITCase extends FileSystemBehaviorTestSuite {
 
     @BeforeAll
     static void setup() {
+        org.junit.jupiter.api.Assumptions.assumeTrue(
+                org.testcontainers.DockerClientFactory.instance().isDockerAvailable(),
+                "Docker/podman is not available; skipping the container-backed behavior suite.");
         MINIO.start();
 
         try (S3Client s3 =

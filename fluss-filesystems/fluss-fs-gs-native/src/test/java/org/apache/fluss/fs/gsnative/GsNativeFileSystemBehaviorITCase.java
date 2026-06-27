@@ -69,6 +69,9 @@ class GsNativeFileSystemBehaviorITCase extends FileSystemBehaviorTestSuite {
 
     @BeforeAll
     static void setup() throws Exception {
+        org.junit.jupiter.api.Assumptions.assumeTrue(
+                org.testcontainers.DockerClientFactory.instance().isDockerAvailable(),
+                "Docker/podman is not available; skipping the container-backed behavior suite.");
         FAKE_GCS.start();
 
         endpoint = "http://" + FAKE_GCS.getHost() + ":" + FAKE_GCS.getMappedPort(GCS_PORT);
