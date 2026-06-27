@@ -286,6 +286,32 @@
                             <skip>true</skip>
                         </configuration>
                     </execution>
+                    <execution>
+                        <!--
+                          Guarantee the shipped distribution is Hadoop-free: ban Hadoop (and the
+                          shaded Hadoop uber-jar) anywhere in fluss-dist's transitive runtime graph.
+                          Skipped under -Phadoop, which deliberately re-adds the Hadoop bundle.
+                        -->
+                        <id>ban-hadoop-in-dist</id>
+                        <goals>
+                            <goal>enforce</goal>
+                        </goals>
+                        <configuration>
+                            <skip>${hadoop.ban.skip}</skip>
+                            <rules>
+                                <bannedDependencies>
+                                    <searchTransitive>true</searchTransitive>
+                                    <excludes>
+                                        <exclude>org.apache.hadoop:*</exclude>
+                                        <exclude>org.apache.flink:flink-shaded-hadoop-2-uber</exclude>
+                                    </excludes>
+                                    <message>The default Fluss distribution must not bundle Hadoop.
+                                        Build with -Phadoop to include the Hadoop fs/lake plugins.
+                                    </message>
+                                </bannedDependencies>
+                            </rules>
+                        </configuration>
+                    </execution>
                 </executions>
             </plugin>
 

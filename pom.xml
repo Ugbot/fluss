@@ -121,6 +121,9 @@
         <spark.version>3.5.7</spark.version>
 
         <fluss.hadoop.version>3.4.0</fluss.hadoop.version>
+        <!-- When false (default), the enforcer bans compile/runtime Hadoop so the default build
+             stays Hadoop-free. The root "hadoop" profile (-Phadoop) sets this to true. -->
+        <hadoop.ban.skip>false</hadoop.ban.skip>
         <frocksdb.version>6.20.3-ververica-2.0</frocksdb.version>
         <slf4j.version>1.7.36</slf4j.version>
         <log4j.version>2.25.4</log4j.version>
@@ -497,8 +500,15 @@
           adds the Hadoop-based filesystem wrappers (HDFS + Hadoop S3A/GCS/Azure/OSS/OBS/COS), the
           Hudi lake, and the shaded Hadoop uber-jar back into the reactor and the distribution. The
           module lists live in the child aggregators (fluss-filesystems, fluss-lake) and fluss-dist,
-          each under a profile with id "hadoop" that activates together with -Phadoop.
+          each under a profile with id "hadoop" that activates together with -Phadoop. This
+          root-level "hadoop" profile turns off the enforcer Hadoop ban for those builds.
         -->
+        <profile>
+            <id>hadoop</id>
+            <properties>
+                <hadoop.ban.skip>true</hadoop.ban.skip>
+            </properties>
+        </profile>
 
         <profile>
             <id>test-coverage</id>
