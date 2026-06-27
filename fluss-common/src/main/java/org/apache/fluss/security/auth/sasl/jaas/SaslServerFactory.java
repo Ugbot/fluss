@@ -34,11 +34,10 @@ import javax.security.sasl.SaslClient;
 import javax.security.sasl.SaslException;
 import javax.security.sasl.SaslServer;
 
-import java.security.PrivilegedActionException;
-import java.security.PrivilegedExceptionAction;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletionException;
 
 /* This file is based on source code of Apache Kafka Project (https://kafka.apache.org/), licensed by the Apache
  * Software Foundation (ASF) under the Apache License, Version 2.0. See the NOTICE file distributed with this work for
@@ -93,16 +92,11 @@ public class SaslServerFactory {
 
             callbackHandler.configure(mechanism, configurationEntries);
             SaslServer saslServer =
-                    Subject.doAs(
+                    Subject.callAs(
                             loginManager.subject(),
-                            (PrivilegedExceptionAction<SaslServer>)
-                                    () ->
-                                            Sasl.createSaslServer(
-                                                    mechanism,
-                                                    "fluss",
-                                                    hostName,
-                                                    props,
-                                                    callbackHandler));
+                            () ->
+                                    Sasl.createSaslServer(
+                                            mechanism, "fluss", hostName, props, callbackHandler));
             if (saslServer == null) {
                 throw new SaslException(
                         "Fluss Server failed to create a SaslServer to interact with a client during session authentication with server mechanism "
@@ -110,7 +104,7 @@ public class SaslServerFactory {
             }
 
             return saslServer;
-        } catch (PrivilegedActionException e) {
+        } catch (CompletionException e) {
             throw new SaslException(
                     "Fluss Server failed to create a SaslServer to interact with a client during session authentication with server mechanism "
                             + mechanism,
@@ -119,27 +113,25 @@ public class SaslServerFactory {
     }
 
     public static SaslClient createSaslClient(
-            String mechanism, String hostAddress, Map<String, ?> props, LoginManager loginManager)
-            throws PrivilegedActionException {
+            String mechanism, String hostAddress, Map<String, ?> props, LoginManager loginManager) {
 
-        return Subject.doAs(
+        return Subject.callAs(
                 loginManager.subject(),
-                (PrivilegedExceptionAction<SaslClient>)
-                        () -> {
-                            String[] mechs = {mechanism};
-                            String serviceName = loginManager.serviceName();
-                            LOG.debug(
-                                    "Creating SaslClient: service={};mechs={}",
-                                    serviceName,
-                                    Arrays.toString(mechs));
+                () -> {
+                    String[] mechs = {mechanism};
+                    String serviceName = loginManager.serviceName();
+                    LOG.debug(
+                            "Creating SaslClient: service={};mechs={}",
+                            serviceName,
+                            Arrays.toString(mechs));
 
-                            return Sasl.createSaslClient(
-                                    mechs,
-                                    null,
-                                    serviceName,
-                                    hostAddress,
-                                    props,
-                                    new SaslClientCallbackHandler());
-                        });
+                    return Sasl.createSaslClient(
+                            mechs,
+                            null,
+                            serviceName,
+                            hostAddress,
+                            props,
+                            new SaslClientCallbackHandler());
+                });
     }
 }

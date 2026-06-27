@@ -24,7 +24,6 @@ import javax.security.auth.callback.PasswordCallback;
 import javax.security.auth.callback.UnsupportedCallbackException;
 import javax.security.auth.login.AppConfigurationEntry;
 
-import java.security.AccessController;
 import java.util.List;
 
 /* This file is based on source code of Apache Kafka Project (https://kafka.apache.org/), licensed by the Apache
@@ -58,7 +57,7 @@ public class SaslClientCallbackHandler implements AuthenticateCallbackHandler {
 
     @Override
     public void handle(Callback[] callbacks) throws UnsupportedCallbackException {
-        Subject subject = Subject.getSubject(AccessController.getContext());
+        Subject subject = Subject.current();
         for (Callback callback : callbacks) {
             if (callback instanceof NameCallback) {
                 NameCallback nc = (NameCallback) callback;
