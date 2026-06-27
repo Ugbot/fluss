@@ -126,7 +126,7 @@
         <log4j.version>2.25.4</log4j.version>
         <jaxb.api.version>2.3.1</jaxb.api.version>
         <junit5.version>5.9.1</junit5.version>
-        <mockito.version>3.4.6</mockito.version>
+        <mockito.version>5.21.0</mockito.version>
         <assertj.version>3.27.7</assertj.version>
 
         <protobuf.version>3.25.5</protobuf.version>
@@ -161,6 +161,11 @@
           plugin executes before, the property is undefined and makes the tests fail. Thus we define an empty property
           here to make sure it doesn't fail. See also https://issues.apache.org/jira/browse/SUREFIRE-1431 -->
         <argLine/>
+        <!-- Test-JVM args for JDK 25. The two add-exports mirror the compiler-plugin args so the
+             test runtime can load classes that touch JDK-internal packages: fluss-metrics-jmx
+             JMXServer$JmxRegistry (sun.rmi.registry) and fluss-fs-hdfs HadoopUtilsTest
+             (sun.security.krb5). Keep this a comment-free element value: a comment node inside the
+             property text can truncate the value in some Maven property readers. -->
         <extraJavaTestArgs>
             -XX:+IgnoreUnrecognizedVMOptions
             --add-opens=java.base/java.lang=ALL-UNNAMED
@@ -177,9 +182,6 @@
             --add-opens=java.base/sun.nio.cs=ALL-UNNAMED
             --add-opens=java.base/sun.security.action=ALL-UNNAMED
             --add-opens=java.base/sun.util.calendar=ALL-UNNAMED
-            <!-- fluss-metrics-jmx JMXServer$JmxRegistry extends sun.rmi.registry.RegistryImpl;
-                 fluss-fs-hdfs HadoopUtilsTest uses sun.security.krb5. These mirror the
-                 compiler-plugin add-exports args so the test JVM can load those classes too. -->
             --add-exports=java.rmi/sun.rmi.registry=ALL-UNNAMED
             --add-exports=java.security.jgss/sun.security.krb5=ALL-UNNAMED
             -Djdk.reflect.useDirectMethodHandle=false
