@@ -58,6 +58,20 @@ jobs:
       - name: Build
         run: |
           mvn -T 1C -B clean install -DskipTests ${{ matrix.scala-profile }} ${{ matrix.spark-profile }} ${{ inputs.maven-parameters }}
+      - name: Assert default distribution is Hadoop-free
+        if: ${{ matrix.module == 'core' }}
+        run: |
+          if mvn -B -q -pl fluss-dist dependency:tree | grep -i 'org.apache.hadoop'; then
+            echo "ERROR: Hadoop appears in the default fluss-dist dependency tree"; exit 1
+          fi
+          echo "OK: default distribution is Hadoop-free"
+      - name: Compile the opt-in Hadoop profile
+        if: ${{ matrix.module == 'core' }}
+        # The Hadoop modules (HDFS, Hudi, Hadoop fs wrappers) cannot run their tests on JDK 25
+        # (Hadoop UserGroupInformation.getSubject is unsupported under JEP 486), so only verify
+        # they still compile under -Phadoop here.
+        run: |
+          mvn -T 1C -B -Phadoop clean install -DskipTests ${{ inputs.maven-parameters }}
       - name: Test
         timeout-minutes: 60
         run: |
