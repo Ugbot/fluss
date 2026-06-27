@@ -80,11 +80,23 @@
 
     <artifactId>fluss-lake</artifactId>
     <name>Apache Fluss (Incubating) : Lake :</name>
+    <!--
+      Hudi is intrinsically Hadoop-bound (HoodieTableMetaClient requires a Hadoop Configuration),
+      so it is opt-in via -Phadoop. Iceberg/Paimon/Lance run Hadoop-free on the default path.
+    -->
     <modules>
         <module>fluss-lake-paimon</module>
         <module>fluss-lake-iceberg</module>
         <module>fluss-lake-lance</module>
-        <module>fluss-lake-hudi</module>
     </modules>
     <packaging>pom</packaging>
+
+    <profiles>
+        <profile>
+            <id>hadoop</id>
+            <modules>
+                <module>fluss-lake-hudi</module>
+            </modules>
+        </profile>
+    </profiles>
 </project>

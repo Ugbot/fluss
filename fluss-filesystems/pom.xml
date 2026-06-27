@@ -28,17 +28,13 @@
 
     <artifactId>fluss-filesystems</artifactId>
     <name>Apache Fluss (Incubating) : FileSystems :</name>
+    <!--
+      Default build ships only the native, Hadoop-free object-store plugins. The Hadoop-based
+      filesystem wrappers (HDFS and the Hadoop S3A/GCS/Azure/OSS/OBS/COS adapters, plus the
+      ~300MB fluss-fs-hadoop-shaded) are opt-in via -Phadoop for on-prem / legacy use.
+    -->
     <modules>
-        <module>fluss-fs-hadoop</module>
-        <module>fluss-fs-hadoop-shaded</module>
-        <module>fluss-fs-s3</module>
         <module>fluss-fs-s3-native</module>
-        <module>fluss-fs-gs</module>
-        <module>fluss-fs-cos</module>
-        <module>fluss-fs-hdfs</module>
-        <module>fluss-fs-oss</module>
-        <module>fluss-fs-azure</module>
-        <module>fluss-fs-obs</module>
     </modules>
     <packaging>pom</packaging>
 
@@ -82,5 +78,23 @@
             </plugin>
         </plugins>
     </build>
+
+    <profiles>
+        <!-- Opt-in Hadoop-based filesystem wrappers (on-prem HDFS + legacy cloud adapters). -->
+        <profile>
+            <id>hadoop</id>
+            <modules>
+                <module>fluss-fs-hadoop</module>
+                <module>fluss-fs-hadoop-shaded</module>
+                <module>fluss-fs-s3</module>
+                <module>fluss-fs-gs</module>
+                <module>fluss-fs-cos</module>
+                <module>fluss-fs-hdfs</module>
+                <module>fluss-fs-oss</module>
+                <module>fluss-fs-azure</module>
+                <module>fluss-fs-obs</module>
+            </modules>
+        </profile>
+    </profiles>
 
 </project>

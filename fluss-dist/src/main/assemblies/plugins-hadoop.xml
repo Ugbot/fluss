@@ -1,0 +1,77 @@
+<!--
+ Licensed to the Apache Software Foundation (ASF) under one
+ or more contributor license agreements.  See the NOTICE file
+ distributed with this work for additional information
+ regarding copyright ownership.  The ASF licenses this file
+ to you under the Apache License, Version 2.0 (the
+ "License"); you may not use this file except in compliance
+ with the License.  You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+ Unless required by applicable law or agreed to in writing, software
+ distributed under the License is distributed on an "AS IS" BASIS,
+ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ See the License for the specific language governing permissions and
+ limitations under the License.
+-->
+<!--
+  Opt-in Hadoop plugins, assembled only under -Phadoop (see fluss-dist/pom.xml). Adds the
+  Hadoop-based filesystem plugins (HDFS, Hadoop S3A, OSS), the Hudi lake, and the shaded Hadoop
+  uber-jar (for Paimon on HDFS) on top of the Hadoop-free default plugins assembly.
+-->
+<assembly
+        xmlns="http://maven.apache.org/plugins/maven-assembly-plugin/assembly/1.1.0"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="http://maven.apache.org/plugins/maven-assembly-plugin/assembly/1.1.0 http://maven.apache.org/xsd/assembly-1.1.0.xsd">
+    <id>plugins-hadoop</id>
+    <formats>
+        <format>dir</format>
+    </formats>
+
+    <includeBaseDirectory>true</includeBaseDirectory>
+    <baseDirectory>fluss-${project.version}</baseDirectory>
+
+    <dependencySets>
+        <dependencySet>
+            <outputDirectory>plugins/paimon</outputDirectory>
+            <unpack>false</unpack>
+            <useProjectArtifact>false</useProjectArtifact>
+            <useProjectAttachments>false</useProjectAttachments>
+            <useTransitiveDependencies>false</useTransitiveDependencies>
+            <includes>
+                <include>org.apache.flink:flink-shaded-hadoop-2-uber</include>
+            </includes>
+        </dependencySet>
+    </dependencySets>
+
+    <files>
+        <file>
+            <source>../fluss-filesystems/fluss-fs-hdfs/target/fluss-fs-hdfs-${project.version}.jar</source>
+            <outputDirectory>plugins/hdfs/</outputDirectory>
+            <destName>fluss-fs-hdfs-${project.version}.jar</destName>
+            <fileMode>0644</fileMode>
+        </file>
+        <file>
+            <source>../fluss-filesystems/fluss-fs-oss/target/fluss-fs-oss-${project.version}.jar</source>
+            <outputDirectory>plugins/oss/</outputDirectory>
+            <destName>fluss-fs-oss-${project.version}.jar</destName>
+            <fileMode>0644</fileMode>
+        </file>
+        <!-- Hadoop-based S3A plugin (alternative to the default native S3); output dir is s3-hadoop
+             so it does not collide with the native plugin in plugins/s3. -->
+        <file>
+            <source>../fluss-filesystems/fluss-fs-s3/target/fluss-fs-s3-${project.version}.jar</source>
+            <outputDirectory>plugins/s3-hadoop/</outputDirectory>
+            <destName>fluss-fs-s3-${project.version}.jar</destName>
+            <fileMode>0644</fileMode>
+        </file>
+        <file>
+            <source>../fluss-lake/fluss-lake-hudi/target/fluss-lake-hudi-${project.version}.jar</source>
+            <outputDirectory>plugins/hudi/</outputDirectory>
+            <destName>fluss-lake-hudi-${project.version}.jar</destName>
+            <fileMode>0644</fileMode>
+        </file>
+    </files>
+
+</assembly>

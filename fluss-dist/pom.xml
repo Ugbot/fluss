@@ -47,24 +47,10 @@
             <scope>provided</scope>
         </dependency>
 
-        <!--  filesystem plugin -->
+        <!-- filesystem plugin (native, Hadoop-free; Hadoop wrappers are added under -Phadoop) -->
         <dependency>
             <groupId>org.apache.fluss</groupId>
-            <artifactId>fluss-fs-hdfs</artifactId>
-            <version>${project.version}</version>
-            <scope>provided</scope>
-        </dependency>
-
-        <dependency>
-            <groupId>org.apache.fluss</groupId>
-            <artifactId>fluss-fs-oss</artifactId>
-            <version>${project.version}</version>
-            <scope>provided</scope>
-        </dependency>
-
-        <dependency>
-            <groupId>org.apache.fluss</groupId>
-            <artifactId>fluss-fs-s3</artifactId>
+            <artifactId>fluss-fs-s3-native</artifactId>
             <version>${project.version}</version>
             <scope>provided</scope>
         </dependency>
@@ -111,26 +97,6 @@
             <version>${project.version}</version>
             <scope>provided</scope>
         </dependency>
-        
-        <dependency>
-            <groupId>org.apache.fluss</groupId>
-            <artifactId>fluss-lake-hudi</artifactId>
-            <version>${project.version}</version>
-            <scope>provided</scope>
-        </dependency>
-      
-        <dependency>
-            <groupId>org.apache.flink</groupId>
-            <artifactId>flink-shaded-hadoop-2-uber</artifactId>
-            <version>2.8.3-10.0</version>
-            <scope>compile</scope>
-            <exclusions>
-                <exclusion>
-                    <groupId>org.slf4j</groupId>
-                    <artifactId>slf4j-log4j12</artifactId>
-                </exclusion>
-            </exclusions>
-        </dependency>
 
         <dependency>
             <groupId>org.apache.paimon</groupId>
@@ -172,6 +138,75 @@
 
 
     <profiles>
+        <!--
+          Opt-in Hadoop bundle: adds the Hadoop-based fs plugins (HDFS, S3A, OSS), the Hudi lake,
+          and the shaded Hadoop uber-jar back into the distribution, and assembles them into the
+          plugins/ directory via the dedicated plugins-hadoop.xml descriptor. The default build is
+          Hadoop-free; activate with -Phadoop.
+        -->
+        <profile>
+            <id>hadoop</id>
+            <dependencies>
+                <dependency>
+                    <groupId>org.apache.fluss</groupId>
+                    <artifactId>fluss-fs-hdfs</artifactId>
+                    <version>${project.version}</version>
+                    <scope>provided</scope>
+                </dependency>
+                <dependency>
+                    <groupId>org.apache.fluss</groupId>
+                    <artifactId>fluss-fs-oss</artifactId>
+                    <version>${project.version}</version>
+                    <scope>provided</scope>
+                </dependency>
+                <dependency>
+                    <groupId>org.apache.fluss</groupId>
+                    <artifactId>fluss-fs-s3</artifactId>
+                    <version>${project.version}</version>
+                    <scope>provided</scope>
+                </dependency>
+                <dependency>
+                    <groupId>org.apache.fluss</groupId>
+                    <artifactId>fluss-lake-hudi</artifactId>
+                    <version>${project.version}</version>
+                    <scope>provided</scope>
+                </dependency>
+                <dependency>
+                    <groupId>org.apache.flink</groupId>
+                    <artifactId>flink-shaded-hadoop-2-uber</artifactId>
+                    <version>2.8.3-10.0</version>
+                    <scope>compile</scope>
+                    <exclusions>
+                        <exclusion>
+                            <groupId>org.slf4j</groupId>
+                            <artifactId>slf4j-log4j12</artifactId>
+                        </exclusion>
+                    </exclusions>
+                </dependency>
+            </dependencies>
+            <build>
+                <plugins>
+                    <plugin>
+                        <artifactId>maven-assembly-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <id>plugins-hadoop</id>
+                                <phase>package</phase>
+                                <goals>
+                                    <goal>single</goal>
+                                </goals>
+                                <configuration>
+                                    <descriptors>
+                                        <descriptor>src/main/assemblies/plugins-hadoop.xml</descriptor>
+                                    </descriptors>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+
         <profile>
             <!-- Creates/Removes the 'build-target' symlink in the root directory (only Unix systems) -->
             <id>symlink-build-target</id>

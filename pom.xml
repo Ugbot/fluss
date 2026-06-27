@@ -491,11 +491,13 @@
         </profile>
 
         <!--
-          NOTE: the niche cloud filesystem connectors (Aliyun OSS, Azure, Huawei OBS)
-          remain in the DEFAULT build for now. They cannot be profile-gated until
-          fluss-dist's hard dependency + plugins assembly entry for fluss-fs-oss are
-          made profile-conditional (a separate dist-assembly rework). Spark/Scala IS
-          gated above (-Pspark) since fluss-dist does not bundle it.
+          Opt-in Hadoop profile. The default build is Hadoop-free: it ships only the native
+          object-store filesystem plugins (fluss-fs-s3-native, and the native GCS/Azure plugins)
+          and the Hadoop-free lakes (Iceberg via S3FileIO/REST, Paimon, Lance). Activating -Phadoop
+          adds the Hadoop-based filesystem wrappers (HDFS + Hadoop S3A/GCS/Azure/OSS/OBS/COS), the
+          Hudi lake, and the shaded Hadoop uber-jar back into the reactor and the distribution. The
+          module lists live in the child aggregators (fluss-filesystems, fluss-lake) and fluss-dist,
+          each under a profile with id "hadoop" that activates together with -Phadoop.
         -->
 
         <profile>
