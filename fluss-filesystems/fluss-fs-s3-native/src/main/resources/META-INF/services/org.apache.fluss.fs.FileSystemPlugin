@@ -1,0 +1,2 @@
+org.apache.fluss.fs.s3native.S3NativeFileSystemPlugin
+org.apache.fluss.fs.s3native.S3aNativeFileSystemPlugin
