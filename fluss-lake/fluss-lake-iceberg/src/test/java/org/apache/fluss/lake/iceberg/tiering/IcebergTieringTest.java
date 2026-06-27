@@ -33,6 +33,7 @@ import org.apache.fluss.record.GenericRecord;
 import org.apache.fluss.record.LogRecord;
 import org.apache.fluss.row.BinaryString;
 import org.apache.fluss.row.GenericRow;
+import org.apache.fluss.testutils.junit.DisabledOnHadoopIncompatibleJdk;
 import org.apache.fluss.types.DataTypes;
 import org.apache.fluss.utils.types.Tuple2;
 
@@ -82,6 +83,7 @@ import static org.apache.iceberg.expressions.Expressions.equal;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /** Unit test for tiering to Iceberg via {@link IcebergLakeTieringFactory}. */
+@DisabledOnHadoopIncompatibleJdk
 class IcebergTieringTest {
 
     private static final int BUCKET_NUM = 3;

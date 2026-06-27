@@ -23,6 +23,7 @@ import org.apache.fluss.lake.iceberg.tiering.IcebergCatalogProvider;
 import org.apache.fluss.lake.iceberg.tiering.writer.TaskWriterFactory;
 import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.metadata.TablePath;
+import org.apache.fluss.testutils.junit.DisabledOnHadoopIncompatibleJdk;
 
 import org.apache.iceberg.AppendFiles;
 import org.apache.iceberg.DataFile;
@@ -57,6 +58,7 @@ import static org.apache.fluss.utils.Preconditions.checkState;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /** Unit test to verify compaction via {@link IcebergRewriteDataFiles}. */
+@DisabledOnHadoopIncompatibleJdk
 class IcebergRewriteTest {
 
     private @TempDir File tempWarehouseDir;

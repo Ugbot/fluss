@@ -39,6 +39,7 @@ import org.apache.fluss.server.replica.Replica;
 import org.apache.fluss.server.testutils.FlussClusterExtension;
 import org.apache.fluss.server.zk.ZooKeeperClient;
 import org.apache.fluss.server.zk.data.lake.LakeTable;
+import org.apache.fluss.testutils.junit.DisabledOnHadoopIncompatibleJdk;
 
 import org.apache.flink.api.common.RuntimeExecutionMode;
 import org.apache.flink.core.execution.JobClient;
@@ -89,6 +90,7 @@ import static org.apache.iceberg.expressions.Expressions.equal;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /** Test base for tiering to Iceberg by Flink. */
+@DisabledOnHadoopIncompatibleJdk
 public class FlinkIcebergTieringTestBase {
 
     @RegisterExtension

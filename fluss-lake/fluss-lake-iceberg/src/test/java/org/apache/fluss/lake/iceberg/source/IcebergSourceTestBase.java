@@ -24,6 +24,7 @@ import org.apache.fluss.lake.iceberg.tiering.writer.TaskWriterFactory;
 import org.apache.fluss.lake.iceberg.utils.IcebergCatalogUtils;
 import org.apache.fluss.metadata.TablePath;
 import org.apache.fluss.row.InternalRow;
+import org.apache.fluss.testutils.junit.DisabledOnHadoopIncompatibleJdk;
 import org.apache.fluss.utils.CloseableIterator;
 
 import org.apache.flink.types.Row;
@@ -52,6 +53,7 @@ import java.util.function.Function;
 import static org.apache.fluss.utils.Preconditions.checkState;
 
 /** Base class for Iceberg source tests. */
+@DisabledOnHadoopIncompatibleJdk
 class IcebergSourceTestBase {
     protected static final String DEFAULT_DB = "fluss_lakehouse";
     protected static final String DEFAULT_TABLE = "test_lakehouse_table";
