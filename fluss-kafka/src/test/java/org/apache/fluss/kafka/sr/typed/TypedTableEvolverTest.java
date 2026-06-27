@@ -68,7 +68,9 @@ class TypedTableEvolverTest {
         TableChange.AddColumn add = (TableChange.AddColumn) delta.changes().get(0);
         assertThat(add.getName()).isEqualTo("email");
         assertThat(add.getDataType().isNullable()).isTrue();
-        assertThat(add.getPosition()).isEqualTo(TableChange.ColumnPosition.last());
+        // The evolver inserts appended columns AFTER their predecessor (here "id") rather than at
+        // the absolute table tail, so they land before the reserved (event_time, headers) suffix.
+        assertThat(add.getPosition()).isEqualTo(TableChange.ColumnPosition.after("id"));
     }
 
     @Test
