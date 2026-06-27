@@ -167,6 +167,19 @@
             </exclusions>
         </dependency>
 
+        <!--
+          Hudi's FlinkClientUtil.getHadoopConf loads Hadoop's XML config parser, which Hudi expects
+          as the relocated Woodstox bundled in hadoop-client-runtime
+          (org.apache.hadoop.shaded.com.ctc.wstx). Plain hadoop-common does not carry it, so it must
+          be on the classpath explicitly or Hudi fails with NoClassDefFoundError.
+        -->
+        <dependency>
+            <groupId>org.apache.hadoop</groupId>
+            <artifactId>hadoop-client-runtime</artifactId>
+            <version>${fluss.hadoop.version}</version>
+            <scope>provided</scope>
+        </dependency>
+
         <dependency>
             <groupId>org.apache.fluss</groupId>
             <artifactId>fluss-common</artifactId>

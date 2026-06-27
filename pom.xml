@@ -120,7 +120,10 @@
         <scala.version>${scala212.version}</scala.version>
         <spark.version>3.5.7</spark.version>
 
-        <fluss.hadoop.version>3.4.0</fluss.hadoop.version>
+        <!-- 3.4.1 carries HADOOP-19212 (UserGroupInformation.getSubject works on JDK 25, where the
+             SecurityManager is removed). Used by the lake modules (provided) and, under -Phadoop,
+             the Hadoop fs modules. -->
+        <fluss.hadoop.version>3.4.1</fluss.hadoop.version>
         <!-- When false (default), the enforcer bans compile/runtime Hadoop so the default build
              stays Hadoop-free. The root "hadoop" profile (-Phadoop) sets this to true. -->
         <hadoop.ban.skip>false</hadoop.ban.skip>
