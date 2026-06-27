@@ -47,10 +47,22 @@
             <scope>provided</scope>
         </dependency>
 
-        <!-- filesystem plugin (native, Hadoop-free; Hadoop wrappers are added under -Phadoop) -->
+        <!-- filesystem plugins (native, Hadoop-free; Hadoop wrappers are added under -Phadoop) -->
         <dependency>
             <groupId>org.apache.fluss</groupId>
             <artifactId>fluss-fs-s3-native</artifactId>
+            <version>${project.version}</version>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.fluss</groupId>
+            <artifactId>fluss-fs-gs-native</artifactId>
+            <version>${project.version}</version>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.fluss</groupId>
+            <artifactId>fluss-fs-azure-native</artifactId>
             <version>${project.version}</version>
             <scope>provided</scope>
         </dependency>

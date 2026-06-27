@@ -1,0 +1,4 @@
+org.apache.fluss.fs.azurenative.AbfsNativeFileSystemPlugin
+org.apache.fluss.fs.azurenative.AbfssNativeFileSystemPlugin
+org.apache.fluss.fs.azurenative.WasbNativeFileSystemPlugin
+org.apache.fluss.fs.azurenative.WasbsNativeFileSystemPlugin

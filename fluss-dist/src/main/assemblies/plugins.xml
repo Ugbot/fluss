@@ -50,6 +50,20 @@
             <destName>fluss-fs-s3-native-${project.version}.jar</destName>
             <fileMode>0644</fileMode>
         </file>
+        <!-- native, Hadoop-free GCS -->
+        <file>
+            <source>../fluss-filesystems/fluss-fs-gs-native/target/fluss-fs-gs-native-${project.version}.jar</source>
+            <outputDirectory>plugins/gs/</outputDirectory>
+            <destName>fluss-fs-gs-native-${project.version}.jar</destName>
+            <fileMode>0644</fileMode>
+        </file>
+        <!-- native, Hadoop-free Azure Blob -->
+        <file>
+            <source>../fluss-filesystems/fluss-fs-azure-native/target/fluss-fs-azure-native-${project.version}.jar</source>
+            <outputDirectory>plugins/azure/</outputDirectory>
+            <destName>fluss-fs-azure-native-${project.version}.jar</destName>
+            <fileMode>0644</fileMode>
+        </file>
 
         <!-- metrics -->
         <file>
